@@ -1,0 +1,10 @@
+# Rust build
+target/
+
+# OS / editor
+.DS_Store
+*.swp
+*~
+
+# Runtime / local data
+uploads/

@@ -1,0 +1,17 @@
+[package]
+name = "arqhia_p"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced = { version = "0.13", features = ["tokio", "markdown"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+futures = "0.3"
+rfd = "0.15"
+minijinja = "2"
+walkdir = "2"
