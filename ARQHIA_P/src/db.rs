@@ -88,6 +88,11 @@ pub fn init() -> Result<(), String> {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'));")
             .map_err(|e| e.to_string())?;
     }
+    // Migración v0.8: chats.session_id (id estable por chat para el provider).
+    if !column_exists(&conn, "chats", "session_id") {
+        conn.execute_batch("ALTER TABLE chats ADD COLUMN session_id TEXT DEFAULT NULL;")
+            .map_err(|e| e.to_string())?;
+    }
     // Mensajes huérfanos (v0.1) van a un chat "General", pero SOLO si existen:
     // ya no se crea ningún chat automáticamente al entrar.
     let orphans: i64 = conn
@@ -179,6 +184,20 @@ pub struct ChatMeta {
     pub project_id: Option<i64>,
     pub archived: bool,
     pub mode: Mode,
+    /// Id estable de sesión por chat (v0.8): se envía al provider que lo
+    /// soporte (OpenRouter `session_id`, OpenAI `prompt_cache_key`).
+    /// None en chats legacy hasta que envían su primer turno.
+    pub session_id: Option<String>,
+}
+
+/// Genera un id de sesión corto y único sin dependencias externas
+/// (nanos + pid en hex). Estable por chat: se genera una vez y persiste.
+pub fn new_session_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{:x}-{:x}", nanos, std::process::id())
 }
 
 #[derive(Debug, Clone)]
@@ -198,22 +217,36 @@ pub fn create_chat(title: &str) -> Result<i64, String> {
 pub fn list_chats() -> Result<Vec<ChatMeta>, String> {
     let conn = connect()?;
     let with_mode = column_exists(&conn, "chats", "mode");
-    let sql = if with_mode {
-        "SELECT id, title, project_id, archived, mode FROM chats ORDER BY id ASC"
-    } else {
-        "SELECT id, title, project_id, archived FROM chats ORDER BY id ASC"
+    let with_session = column_exists(&conn, "chats", "session_id");
+    let sql = match (with_mode, with_session) {
+        (true, true) => {
+            "SELECT id, title, project_id, archived, mode, session_id FROM chats ORDER BY id ASC"
+        }
+        (true, false) => {
+            "SELECT id, title, project_id, archived, mode FROM chats ORDER BY id ASC"
+        }
+        (false, true) => {
+            "SELECT id, title, project_id, archived, session_id FROM chats ORDER BY id ASC"
+        }
+        (false, false) => "SELECT id, title, project_id, archived FROM chats ORDER BY id ASC",
     };
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
             let archived: i64 = row.get(3)?;
-            let mode: Option<String> = if with_mode { row.get(4)? } else { None };
+            let (mode, session): (Option<String>, Option<String>) = match (with_mode, with_session) {
+                (true, true) => (row.get(4)?, row.get(5)?),
+                (true, false) => (row.get(4)?, None),
+                (false, true) => (None, row.get(4)?),
+                (false, false) => (None, None),
+            };
             Ok(ChatMeta {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 project_id: row.get(2)?,
                 archived: archived != 0,
                 mode: Mode::from_opt_str(mode.as_deref()),
+                session_id: session.filter(|s| !s.trim().is_empty()),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -266,6 +299,41 @@ pub fn set_chat_mode(id: i64, mode: Mode) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Fija el `session_id` de un chat (v0.8). `None`/vacío lo limpia.
+pub fn set_session_id(id: i64, session: Option<&str>) -> Result<(), String> {
+    let conn = connect()?;
+    let clean = session.map(str::trim).filter(|s| !s.is_empty());
+    conn.execute(
+        "UPDATE chats SET session_id = ?1 WHERE id = ?2",
+        params![clean, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Devuelve el `session_id` persistido, o genera+fija uno nuevo si falta
+/// (primer turno del chat). Nunca devuelve vacío.
+pub fn ensure_session_id(id: i64) -> Result<String, String> {
+    let conn = connect()?;
+    let cur: Option<String> = conn
+        .query_row(
+            "SELECT session_id FROM chats WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if let Some(s) = cur.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        return Ok(s);
+    }
+    let fresh = new_session_id();
+    conn.execute(
+        "UPDATE chats SET session_id = ?1 WHERE id = ?2",
+        params![fresh, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(fresh)
 }
 
 // ---- Projects (solo agrupadores lógicos en v0.2, sin carpetas) ----
@@ -411,16 +479,16 @@ pub fn load_chat_history_full(chat_id: i64, limit: usize) -> Result<Vec<ChatMess
 pub fn copy_chat(src_id: i64) -> Result<i64, String> {
     let mut conn = connect()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let (title, project_id, mode): (String, Option<i64>, Option<String>) = tx
+    let (title, project_id, mode, session): (String, Option<i64>, Option<String>, Option<String>) = tx
         .query_row(
-            "SELECT title, project_id, mode FROM chats WHERE id = ?1",
+            "SELECT title, project_id, mode, session_id FROM chats WHERE id = ?1",
             params![src_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO chats (title, project_id, mode) VALUES (?1, ?2, ?3)",
-        params![format!("{title} (copia)"), project_id, mode],
+        "INSERT INTO chats (title, project_id, mode, session_id) VALUES (?1, ?2, ?3, ?4)",
+        params![format!("{title} (copia)"), project_id, mode, session],
     )
     .map_err(|e| e.to_string())?;
     let new_id = tx.last_insert_rowid();
@@ -462,8 +530,8 @@ pub fn branch_chat(src_id: i64, upto_msg_id: i64) -> Result<i64, String> {
         )
         .map_err(|e| e.to_string())?;
     tx.execute(
-        "INSERT INTO chats (title, project_id, mode) VALUES (?1, ?2, ?3)",
-        params![format!("{title} (rama)"), project_id, mode],
+        "INSERT INTO chats (title, project_id, mode, session_id) VALUES (?1, ?2, ?3, ?4)",
+        params![format!("{title} (rama)"), project_id, mode, new_session_id()],
     )
     .map_err(|e| e.to_string())?;
     let new_id = tx.last_insert_rowid();
@@ -617,6 +685,35 @@ mod tests {
         assert_eq!(load_chat_history_full(src, 10).unwrap().len(), 1);
         // Limpieza para no contaminar la DB del dev.
         delete_chat(src).unwrap();
+        delete_chat(cp).unwrap();
+        delete_chat(br).unwrap();
+    }
+
+    #[test]
+    fn session_id_stable_persists_and_regenerates() {
+        assert!(init().is_ok());
+        let id = create_chat("v0.8-sess-tmp").expect("crear chat tmp");
+        // Legacy: sin sesión hasta el primer turno.
+        let meta = list_chats().unwrap().into_iter().find(|c| c.id == id).unwrap();
+        assert!(meta.session_id.is_none());
+        let s1 = ensure_session_id(id).expect("generar sesión");
+        assert!(!s1.trim().is_empty());
+        // Estable: segunda llamada devuelve el mismo.
+        assert_eq!(ensure_session_id(id).unwrap(), s1);
+        // Regenerar: cambia.
+        set_session_id(id, Some(&new_session_id())).unwrap();
+        let s2 = ensure_session_id(id).unwrap();
+        assert_ne!(s1, s2);
+        // Copia conserva; rama estrena id propio.
+        save_msg(id, "user", "hola").unwrap();
+        let full = load_chat_history_full(id, 10).unwrap();
+        let cp = copy_chat(id).expect("copiar");
+        let cpm = list_chats().unwrap().into_iter().find(|c| c.id == cp).unwrap();
+        assert_eq!(cpm.session_id.as_deref(), Some(s2.as_str()));
+        let br = branch_chat(id, full[0].id).expect("bifurcar");
+        let brm = list_chats().unwrap().into_iter().find(|c| c.id == br).unwrap();
+        assert!(brm.session_id.is_some() && brm.session_id.as_deref() != Some(s2.as_str()));
+        delete_chat(id).unwrap();
         delete_chat(cp).unwrap();
         delete_chat(br).unwrap();
     }

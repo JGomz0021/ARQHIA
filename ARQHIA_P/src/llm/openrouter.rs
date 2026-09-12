@@ -13,6 +13,7 @@ fn endpoint(cfg: &ProviderConfig) -> String {
 pub async fn chat_stream(
     history: Vec<ChatMsg>,
     cfg: ProviderConfig,
+    session: Option<&str>,
     on_chunk: &mut impl FnMut(String),
 ) -> Result<crate::llm::Usage, String> {
     if cfg.api_key.trim().is_empty() {
@@ -35,6 +36,13 @@ pub async fn chat_stream(
     });
     if !cfg.reasoning_effort.trim().is_empty() {
         body["reasoning"] = json!({ "effort": cfg.reasoning_effort.trim() });
+    }
+    // v0.8: id estable de sesión (caché/trazabilidad del provider).
+    for (k, v) in crate::llm::session_body_fields(
+        crate::config::Provider::OpenRouter,
+        session.unwrap_or(""),
+    ) {
+        body[k] = json!(v);
     }
     let resp = client
         .post(endpoint(&cfg))

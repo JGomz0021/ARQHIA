@@ -109,6 +109,18 @@ pub struct App {
     pub(crate) q_answers: Answers,
     pub(crate) q_error: String,
     pub(crate) q_project: Option<i64>,
+    // v0.8 — nivel + IA opcional del cuestionario
+    pub(crate) q_level: crate::questionnaire::Level,
+    /// Nivel pendiente de confirmar (cambiar con respuestas lo descarta).
+    pub(crate) q_pending_level: Option<crate::questionnaire::Level>,
+    /// Preguntas IA generadas + respuestas del usuario (paralelos).
+    pub(crate) q_ai_questions: Vec<String>,
+    pub(crate) q_ai_answers: Vec<String>,
+    pub(crate) q_ai_loading: bool,
+    pub(crate) q_ai_error: String,
+    /// El proyecto se creó en este cuestionario y aún no terminó: si se
+    /// cancela, se deshace la creación (v0.8.1, sin proyectos fantasma).
+    pub(crate) q_owns_project: bool,
     // Origen para el Volver de Config (Home o Chat)
     pub(crate) config_from: View,
     // v0.7
@@ -131,6 +143,12 @@ pub struct App {
     pub(crate) git_verify_ok: bool,
     /// El turno se cortó por presupuesto/parada: no se commitea (v0.7.3).
     pub(crate) git_turn_interrupted: bool,
+    // v0.8.1 — animación del segmento de modo al cambiar (click o atajo):
+    // (instante, paso 0..=8); el paso mueve el padding 2→6→2 por ticks.
+    pub(crate) mode_anim: Option<(std::time::Instant, u8)>,
+    pub(crate) mode_anim_gen: u64,
+    // v0.8 — onboarding de API (Home): aviso ocultado con "después".
+    pub(crate) onboarding_dismissed: bool,
     // v0.7.4 — perfiles + utilidades de chat
     pub(crate) profile_name: String,
     /// Perfil con el menú "···" abierto en Config → API (solo uno).
@@ -288,6 +306,13 @@ impl Default for App {
             q_answers: Answers::default(),
             q_error: String::new(),
             q_project: None,
+            q_level: crate::questionnaire::Level::default(),
+            q_pending_level: None,
+            q_ai_questions: Vec::new(),
+            q_ai_answers: Vec::new(),
+            q_ai_loading: false,
+            q_ai_error: String::new(),
+            q_owns_project: false,
             config_from: View::Home,
             config_tab: ConfigTab::Api,
             config_pending_delete: None,
@@ -303,6 +328,9 @@ impl Default for App {
             git_clean_before: true,
             git_verify_ok: false,
             git_turn_interrupted: false,
+            onboarding_dismissed: false,
+            mode_anim: None,
+            mode_anim_gen: 0,
         };
         app.sync_git_staging();
         app.reparse_md();
@@ -368,6 +396,7 @@ impl App {
                     project_id: pid,
                     archived: false,
                     mode: db::Mode::Chat,
+                    session_id: None,
                 });
                 self.active_chat = Some(id);
                 self.messages.clear();

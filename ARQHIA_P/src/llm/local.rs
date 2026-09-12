@@ -20,8 +20,11 @@ fn models_url(cfg: &ProviderConfig) -> String {
 pub async fn chat_stream(
     history: Vec<ChatMsg>,
     cfg: ProviderConfig,
+    session: Option<&str>,
     on_chunk: &mut impl FnMut(String),
 ) -> Result<crate::llm::Usage, String> {
+    // v0.8: la sesión no tiene efecto en Local (se acepta y se ignora).
+    let _ = session;
     // LM Studio no exige key: si está vacía se omite el header.
     let input_estimate: u32 = history
         .iter()

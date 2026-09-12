@@ -24,6 +24,12 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::ExitApp => iced::exit(),
+        // v0.8: el aviso de onboarding se oculta en memoria ("después").
+        // Desaparece del todo al guardar la primera API (condición de vista).
+        Message::DismissOnboarding => {
+            state.onboarding_dismissed = true;
+            Task::none()
+        }
         // Inalcanzable si el dispatch exterior está al día (es total).
         _ => Task::none(),
     }

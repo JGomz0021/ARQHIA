@@ -20,6 +20,8 @@ pub struct HomeProps<'a> {
     pub chats: &'a [ChatMeta],
     pub active_chat: Option<i64>,
     pub config: &'a AppConfig,
+    /// v0.8: el usuario ocultó el aviso con "Configurar después".
+    pub onboarding_dismissed: bool,
 }
 
 pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
@@ -32,6 +34,7 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
         chats,
         active_chat,
         config,
+        onboarding_dismissed,
     } = p;
     use iced::widget::{column, container, row, scrollable, text, text_input};
 
@@ -77,6 +80,31 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
     // Centro: acciones principales centradas + proyectos.
     let count_title = format!("Proyectos · {}", projects.len());
     let mut center = column![].spacing(8);
+    // v0.8 — onboarding de primer arranque: si ningún provider tiene API
+    // (ni modelo local), invita a configurar una. No bloquea: se puede
+    // posponer, y al guardar la primera API desaparece y no vuelve.
+    let any_api = config.has_any_api();
+    if !any_api && !onboarding_dismissed {
+        center = center.push(
+            container(
+                column![
+                    components::section_label(app_theme.clone(), "Bienvenido a ARQHIA"),
+                    text("Para chatear y usar el agente necesitas una API: elige provider, pega tu key y modelo.")
+                        .size(design::fs(ts, 14)),
+                    row![
+                        components::primary_btn("Configurar API".to_string(), 14)
+                            .on_press(Message::OpenConfig),
+                        components::quiet_btn("Configurar después".to_string())
+                            .on_press(Message::DismissOnboarding),
+                    ]
+                    .spacing(8),
+                ]
+                .spacing(8)
+                .padding(16),
+            )
+            .style(|t: &Theme| design::card(t)),
+        );
+    }
     if creating {
         center = center.push(
             container(
@@ -133,8 +161,8 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
                 column![
                     text("Sin proyectos todavía").size(design::fs(ts, 19)),
                     text(
-                        "Crea el primero: el cuestionario guiado define el ESPEC\n\
-                         y el agente empieza a construir sobre tu workspace."
+                        "Crea el primero: el cuestionario guiado define PROJECT.md + SPECS.md\n\
+                          y el agente empieza a construir sobre tu workspace."
                     )
                     .size(design::fs(ts, 14))
                     .color(dim),

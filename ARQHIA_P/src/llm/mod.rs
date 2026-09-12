@@ -131,7 +131,7 @@ pub fn system_identity(model_desc: &str, has_tools: bool) -> String {
     format!(
         "Eres ARQHIA, el asistente de IA integrado en la app de escritorio ARQHIA (nativa, Rust + Iced).\n\
         \n\
-        Qué es ARQHIA: acompaña al usuario desde la idea hasta el código. Flujo: crear/abrir proyecto -> cuestionario guiado que genera ESPEC.md -> chat -> agente de código con workspace, planificador, workers generadores y auditor que deja hallazgos en CONTEXT/TEMP.md.\n\
+        Qué es ARQHIA: acompaña al usuario desde la idea hasta el código. Flujo: crear/abrir proyecto -> cuestionario guiado que genera PROJECT.md + SPECS.md -> chat -> agente de código con workspace, planificador, workers generadores y auditor que deja hallazgos en CONTEXT/TEMP.md.\n\
         \n\
         {tools_block}\n\
         \n\
@@ -190,17 +190,24 @@ pub fn http_stream_client() -> reqwest::Client {
 
 /// Envía chunks de texto por el callback. Retorna el uso de tokens si se pudo
 /// determinar (real del proveedor o estimado `chars/4`).
+/// `session` es el `session_id` estable del chat (v0.8): se inyecta según
+/// soporte del provider (OpenRouter `session_id`, OpenAI `prompt_cache_key`,
+/// Anthropic header `x-session-id`, Local sin efecto). None = sin sesión.
 pub async fn chat_stream(
     provider: Provider,
     history: Vec<ChatMsg>,
     cfg: ProviderConfig,
+    session: Option<String>,
     mut on_chunk: impl FnMut(String),
 ) -> Result<Usage, String> {
+    // El Option<String> viaja por valor al task async ('static); cada
+    // provider lo toma prestado al construir su body/headers.
+    let s = session.as_deref();
     match provider {
-        Provider::OpenAI => openai::chat_stream(history, cfg, &mut on_chunk).await,
-        Provider::Anthropic => anthropic::chat_stream(history, cfg, &mut on_chunk).await,
-        Provider::OpenRouter => openrouter::chat_stream(history, cfg, &mut on_chunk).await,
-        Provider::Local => local::chat_stream(history, cfg, &mut on_chunk).await,
+        Provider::OpenAI => openai::chat_stream(history, cfg, s, &mut on_chunk).await,
+        Provider::Anthropic => anthropic::chat_stream(history, cfg, s, &mut on_chunk).await,
+        Provider::OpenRouter => openrouter::chat_stream(history, cfg, s, &mut on_chunk).await,
+        Provider::Local => local::chat_stream(history, cfg, s, &mut on_chunk).await,
     }
 }
 
@@ -211,6 +218,32 @@ pub async fn test_connection(provider: Provider, cfg: ProviderConfig) -> Result<
         Provider::OpenRouter => openrouter::test_connection(cfg).await,
         Provider::Local => local::test_connection(cfg).await,
     }
+}
+
+/// Campos de sesión a inyectar en el body JSON (v0.8): id estable por chat
+/// para que el proveedor detecte la conversación (caché/coste/trazabilidad).
+/// Vacío o Local = sin campos. Fuente única: los 4 providers la usan.
+/// - OpenRouter: `session_id`.
+/// - OpenAI y OpenAI-compatibles (Groq…): `prompt_cache_key`.
+pub fn session_body_fields(provider: Provider, session_id: &str) -> Vec<(&'static str, String)> {
+    if session_id.trim().is_empty() {
+        return Vec::new();
+    }
+    let key = match provider {
+        Provider::OpenRouter => "session_id",
+        Provider::OpenAI => "prompt_cache_key",
+        Provider::Anthropic | Provider::Local => return Vec::new(),
+    };
+    vec![(key, session_id.trim().to_string())]
+}
+
+/// Header de sesión (v0.8): solo Anthropic usa `x-session-id` (trazabilidad;
+/// la caché real usa `cache_control`, backlog). El resto = None.
+pub fn session_header(provider: Provider, session_id: &str) -> Option<(&'static str, String)> {
+    if !matches!(provider, Provider::Anthropic) || session_id.trim().is_empty() {
+        return None;
+    }
+    Some(("x-session-id", session_id.trim().to_string()))
 }
 
 /// Modelos disponibles en un servidor local OpenAI-compatible (LM Studio).
@@ -395,6 +428,36 @@ mod tests {
         assert!(!cut.contains("decoding"), "{cut}");
         assert!(friendly_error("connection closed before message completed").contains("cortó"));
         assert!(friendly_error("unexpected eof").contains("cortó"));
+    }
+
+    #[test]
+    fn session_fields_per_provider() {
+        // OpenRouter -> session_id; OpenAI -> prompt_cache_key.
+        assert_eq!(
+            session_body_fields(Provider::OpenRouter, "abc"),
+            vec![("session_id", "abc".to_string())]
+        );
+        assert_eq!(
+            session_body_fields(Provider::OpenAI, "abc"),
+            vec![("prompt_cache_key", "abc".to_string())]
+        );
+        // Anthropic y Local no llevan nada en el body...
+        assert!(session_body_fields(Provider::Anthropic, "abc").is_empty());
+        assert!(session_body_fields(Provider::Local, "abc").is_empty());
+        // ...y vacía = nadie lleva nada.
+        for p in Provider::ALL {
+            assert!(session_body_fields(p, "").is_empty());
+            assert!(session_body_fields(p, "   ").is_empty());
+        }
+        // Solo Anthropic usa header de sesión.
+        assert_eq!(
+            session_header(Provider::Anthropic, "abc"),
+            Some(("x-session-id", "abc".to_string()))
+        );
+        assert!(session_header(Provider::OpenAI, "abc").is_none());
+        assert!(session_header(Provider::OpenRouter, "abc").is_none());
+        assert!(session_header(Provider::Local, "abc").is_none());
+        assert!(session_header(Provider::Anthropic, "").is_none());
     }
 
     #[test]

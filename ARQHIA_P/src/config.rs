@@ -644,6 +644,20 @@ impl AppConfig {
         true
     }
 
+    /// true si ALGÚN provider está listo para usarse (v0.8, onboarding).
+    /// Local cuenta con solo tener modelo (no exige key).
+    pub fn has_any_api(&self) -> bool {
+        Provider::ALL.iter().any(|p| {
+            let c = match p {
+                Provider::OpenAI => &self.openai,
+                Provider::Anthropic => &self.anthropic,
+                Provider::OpenRouter => &self.openrouter,
+                Provider::Local => &self.local,
+            };
+            c.is_configured_for(*p)
+        })
+    }
+
     pub fn load() -> Self {
         let path = config_path();
         let mut cfg: Self = match fs::read_to_string(&path) {
@@ -718,6 +732,27 @@ pub fn config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn has_any_api_detects_first_setup() {
+        // Vacía: ningún provider listo -> onboarding visible.
+        let empty = AppConfig::default();
+        assert!(!empty.has_any_api());
+        // Solo modelo local basta (sin key).
+        let mut local = AppConfig::default();
+        local.local.model = "qwen3-8b".to_string();
+        assert!(local.has_any_api());
+        // O una key con modelo en la nube.
+        let mut cloud = AppConfig::default();
+        cloud.openai.api_key = "sk-x".to_string();
+        cloud.openai.model = "gpt-4o-mini".to_string();
+        assert!(cloud.has_any_api());
+        // Key sin modelo no cuenta.
+        let mut half = AppConfig::default();
+        half.openai.api_key = "sk-x".to_string();
+        half.openai.model.clear();
+        assert!(!half.has_any_api());
+    }
 
     #[test]
     fn provider_display() {

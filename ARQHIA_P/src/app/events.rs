@@ -7,7 +7,7 @@ use iced::widget::markdown;
 use crate::agent;
 use crate::config::{AccentChoice, Density, Provider, TextSize, ThemeMode};
 use crate::db::Mode;
-use crate::questionnaire::{Interfaz, Publico};
+use crate::questionnaire::{ArqPreset, EstiloPreset, Facturacion, Level, Plataforma, StackOpt, TipoProyecto};
 
 #[derive(Debug, Clone, PartialEq)]
 #[derive(Default)]
@@ -69,6 +69,8 @@ pub enum Message {
     GoHome,
     ConfigBack,
     ExitApp,
+    /// Oculta el aviso de onboarding de API (v0.8, "Configurar después").
+    DismissOnboarding,
     // v0.4 — home
     ShowCreateModal,
     HideCreateModal,
@@ -136,6 +138,10 @@ pub enum Message {
     StopAgent,
     // v0.7.1 — modos Chat/Plan/Work + atajos
     ModePicked(Mode),
+    /// Tick de la animación del segmento de modo (v0.8.1, ~60 ms).
+    /// Paso 0..=8 (8 = final, apaga); la generación evita que ticks viejos
+    /// pisen una animación nueva.
+    ModeAnimTick(u64, u8),
     /// Planificador de modo Plan listo: solo PLAN.md, sin tools.
     PlanDone(u64, Result<Vec<agent::WTask>, String>),
     /// Botón "Ejecutar plan": pasa a Work y arranca el orquestador.
@@ -207,16 +213,32 @@ pub enum Message {
     /// Nivel de razonamiento elegido desde el composer (persistencia inmediata).
     QuickReasoningPicked(String),
     LinkClicked(markdown::Url),
-    // v0.5 — cuestionario
+    // v0.8 — cuestionario genérico + por nivel + IA opcional
     QNext,
     QBack,
     QCancel,
+    QLevelPicked(Level),
+    /// Confirma el cambio de nivel pendiente (descarta respuestas de nivel).
+    QLevelConfirm,
     QNombreChanged(String),
     QDescChanged(String),
-    QUbicChanged(String),
     QObjChanged(String),
-    QPublicoPicked(Publico),
-    QInterfazPicked(Interfaz),
+    QFuncChanged(String),
+    QEstiloPicked(EstiloPreset),
+    QEstiloFreeChanged(String),
+    QUiUxChanged(String),
+    QTipoPicked(TipoProyecto),
+    QPlataformaToggled(Plataforma),
+    QFacturacionPicked(Facturacion),
+    QStackToggled(StackOpt),
+    QStackFreeChanged(String),
+    QArqPicked(ArqPreset),
+    QArqChanged(String),
+    /// Respuesta a la pregunta IA nº N.
+    QAiAnswerChanged(usize, String),
+    /// Pide al provider activo 3–5 preguntas adicionales.
+    QAiGenerate,
+    QAiGenerated(Result<Vec<String>, String>),
     FinishQuestionnaire,
     // v0.7.4 — perfiles de modelo con nombre
     ProfilePicked(String),
@@ -248,4 +270,6 @@ pub enum Message {
     TruncateRequest(usize),
     ConfirmTruncate,
     CancelTruncate,
+    /// Regenera el `session_id` del chat activo (v0.8, menú ⋯ del chat).
+    ResetSession,
 }

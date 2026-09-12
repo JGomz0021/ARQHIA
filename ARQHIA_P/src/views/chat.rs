@@ -578,9 +578,23 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
                 .on_press(Message::ModePicked(m)),
         );
     }
-    let mode_row = container(seg)
-        .padding(2)
-        .style(|t: &Theme| design::segmented(t));
+    let mode_row = {
+        // Animación v0.8.1: mientras dura (~500 ms) el track se tiñe de
+        // acento y su padding pulsa 2→6→2 (movimiento visible). El handler
+        // avanza el paso por ticks y apaga al final.
+        let (pad, flashing) = match state.mode_anim {
+            Some((t, step))
+                if t.elapsed() < std::time::Duration::from_millis(800) =>
+            {
+                let wave = (step.min(8) as f32 / 8.0 * std::f32::consts::PI).sin();
+                ((2.0 + 4.0 * wave) as u16, true)
+            }
+            _ => (2, false),
+        };
+        container(seg)
+            .padding(pad)
+            .style(move |t: &Theme| if flashing { design::segmented_flash(t) } else { design::segmented(t) })
+    };
     // Nivel de razonamiento del modelo activo (opciones según models.dev).
     let r_model = state.config.active_config().model;
     let r_pid = crate::pricing::provider_id_for(

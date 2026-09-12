@@ -95,6 +95,13 @@ pub(crate) fn chat_row<'a>(state: &'a App, chat: &'a ChatMeta) -> Element<'a, Me
         menu = menu.push(
             components::icon_btn("Borrar".to_string()).on_press(Message::DeleteChat(cid)),
         );
+        // v0.8: regenera el session_id del chat (limpia la caché del provider).
+        // Solo tiene sentido sobre el chat activo (la sesión vive por chat).
+        if state.active_chat == Some(cid) {
+            menu = menu.push(
+                components::icon_btn("Reiniciar sesión".to_string()).on_press(Message::ResetSession),
+            );
+        }
         col = col.push(
             container(menu)
                 .padding(8)

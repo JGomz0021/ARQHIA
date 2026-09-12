@@ -497,8 +497,33 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                         db::Mode::Plan => "Modo Plan: describiré el plan en PLAN.md sin tocar tu código.".to_string(),
                         db::Mode::Work => "Modo Work: orquestador con permisos y límites.".to_string(),
                     };
+                    // Animación del segmento (v0.8.1): ~8 ticks de 60 ms que
+                    // mueven el padding 2→6→2, venga por click o por atajo
+                    // (mismo Message). La generación jubila ticks viejos.
+                    state.mode_anim_gen += 1;
+                    let anim_gen = state.mode_anim_gen;
+                    state.mode_anim = Some((std::time::Instant::now(), 0));
+                    return Task::stream(iced::stream::channel(10, move |mut output| async move {
+                        for step in 1..=8u8 {
+                            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                            let _ = output.send(Message::ModeAnimTick(anim_gen, step)).await;
+                        }
+                    }));
                 }
                 Err(e) => state.status = format!("No se pudo cambiar el modo: {e}"),
+            }
+            Task::none()
+        }
+        Message::ModeAnimTick(tick_gen, step) => {
+            // Ticks viejos (de un cambio anterior) se ignoran; el paso 8
+            // cierra la animación.
+            if tick_gen != state.mode_anim_gen {
+                return Task::none();
+            }
+            if step >= 8 {
+                state.mode_anim = None;
+            } else if let Some(slot) = state.mode_anim.as_mut() {
+                slot.1 = step;
             }
             Task::none()
         }
@@ -562,6 +587,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                         project_id: del.project_id,
                         archived: del.archived,
                         mode: del.mode,
+                        session_id: del.session_id.clone(),
                     });
                     state.active_chat = Some(new_id);
                     state.reload_active_chat();
@@ -715,8 +741,28 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ChatTitleFetched(generation, chat_id, title) => {
-            if generation != state.title_gen || title.trim().is_empty() {
+        Message::ResetSession => {
+            // v0.8: regenera el id de sesión del chat activo (limpia la
+            // caché que el provider asociaba a la conversación).
+            let Some(chat_id) = state.active_chat else {
+                state.status = "Sin chat activo.".to_string();
+                return Task::none();
+            };
+            let fresh = db::new_session_id();
+            match db::set_session_id(chat_id, Some(&fresh)) {
+                Ok(()) => {
+                    if let Some(c) = state.chats.iter_mut().find(|c| c.id == chat_id) {
+                        c.session_id = Some(fresh);
+                    }
+                    state.chat_menu = None;
+                    state.move_for = None;
+                    state.status = "Sesión reiniciada.".to_string();
+                }
+                Err(e) => state.status = format!("No se pudo reiniciar: {e}"),
+            }
+            Task::none()
+        }
+        Message::ChatTitleFetched(generation, chat_id, title) => {            if generation != state.title_gen || title.trim().is_empty() {
                 return Task::none();
             }
             // Solo si el chat sigue activo y el título sigue siendo el fallback.
@@ -752,6 +798,7 @@ fn spawn_chat(state: &mut App, project: Option<i64>) {
                 project_id: project,
                 archived: false,
                 mode: db::Mode::Chat,
+                session_id: None,
             });
             state.active_chat = Some(id);
             state.messages.clear();
@@ -805,12 +852,12 @@ fn start_turn(
             false,
         );
     }
-    if mode == db::Mode::Work {
+        if mode == db::Mode::Work {
         let Some(ws) = ws else {
             state.status =
                 "Work sin workspace: respondo directo (asigna uno para ejecutar).".to_string();
             // Cae al chat directo de abajo.
-            return send_plain_chat(state, provider, cfg);
+            return send_plain_chat(state, provider, cfg, chat_id);
         };
         if state.agent_running {
             return Task::none();
@@ -830,7 +877,7 @@ fn start_turn(
         );
     }
     // Chat (default): conversación directa sin tools, haya o no workspace.
-    send_plain_chat(state, provider, cfg)
+    send_plain_chat(state, provider, cfg, chat_id)
 }
 
 /// Arranca un turno Plan/Work (v0.7.3): placeholder visible, estado del
@@ -903,6 +950,7 @@ fn send_plain_chat(
     state: &mut App,
     provider: Provider,
     cfg: crate::config::ProviderConfig,
+    chat_id: i64,
 ) -> Task<Message> {
     // System prompt de ARQHIA + modo declarado (no se guarda en la DB:
     // se antepone solo al historial enviado al modelo).
@@ -930,6 +978,14 @@ fn send_plain_chat(
         });
     }
     history_for_llm.extend(window);
+    // v0.8: sesión estable del chat (una vez por chat; persiste en DB).
+    let session: Option<String> = db::ensure_session_id(chat_id).ok();
+    if let (Some(s), Some(meta)) = (
+        session.clone(),
+        state.chats.iter_mut().find(|c| c.id == chat_id),
+    ) {
+        meta.session_id = Some(s);
+    }
     state.messages.push(ChatMsg {
         role: Role::Assistant,
         content: String::new(),
@@ -948,7 +1004,7 @@ fn send_plain_chat(
     Task::stream(iced::stream::channel(100, move |mut output| async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let fut =
-            crate::llm::chat_stream(provider, history_for_llm, cfg, move |chunk| {
+            crate::llm::chat_stream(provider, history_for_llm, cfg, session, move |chunk| {
                 let _ = tx.send(chunk);
             });
         let handle = tokio::spawn(fut);

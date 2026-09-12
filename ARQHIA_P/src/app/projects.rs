@@ -87,6 +87,16 @@ pub(crate) fn enter_questionnaire(state: &mut App, pid: i64, name: &str, path_st
     state.q_step = 0;
     state.q_error.clear();
     state.q_project = Some(pid);
+    // El proyecto nació en este cuestionario: si se cancela sin terminar,
+    // se deshace la creación (sin proyectos fantasma).
+    state.q_owns_project = true;
+    // Wizard v0.8: arranca en Principiante sin preguntas IA.
+    state.q_level = crate::questionnaire::Level::Principiante;
+    state.q_pending_level = None;
+    state.q_ai_questions.clear();
+    state.q_ai_answers.clear();
+    state.q_ai_loading = false;
+    state.q_ai_error.clear();
     state.push_log(format!("📁 proyecto {name} -> {path_str}"));
     state.view = View::Questionnaire;
 }

@@ -374,6 +374,17 @@ pub fn segmented(theme: &Theme) -> container::Style {
     }
 }
 
+/// Segmented track en flash (v0.8.1): borde de acento + fondo teñido que
+/// resalta el selector ~700 ms al cambiar de modo (click o atajo).
+pub fn segmented_flash(theme: &Theme) -> container::Style {
+    container::Style {
+        background: Some(Background::Color(tone_wash(theme, Tone::Accent))),
+        border: Border { color: accent(theme), width: 2.0, radius: radius::PILL.into() },
+        text_color: Some(ink_2(theme)),
+        ..container::Style::default()
+    }
+}
+
 /// Project thumbnail: monogram tile used in the Home launcher.
 pub fn avatar(theme: &Theme) -> container::Style {
     container::Style {

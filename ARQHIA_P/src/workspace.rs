@@ -93,6 +93,67 @@ pub fn default_project_dir(name: &str) -> PathBuf {
         .join(slugify(name))
 }
 
+/// Estructura v0.8 del proyecto generado: `Project/`, `ToDo.md`, `CONTEXT/`.
+/// Crea lo que falte (idempotente, nunca borra). Devuelve las rutas creadas.
+pub fn ensure_project_layout(workspace: &Path) -> Result<Vec<String>, String> {
+    let project = workspace.join("Project");
+    let context = workspace.join("CONTEXT");
+    std::fs::create_dir_all(&project).map_err(|e| format!("No se pudo crear Project/: {e}"))?;
+    std::fs::create_dir_all(&context).map_err(|e| format!("No se pudo crear CONTEXT: {e}"))?;
+    // `ROADMAP.md`/`VERSIONS.md`/`VERSIONS/v0.1.md` los genera el primer Plan;
+    // aquí solo se asegura la carpeta para que el árbol nazca completo.
+    std::fs::create_dir_all(context.join("VERSIONS"))
+        .map_err(|e| format!("No se pudo crear CONTEXT/VERSIONS: {e}"))?;
+    let todo = workspace.join("ToDo.md");
+    if !todo.exists() {
+        std::fs::write(&todo, "# ToDo\n\n_Tablero de ejecución (lo mantiene el agente)._\n")
+            .map_err(|e| format!("No se pudo crear ToDo.md: {e}"))?;
+    }
+    Ok(vec![
+        project.to_string_lossy().to_string(),
+        todo.to_string_lossy().to_string(),
+        context.to_string_lossy().to_string(),
+    ])
+}
+
+/// Escribe los 3 documentos del cuestionario en `{workspace}/CONTEXT/`.
+/// Devuelve las rutas escritas.
+pub fn save_project_docs(workspace: &Path, project: &str, specs: &str, context: &str) -> Result<Vec<String>, String> {
+    let dir = workspace.join("CONTEXT");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("No se pudo crear CONTEXT: {e}"))?;
+    let mut out = Vec::new();
+    for (name, content) in [("PROJECT.md", project), ("SPECS.md", specs), ("CONTEXT.md", context)] {
+        let file = dir.join(name);
+        std::fs::write(&file, content).map_err(|e| format!("No se pudo escribir {name}: {e}"))?;
+        out.push(file.to_string_lossy().to_string());
+    }
+    Ok(out)
+}
+
+/// Migra `CONTEXT/ESPEC.md` (v0.5) a `SPECS.md` (v0.8): si hay ESPEC y no hay
+/// SPECS, lo copia; el ESPEC queda como legacy con nota. Idempotente.
+pub fn migrate_espec(workspace: &Path) -> Option<String> {
+    let dir = workspace.join("CONTEXT");
+    let espec = dir.join("ESPEC.md");
+    let specs = dir.join("SPECS.md");
+    let Ok(old) = std::fs::read_to_string(&espec) else {
+        return None;
+    };
+    if old.contains("(legado)") {
+        return None; // ya migrado
+    }
+    if !specs.exists() && std::fs::write(&specs, &old).is_err() {
+        return None;
+    }
+    let legacy = "# ESPEC.md (legado)\n\n\
+        Este archivo es el formato anterior (v0.5). \
+        La especificación vigente vive en `SPECS.md`.\n";
+    if std::fs::write(&espec, legacy).is_err() {
+        return None;
+    }
+    Some("ESPEC.md migrado a SPECS.md (legacy conservado)".to_string())
+}
+
 pub fn uploads_dir(workspace: &Path) -> PathBuf {
     workspace.join("uploads")
 }
@@ -233,6 +294,35 @@ pub fn delete_upload(workspace: &Path, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_layout_and_espec_migration() {
+        let base = std::env::temp_dir().join("arqhia-layout-test");
+        let _ = std::fs::remove_dir_all(&base);
+        let ws = base.join("ws");
+        std::fs::create_dir_all(&ws).unwrap();
+        // Layout: crea Project/, ToDo.md y CONTEXT/ (idempotente).
+        let made = ensure_project_layout(&ws).unwrap();
+        assert_eq!(made.len(), 3);
+        assert!(ws.join("Project").is_dir());
+        assert!(ws.join("ToDo.md").is_file());
+        assert!(ws.join("CONTEXT").is_dir());
+        assert!(ws.join("CONTEXT").join("VERSIONS").is_dir());
+        assert!(ensure_project_layout(&ws).is_ok());
+        // Docs: escribe los 3.
+        let files = save_project_docs(&ws, "# P", "# S", "# C").unwrap();
+        assert_eq!(files.len(), 3);
+        assert!(ws.join("CONTEXT").join("SPECS.md").is_file());
+        // Migración: con ESPEC legacy y sin SPECS, migra; ya migrado = None.
+        let ws2 = base.join("ws2");
+        std::fs::create_dir_all(ws2.join("CONTEXT")).unwrap();
+        std::fs::write(ws2.join("CONTEXT").join("ESPEC.md"), "# Viejo").unwrap();
+        assert!(migrate_espec(&ws2).is_some());
+        assert!(ws2.join("CONTEXT").join("SPECS.md").is_file());
+        assert!(migrate_espec(&ws2).is_none());
+        assert!(migrate_espec(&ws).is_none(), "sin ESPEC no hay nada que migrar");
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn validate_rejects_empty_and_missing() {

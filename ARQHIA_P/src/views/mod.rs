@@ -75,6 +75,7 @@ mod tests {
             chats: &app.chats,
             active_chat: app.active_chat,
             config: &app.config,
+            onboarding_dismissed: false,
         });
         app.view = View::Questionnaire;
         let _ = questionnaire::view_questionnaire(&app);
@@ -145,6 +146,7 @@ mod tests {
             project_id: Some(-7),
             archived: false,
             mode: crate::db::Mode::Chat,
+            session_id: None,
         });
         app.active_chat = Some(-7);
         app.refresh_git_status();
@@ -193,7 +195,7 @@ mod tests {
         app.orch_tasks = vec![OrchTask { desc: "Crear a.txt".to_string(), files: vec!["a.txt".to_string()], done: false, active: false }];
         let _ = chat::view_chat(&app);
         // Badge de modo Plan en un chat en memoria (sin tocar la DB).
-        app.chats.push(crate::db::ChatMeta { id: -1, title: "T".to_string(), project_id: None, archived: false, mode: Mode::Plan });
+        app.chats.push(crate::db::ChatMeta { id: -1, title: "T".to_string(), project_id: None, archived: false, mode: Mode::Plan, session_id: None });
         app.active_chat = Some(-1);
         let _ = chat::view_chat(&app);
         assert_eq!(app.active_mode(), Mode::Plan);

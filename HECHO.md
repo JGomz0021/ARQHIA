@@ -227,4 +227,45 @@ Flujo pre-STACK acordado: `petición → orquestador → analista (contexto/spec
 # Siguiente paso (actualizado)
 
 - **v0.7.2, v0.7.3 y v0.7.4 🟢 Done + refactor verde.**
-- Siguiente: **v0.8** (cuestionario + estructura + onboarding + sesiones) → v0.9 (STACK) → WEB → v1.0 → v1.1 → v1.2.
+- **v0.8 + v0.8.1 implementadas, pendientes de prueba en GUI** (ver abajo). Sesiones verificadas por el usuario en OpenRouter ✅ (otros providers pendientes, sin cambios de código).
+- Después: v0.9 (STACK + skills) → WEB → v1.0 → v1.1 → v1.2.
+
+# v0.8.1 — Cuestionario profundo (implementada 🟡)
+
+- `levels.rs`: `TipoProyecto` ×9 (Inter/Avanz), `Plataforma` ×7 múltiple, `StackOpt` ×12 múltiple, `ArqPreset` ×7 + detalle, `EstiloPreset` ×7 + referencia (Principiante), `Facturacion` ×6 (+Publicidad, +Freemium). Preguntas: Principiante 3 / Intermedio 5 / Avanzado 6; wizard 9/11/12 + IA.
+- `Answers` multi (`plataformas`/`stacks: Vec` + `toggle_*`); vacío = "(sin especificar)", nunca bloquea. Mensajes nuevos (`QTipoPicked`, `QPlataformaToggled`, `QStackToggled`, `QEstiloPicked/Free`, `QArqPicked`); checkboxes en la vista.
+- `templates.rs`: `## Tipo de proyecto`, plataforma/stack como listas, estilo = preset + referencia, arquitectura = preset + detalle; alcance con tipo + plataformas.
+- Spec en `CONTEXT/VERSIONS/v0.8.1.md`; índices (`VERSIONS.md`, `ROADMAP.md`, `PROJECT.md` §7.2/§10).
+- `cargo test` 104/104 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings.
+- Pendiente en GUI: Principiante "Blog" (estilo + 2 plataformas → SPECS sin arq) y Avanzado "API-bank" (tipo API/Backend, Rust+Python, Por capas, Freemium).
+
+# v0.8 — fixes plegados (eran "v0.8.1", ahora parte de v0.8 🟡)
+
+- **Post-cuestionario entra en modo Plan:** al terminar, abre chat "Plan inicial" en modo Plan con el prompt precargado (ROADMAP.md + VERSIONS.md + VERSIONS/v0.1.md + dependencias + ToDo; sin tocar código). El usuario revisa y pulsa Enviar; el turno NO se dispara solo.
+- **Sin proyectos fantasma:** cancelar el cuestionario deshace la creación (fila DB + estado + carpeta solo si quedó vacía; con contenido del usuario la carpeta se conserva). Vuelve a Home si hubo rollback, al Chat si el proyecto era previo.
+- **Flash del selector de modo:** al cambiar Chat/Plan/Work (click o Ctrl+1/2/3, mismo `Message::ModePicked`) el segmento se tiñe de acento y su padding pulsa 2→6→2 en ~8 ticks de 60 ms (`design::segmented_flash` + `ModeAnimTick` con generación anti-carreras).
+- Tests: rollback (vacío se retira / con datos se conserva), Finish escribe docs rellenos + abre Plan sin disparar turno, animación por ticks y generación. `cargo test` 103/103 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings, `cargo build` OK.
+- Pendiente en GUI: terminar cuestionario → Plan precargado → Enviar genera ROADMAP/VERSIONS/ToDo; cancelar → sin proyecto; cambiar de modo → animación visible.
+
+# v1.0.1 — MCP mínimo (spec 🟡)
+
+- MCP tiene versión propia: `CONTEXT/VERSIONS/v1.0.1.md` (stdio + HTTP, `src/mcp.rs` sin crates nuevos, `[mcp]` en config, enrutado `mcp__{srv}__{tool}`, categoría Net/auto, npx pide Install, timeouts con kill).
+- v1.1 suma §D MCP avanzado (pestaña, resources/prompts, item `MCP` en STACK, auth HTTP) + paso 4, archivos, Done y test 5; depende de v1.0.1.
+- Índices: `VERSIONS.md`, `ROADMAP.md` (fila v1.0.1, v1.1 depende de v1.0.1), `PROJECT.md` (fila v1.0.1, v1.1 con MCP, `mcp.rs` en el árbol).
+
+# Skills — spec añadida a v0.9 (Track C) y v1.0 (§G)
+
+- `CONTEXT/VERSIONS/v0.9.md` Track C: skills locales (`SKILL.md` + recursos en `~/.local/share/arqhia/skills/`, embebidas `commit-msg` + `revisar-codigo`, `/skill nombre` que inyecta y sigue, pestaña Config → Skills, scripts bajo permiso Bash existente).
+- `CONTEXT/VERSIONS/v1.0.md` §G: skills en la nube (etiqueta `SKILL`, instalar/publicar con consentimiento, `Uso interno` no sale, badge + botones, offline intacto) + paso 8, archivos, Done y test 5.
+- Índices: `ROADMAP.md` (filas v0.9/v1.0), `PROJECT.md` (§9.3 + tabla §10).
+
+# v0.8 — Cuestionario + estructura + onboarding + sesiones (implementada 🟡)
+
+- `questionnaire/` reescrito: `levels.rs` (Nivel + genéricas 4 + propias por nivel: Principiante 3 / Intermedio 4 / Avanzado 5; wizard dinámico 9/10/11 pasos + paso IA final), `ai.rs` (prompt + parseo 3–5 preguntas, tope 5), `templates.rs` (PROJECT.md + SPECS.md con secciones por nivel + CONTEXT.md vía minijinja).
+- Wizard con confirmación inline al cambiar de nivel con respuestas (2ª pulsación confirma y limpia el bloque de nivel); validación solo en genéricas + picks siempre válidos; IA saltable y deshabilitada sin API (no bloquea).
+- `workspace.rs`: `ensure_project_layout` (Project/ + ToDo.md + CONTEXT/ + CONTEXT/VERSIONS/), `save_project_docs` (los 3 docs), `migrate_espec` (ESPEC→SPECS + legacy con nota, idempotente). El guard del agente ya cubría Project/CONTEXT/ToDo (todo dentro del workspace): sin cambios.
+- Onboarding: Home muestra "Bienvenido → Configurar API / Configurar después" solo si ningún provider está listo (`AppConfig::has_any_api`, Local cuenta con solo modelo); "después" lo oculta en memoria, guardar la 1ª API lo quita del todo.
+- Sesiones: `chats.session_id` + migración + `ensure_session_id` (estable, 1ª vez por chat) + `set_session_id`/`new_session_id`; copia conserva, rama estrena; `llm::session_body_fields` (OpenRouter `session_id`, OpenAI `prompt_cache_key`) + `session_header` (Anthropic `x-session-id`, Local nada); inyectado en los 4 `chat_stream` (firma con `session: Option<String>`); "Reiniciar sesión" en el menú ⋯ del chat activo.
+- Agente: `read_espec_md` prefiere SPECS.md (fallback ESPEC legacy); `system_identity` y textos Home/wizard hablan de PROJECT.md + SPECS.md.
+- `cargo test` 100/100 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings, `cargo build` OK.
+- Pendiente: prueba en GUI (los 6 pasos del Test de Funcionalidad de `CONTEXT/VERSIONS/v0.8.md`); al pasar, marcar v0.8 🟢 Done en `CONTEXT/VERSIONS.md`.

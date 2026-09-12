@@ -14,6 +14,7 @@ fn endpoint(cfg: &ProviderConfig) -> String {
 pub async fn chat_stream(
     history: Vec<ChatMsg>,
     cfg: ProviderConfig,
+    session: Option<&str>,
     on_chunk: &mut impl FnMut(String),
 ) -> Result<crate::llm::Usage, String> {
     if cfg.api_key.trim().is_empty() {
@@ -71,15 +72,24 @@ pub async fn chat_stream(
             body["max_tokens"] = json!(budget + 1024);
         }
     }
-    let resp = client
-        .post(endpoint(&cfg))
-        .header("x-api-key", cfg.api_key.trim())
-        .header("anthropic-version", "2023-06-01")
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| format!("Error de red Anthropic: {e}"))?;
+    let resp = {
+        let mut req = client
+            .post(endpoint(&cfg))
+            .header("x-api-key", cfg.api_key.trim())
+            .header("anthropic-version", "2023-06-01")
+            .header("Content-Type", "application/json");
+        // v0.8: id estable de sesión (trazabilidad).
+        if let Some((k, v)) = crate::llm::session_header(
+            crate::config::Provider::Anthropic,
+            session.unwrap_or(""),
+        ) {
+            req = req.header(k, v);
+        }
+        req.json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Error de red Anthropic: {e}"))?
+    };
 
     if !resp.status().is_success() {
         let status = resp.status();

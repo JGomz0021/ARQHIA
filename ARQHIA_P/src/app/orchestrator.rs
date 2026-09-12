@@ -48,7 +48,7 @@ pub(crate) struct OrchTask {
 }
 
 /// Semilla del worker (v0.6 + v0.7.1): historial base con ventana +
-/// ESPEC/AGENTS UNA vez como mensaje de contexto (no en cada step).
+/// SPECS/AGENTS UNA vez como mensaje de contexto (no en cada step).
 pub(crate) fn worker_seed(
     provider: Provider,
     base_history: &[ChatMsg],

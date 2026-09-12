@@ -132,7 +132,7 @@ fn system_prompt(workspace: &std::path::Path) -> String {
     )
 }
 
-/// System LEAN del worker (v0.7.1): tarea + reglas, SIN ESPEC/AGENTS.
+/// System LEAN del worker (v0.7.1): tarea + reglas, SIN SPECS/AGENTS.
 /// Esos viajan UNA vez como mensaje de contexto (ver `worker_context_block`),
 /// no repetidos en cada step.
 pub fn worker_system(workspace: &Path, task: &WTask) -> String {
@@ -149,7 +149,7 @@ pub fn worker_system(workspace: &Path, task: &WTask) -> String {
     )
 }
 
-/// Bloque de contexto del worker (v0.7.1 + v0.7.3): AGENTS.md + ESPEC.md +
+/// Bloque de contexto del worker (v0.7.1 + v0.7.3): AGENTS.md + SPECS.md +
 /// brief del analista (ANALYSIS.md) truncados, para enviar UNA vez como
 /// mensaje de contexto al abrir el worker.
 pub fn worker_context_block(workspace: &Path, agents_md: Option<&str>) -> Option<String> {
@@ -159,7 +159,7 @@ pub fn worker_context_block(workspace: &Path, agents_md: Option<&str>) -> Option
         parts.push(format!("Reglas del proyecto (AGENTS.md):\n{cut}"));
     }
     if let Some(espec) = read_espec_md(workspace) {
-        parts.push(format!("Especificación del proyecto (ESPEC.md):\n{espec}"));
+        parts.push(format!("Especificación del proyecto (SPECS.md):\n{espec}"));
     }
     if let Some(brief) = read_analysis_md(workspace) {
         parts.push(format!("Brief del analista (CONTEXT/ANALYSIS.md):\n{brief}"));
@@ -171,11 +171,15 @@ pub fn worker_context_block(workspace: &Path, agents_md: Option<&str>) -> Option
     }
 }
 
-/// Lee ESPEC.md del workspace (truncado a 2000 chars) o None.
+/// Lee la especificación del workspace (v0.8: `SPECS.md`, con fallback al
+/// `ESPEC.md` legacy de v0.5). Truncado a 2000 chars o None.
 pub fn read_espec_md(workspace: &Path) -> Option<String> {
-    std::fs::read_to_string(workspace.join("CONTEXT").join("ESPEC.md"))
-        .ok()
-        .map(|s| s.chars().take(2000).collect())
+    for name in ["SPECS.md", "ESPEC.md"] {
+        if let Ok(s) = std::fs::read_to_string(workspace.join("CONTEXT").join(name)) {
+            return Some(s.chars().take(2000).collect());
+        }
+    }
+    None
 }
 
 /// Lee `CONTEXT/ANALYSIS.md` (brief del analista, v0.7.3) truncado o None.
@@ -823,7 +827,7 @@ pub async fn plan_tasks(
     }
     if let Some(e) = espec {
         let cut: String = e.chars().take(2000).collect();
-        user.push_str(&format!("\n\nEspecificación del proyecto (ESPEC.md):\n{cut}"));
+        user.push_str(&format!("\n\nEspecificación del proyecto (SPECS.md):\n{cut}"));
     }
     // El body OpenAI-compat sale del constructor auditado; Anthropic va por
     // simple_chat (body propio también sin tools).

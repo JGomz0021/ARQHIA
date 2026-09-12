@@ -154,7 +154,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.push_log(format!("📁 abierto {shown} -> {path_str}"));
             state.status.clear();
             if is_new {
-                // Proyecto nuevo -> cuestionario inmediato
+                // Proyecto nuevo -> cuestionario inmediato (wizard v0.8).
                 let answers = Answers {
                     nombre: shown.clone(),
                     ..Default::default()
@@ -163,6 +163,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 state.q_step = 0;
                 state.q_error.clear();
                 state.q_project = Some(pid);
+                state.q_owns_project = true;
+                state.q_level = crate::questionnaire::Level::Principiante;
+                state.q_pending_level = None;
+                state.q_ai_questions.clear();
+                state.q_ai_answers.clear();
+                state.q_ai_loading = false;
+                state.q_ai_error.clear();
                 state.view = View::Questionnaire;
             } else {
                 state.view = View::Chat;

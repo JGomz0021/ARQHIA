@@ -90,6 +90,7 @@ ARQHIA_P/
     ├── git.rs             # repo/rama/commit/push por workspace (v0.7.2)
     ├── updates.rs         # updater embebido (v1.0): latest.json + semver + banner
     ├── stack/{mod.rs, seed.rs, cloud.rs, mock_cloud.rs}   # STACK local/nube (v0.9/v1.0)
+    ├── mcp.rs             # cliente MCPstdio/HTTP + tools `mcp__*` (v1.0.1, resources/prompts en v1.1)
     ├── license.rs         # licencias ed25519 + planes (v1.1)
     ├── custom.rs          # agentes y flujos custom (v1.1)
     ├── questionnaire/{mod.rs, levels.rs, ai.rs, templates.rs}  # PROJECT.md + SPECS.md
@@ -194,19 +195,29 @@ TEMP → loop fix hasta verde → commit (rama ARQHIA) → push (opcional)`.
 Wizard de preguntas fijas que generaba un único `.md` de especificaciones
 (`CONTEXT/ESPEC.md`). Queda como base; el diseño vigente es el de v0.8.
 
-### 7.2 v0.8 — Genérico + por nivel + IA
+### 7.2 v0.8 — Genérico + por nivel + IA (profundizado en v0.8.1)
 
 **Paso 0 — Nivel:** `Principiante | Intermedio | Avanzado`.
 
 **Genéricas (siempre):** nombre, descripción, objetivo, características/funcionalidades.
 
-**Por nivel:**
+**Por nivel (v0.8.1, reemplaza las listas de v0.8):**
 
-*   **Principiante (diseño y decisiones, no código):** estilo visual,
-    plataforma `{multiplataforma, web, nativa, juego}`, facturación
-    `{suscripciones, pago único, api, uso personal}`.
-*   **Intermedio:** UI/UX, plataforma, stack tecnológico (opcional), facturación.
-*   **Avanzado:** UI/UX, plataforma, stack tecnológico, arquitectura, facturación.
+*   **Principiante (diseño y decisiones, no código):** estilo visual con
+    lista `{minimalista, gamer, corporativo, infantil, retro, oscuro,
+    otro}` + referencia libre, plataforma **múltiple** `{web, escritorio,
+    móvil iOS, móvil Android, servidor/nube, embebido/IoT,
+    multiplataforma}`, facturación `{suscripciones, pago único, api, uso
+    personal, publicidad, freemium}`.
+*   **Intermedio:** UI/UX, tipo de proyecto `{app web, API/backend,
+    framework/librería, escritorio, móvil, CLI, juego, bot/agente, otro}`,
+    plataforma múltiple, stack **múltiple** `{Rust, Python, JS/TS, Go,
+    Java/Kotlin, C/C++, C#, PHP, Ruby, Swift, otro, a decidir}` + detalle,
+    facturación.
+*   **Avanzado:** como Intermedio + arquitectura con lista `{monolito, por
+    capas, hexagonal, microservicios, eventos, serverless, a decidir}` +
+    detalle.
+*   Vacío en picks/checkboxes = "(sin especificar)": nunca bloquean.
 
 **IA (opcional, saltable):** el provider activo propone 3–5 preguntas
 adicionales adaptadas a lo respondido. Sin provider, el paso se deshabilita y
@@ -307,6 +318,13 @@ legacy).
 
 > El agente consulta el STACK en cada tarea (desde v0.9): `Revisa CONTEXT → Revisa código → Consulta STACK → Diseña tareas → Ejecuta`.
 
+### 9.3 Skills (v0.9 locales, v1.0 nube)
+
+*   Carpeta por skill con `SKILL.md` (frontmatter + instrucciones) + recursos/scripts, en `~/.local/share/arqhia/skills/`; ARQHIA trae embebidas (`commit-msg`, `revisar-codigo`).
+*   Se invocan con `/skill nombre` en el chat (inyecta como contexto, el turno sigue normal) y se administran en Config → Skills.
+*   En la nube son items del STACK con etiqueta `SKILL` (instalar/publicar con el mismo consentimiento que el código; `Uso interno` no sale de local).
+*   Sin permisos propios: sus scripts pasan por el permiso Bash existente.
+
 ## 10. Resumen de Versiones (v0.1 → v1.2)
 
 | Versión | Foco | Entregable clave |
@@ -323,10 +341,12 @@ legacy).
 | **v0.7.3** | Bucle de estabilidad | Analista dedicado (CONTEXT/specs/outlines) + loop `auditor → fix` hasta verde + commit al cerrar verde + push opcional |
 | **v0.7.4** | Chat UX + modelos con nombre | Perfiles de modelo con nombre visible + título IA + undo + copiar/bifurcar chat + fecha/hora + reintento con icono + citar fuentes |
 | **v0.8** | Cuestionario genérico + nivel + IA, estructura, onboarding y sesiones | Genéricas + por nivel + IA opcional → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md`; onboarding de API; `session_id` estable por chat |
-| **v0.9** | STACK local + legal + instalador | Tags + FTS5 + author/license/consent + identidad local + .deb + CI mínimo |
+| **v0.8.1** | Cuestionario profundo (tipo, multi-opción, presets) | `TipoProyecto` (Inter/Avanz) + plataforma/stack múltiples + presets estilo/arq + facturación ×6 → `SPECS.md` con listas |
+| **v0.9** | STACK local + legal + instalador + skills locales | Tags + FTS5 + author/license/consent + identidad local + .deb + CI mínimo + skills (`SKILL.md`, `/skill`, pestaña Config) |
 | **WEB** | Sitio del producto (dependencia, no versionado) | Astro + Cloudflare: descarga, precios, soporte, docs, legal, `updates/latest.json` |
-| **v1.0** | STACK nube + auth + updater + release | Push/pull/sync + auth + updater (notificar+descargar) + Microsoft Store (Windows) + backup/export + release estable Linux+Windows |
-| **v1.1** | Pro (Linux+Windows) | Multi-agent paralelo + sandboxes + merge + agentes/flujos custom + planes Trial/$5/$12/$20 |
+| **v1.0** | STACK nube + auth + updater + release + skills nube | Push/pull/sync + auth + updater (notificar+descargar) + Microsoft Store (Windows) + backup/export + skills etiqueta `SKILL` + release estable Linux+Windows |
+| **v1.0.1** | MCP mínimo (stdio + HTTP) | `mcp.rs` + `[mcp]` en config + `mcp__srv__tool` con aprobación Net/auto |
+| **v1.1** | Pro (Linux+Windows) | Multi-agent paralelo + sandboxes + merge + agentes/flujos custom + MCP avanzado (pestaña, resources/prompts, item `MCP`) + planes Trial/$5/$12/$20 |
 | **v1.2** | macOS (condicionado) | Firma Developer ID + notarización + `.dmg` Apple Silicon; se abre con 50–100 PRO de pago |
 
 Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en `WEB.md`.
@@ -359,4 +379,4 @@ Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en
 
 ## 13. Próximo Paso
 
-**v0.7.2 — Git nativo + puerta de calidad** y **v0.7.3 — Bucle de estabilidad** implementadas (ver `CONTEXT/VERSIONS/v0.7.2.md` y `v0.7.3.md`): `GitConfig` + `git.rs`, política git por comando, pestaña Git, rama `ARQHIA`, auto-commit condicionado a `cargo check`+`test`+`clippy`; analista dedicado (`CONTEXT/ANALYSIS.md`), loop `auditor → fix` sin tope (salvo `Limits.max_fix_cycles`) y commit solo al cerrar verde. Siguiente: **v0.7.4 — Chat UX + modelos con nombre** (perfiles de modelo con nombre visible, título por IA, undo, copiar/bifurcar chat, fecha/hora, reintento con icono, citar fuentes); después **v0.8 — Cuestionario genérico + por nivel + IA, estructura, onboarding y sesiones** (genéricas + por nivel + IA opcional → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md`; onboarding de API; `session_id` estable por chat). Luego v0.9 (STACK local + `.deb` + CI), WEB (dependencia) y v1.0. Ver `HECHO.md` en raíz para estado actual.
+**v0.7.2 — Git nativo + puerta de calidad**, **v0.7.3 — Bucle de estabilidad** y **v0.7.4 — Chat UX + modelos con nombre** implementadas (ver `CONTEXT/VERSIONS/v0.7.2.md`, `v0.7.3.md` y `v0.7.4.md`). **v0.8 — Cuestionario genérico + por nivel + IA, estructura, onboarding y sesiones** y **v0.8.1 — Cuestionario profundo** implementadas y pendientes de prueba en GUI (ver `CONTEXT/VERSIONS/v0.8.md` y `v0.8.1.md`): wizard dinámico por nivel (9/11/12 pasos + IA opcional) → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md` (+ `CONTEXT/VERSIONS/`); onboarding de API en Home; `session_id` estable por chat; tipo de proyecto, plataforma/stack múltiples y presets de estilo/arquitectura. Siguiente: v0.9 (STACK local + skills + `.deb` + CI), WEB (dependencia) y v1.0. Ver `HECHO.md` en raíz para estado actual.

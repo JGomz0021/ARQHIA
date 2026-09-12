@@ -16,9 +16,11 @@ Dependencias no versionadas (web) en `CONTEXT/WEB.md`.
 | v0.7.2 | Git nativo + puerta de calidad | 🟢 Done | [v0.7.2.md](VERSIONS/v0.7.2.md) |
 | v0.7.3 | Bucle de estabilidad (analista → workers → auditor → fix hasta verde → commit) | 🟢 Done | [v0.7.3.md](VERSIONS/v0.7.3.md) |
 | v0.7.4 | Chat UX + modelos con nombre (perfiles, título IA, undo, copiar/bifurcar, timestamps, fuentes) | 🟢 Done | [v0.7.4.md](VERSIONS/v0.7.4.md) |
-| v0.8 | Cuestionario genérico + por nivel + IA, estructura de proyecto, onboarding y sesiones | ☐ Pendiente | [v0.8.md](VERSIONS/v0.8.md) |
+| v0.8 | Cuestionario genérico + por nivel + IA, estructura de proyecto, onboarding y sesiones | 🟡 En curso (implementada, pendiente de prueba en GUI) | [v0.8.md](VERSIONS/v0.8.md) |
+| v0.8.1 | Cuestionario profundo (tipo, multi-opción, presets estilo/arquitectura) | 🟡 En curso (implementada, pendiente de prueba en GUI) | [v0.8.1.md](VERSIONS/v0.8.1.md) |
 | v0.9 | STACK local + legalidad + identidad + instalador Linux | ☐ Pendiente | [v0.9.md](VERSIONS/v0.9.md) |
 | v1.0 | STACK nube + auth + updater + release estable (Linux+Windows) | ☐ Pendiente | [v1.0.md](VERSIONS/v1.0.md) |
+| v1.0.1 | MCP mínimo (stdio + HTTP, tools como `mcp__srv__tool`) | ☐ Pendiente | [v1.0.1.md](VERSIONS/v1.0.1.md) |
 | v1.1 | Pro (Linux+Windows): multi-agent + merge + agentes/flujos + licencias | ☐ Pendiente | [v1.1.md](VERSIONS/v1.1.md) |
 | v1.2 | macOS: firma Developer ID + notarización (condicionado a 50–100 PRO) | ☐ Pendiente | [v1.2.md](VERSIONS/v1.2.md) |
 
