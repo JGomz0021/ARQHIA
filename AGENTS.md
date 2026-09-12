@@ -6,10 +6,11 @@
 - auditor: solo lee y reporta a CONTEXT/TEMP.md. Nunca escribe código.
 
 ## Tools permitidas
-read_file, write_file, edit_file, delete_file, list_dir, search_files, bash (allowlist), fetch_url (dominios).
+read_file (paginado: offset/limit), get_file_outline, write_file, edit_file, delete_file, list_dir, search_files (bloques con contexto), bash (allowlist + `git` con política por subcomando), fetch_url (dominios).
 
 ## Reglas
 - Rutas relativas al workspace. Nunca escribir fuera (guard estricto).
 - `edit_file` exige 1 coincidencia exacta de `old`.
 - Pasos LLM→tools y tareas del plan según Límites de config; installs y red piden permiso (Install/Net).
-- Tras workers, el auditor revisa y escribe CONTEXT/TEMP.md; si hay issues, 1 pasada de fixes.
+- Git (v0.7.2): el agente trabaja en la rama de trabajo (`ARQHIA`); la base (`main`/`master`) está protegida. Push pide aprobación; `push --force`, `reset --hard`, `clean`, `rebase`, `config` y `remote add/remove` están bloqueados.
+- Tras workers, el auditor revisa (código + `cargo check`/`test`/`clippy`) y escribe CONTEXT/TEMP.md; el bucle `auditor → fix` repite hasta quedar verde (tope `Limits.max_fix_cycles`, 0 = ilimitado). El auto-commit solo ocurre con el turno verde (analista/planner: ver `CONTEXT/ANALYSIS.md`).

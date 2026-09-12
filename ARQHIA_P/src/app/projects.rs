@@ -6,7 +6,6 @@ use super::events::View;
 use super::state::{App, clear_turn_state};
 use crate::db;
 use crate::workspace;
-use crate::llm::{ChatMsg, Role};
 use crate::questionnaire::Answers;
 
 /// Crea carpeta + fila SQLite + workspace y lo registra en el estado.
@@ -31,7 +30,33 @@ pub(crate) fn create_project_with_dir(
         name: name.to_string(),
         path: Some(path_str.clone()),
     });
+    init_workspace_git(state, &canon);
     Ok((pid, path_str))
+}
+
+/// Inicializa git en el workspace si la config lo pide (v0.7.2): `init` si
+/// no es repo y checkout de la rama de trabajo. Nunca reinicia un repo ni
+/// pisa la rama protegida. Loguea el resultado.
+pub(crate) fn init_workspace_git(state: &mut App, ws: &std::path::Path) {
+    let git = state.config.git.clone();
+    if !git.enabled {
+        return;
+    }
+    let result = if crate::git::is_repo(ws) {
+        crate::git::ensure_work_branch(ws, &git)
+    } else if git.auto_init {
+        crate::git::init_repo(ws, &git.base_branch)
+            .and_then(|()| crate::git::ensure_work_branch(ws, &git))
+    } else {
+        return;
+    };
+    match result {
+        Ok(()) => {
+            let branch = crate::git::current_branch(ws).unwrap_or_else(|| git.work_branch.clone());
+            state.push_log(format!("🌿 git: rama {branch}"));
+        }
+        Err(e) => state.push_log(format!("⚠️ git: {e}")),
+    }
 }
 
 /// Resuelve la carpeta: la escrita o ~/ARQHIA/projects/{slug} por defecto.
@@ -157,17 +182,7 @@ pub(crate) fn remove_project_everywhere(state: &mut App, id: i64) -> Result<Stri
                 .find(|c| !c.archived)
                 .map(|c| c.id);
             clear_turn_state(state);
-            state.messages = state
-                .active_chat
-                .and_then(|nid| db::load_chat_history(nid, 500).ok())
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(role, content)| ChatMsg {
-                    role: Role::from_str(&role),
-                    content,
-                })
-                .collect();
-            state.reparse_md();
+            state.reload_active_chat();
         }
     Ok(match trashed {
         Some(dest) => format!("🗑 proyecto a papelera ({} chats): {dest}", chat_ids.len()),

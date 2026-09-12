@@ -4,6 +4,7 @@ mod agent;
 mod app;
 mod config;
 mod db;
+mod git;
 mod llm;
 mod pricing;
 mod questionnaire;
@@ -42,10 +43,10 @@ fn update(state: &mut App, message: Message) -> Task<Message> {
 fn update_inner(state: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::GoChat | Message::GoHome | Message::ExitApp => handlers::navigation::handle(state, message),
-        Message::InputChanged(..) | Message::SendPressed | Message::StreamChunk(..) | Message::StreamUsage(..) | Message::StreamDone | Message::StreamError(..) | Message::NewChat | Message::NewChatInProject(..) | Message::SelectChat(..) | Message::DeleteChat(..) | Message::ConfirmDeleteChat | Message::CancelDelete | Message::ToggleChatMenu(..) | Message::ToggleMovePick(..) | Message::AssignChatProject { .. } | Message::ArchiveChat(..) | Message::UnarchiveChat(..) | Message::ToggleArchived | Message::NavigateProject(..) | Message::QuickSwitchModel(..) | Message::QuickReasoningPicked(..) | Message::LinkClicked(..) | Message::ModePicked(..) | Message::CloseOverlays | Message::RetryLast | Message::ToggleLogExpand => handlers::chat::handle(state, message),
+        Message::InputChanged(..) | Message::SendPressed | Message::StreamChunk(..) | Message::StreamUsage(..) | Message::StreamDone(..) | Message::StreamError(..) | Message::NewChat | Message::NewChatInProject(..) | Message::SelectChat(..) | Message::DeleteChat(..) | Message::ConfirmDeleteChat | Message::CancelDelete | Message::ToggleChatMenu(..) | Message::ToggleMovePick(..) | Message::AssignChatProject { .. } | Message::ArchiveChat(..) | Message::UnarchiveChat(..) | Message::ToggleArchived | Message::NavigateProject(..) | Message::QuickSwitchModel(..) | Message::QuickReasoningPicked(..) | Message::LinkClicked(..) | Message::ModePicked(..) | Message::CloseOverlays | Message::RetryLast | Message::ToggleLogExpand | Message::UndoChat | Message::BranchChatFrom(..) | Message::ChatTitleFetched(..) | Message::ChatMsgMenu(..) | Message::CopyMsg(..) | Message::TruncateRequest(..) | Message::ConfirmTruncate | Message::CancelTruncate => handlers::chat::handle(state, message),
         Message::ShowCreateModal | Message::HideCreateModal | Message::CreateNameChanged(..) | Message::CreatePathChanged(..) | Message::SubmitCreateProject | Message::OpenProject | Message::EnterProject(..) | Message::FolderPicked(..) | Message::NewProjectNameChanged(..) | Message::NewProjectPathChanged(..) | Message::CreateProject | Message::ToggleProjectForm | Message::ToggleProject(..) | Message::ToggleProjectMenu(..) | Message::OpenWorkspaceFolder(..) | Message::DeleteProject(..) | Message::ConfirmDeleteProject | Message::CancelDeleteProject | Message::WorkspacePathChanged(..) | Message::AssignWorkspace(..) | Message::ClearWorkspace(..) | Message::UploadFiles(..) | Message::FilesPicked(..) | Message::DeleteUpload(..) | Message::ConfigDeleteProject(..) | Message::ConfirmConfigDelete | Message::CancelConfigDelete => handlers::projects::handle(state, message),
-        Message::AgentPlan(..) | Message::AgentLlm(..) | Message::AgentExecDone(..) | Message::ApproveTools | Message::DenyTools | Message::DenyToolsRemember | Message::StopAgent | Message::AgentAudit(..) | Message::PlanDone(..) | Message::ExecutePlan | Message::DismissPlan => handlers::agent::handle(state, message),
-        Message::OpenConfig | Message::ConfigBack | Message::ProviderPicked(..) | Message::ApiKeyChanged(..) | Message::BaseUrlChanged(..) | Message::ModelChanged(..) | Message::EditReasoningPicked(..) | Message::SaveConfig | Message::TestConnection | Message::TestResult(..) | Message::UseDefaultBaseUrl | Message::UseDefaultModel | Message::ThemePicked(..) | Message::AccentPicked(..) | Message::TextSizePicked(..) | Message::DensityPicked(..) | Message::PermReadToggled(..) | Message::PermWriteToggled(..) | Message::PermBashToggled(..) | Message::PermNetToggled(..) | Message::PermInstallToggled(..) | Message::PermDomainsChanged(..) | Message::PermExtraChanged(..) | Message::SavePermLists | Message::LimitItersPicked(..) | Message::LimitTasksPicked(..) | Message::LimitTimeoutPicked(..) | Message::LimitUploadPicked(..) | Message::LimitReadPicked(..) | Message::LimitTokensPicked(..) | Message::LimitHistoryPicked(..) | Message::ConfigTab(..) | Message::OpenModelBrowser | Message::CloseModelBrowser | Message::InitPricing | Message::ModelSearchChanged(..) | Message::ModelPriceFilterPicked(..) | Message::ModelOnlyToolsToggled(..) | Message::ModelSortPriceToggled(..) | Message::RefreshPricing | Message::PricingFetched(..) | Message::LocalModelsFetched(..) | Message::PickModel(..) => handlers::config::handle(state, message),
+        Message::AgentPlan(..) | Message::AgentAnalyze(..) | Message::AgentLlm(..) | Message::AgentExecDone(..) | Message::ApproveTools | Message::DenyTools | Message::DenyToolsRemember | Message::StopAgent | Message::AgentAudit(..) | Message::PlanDone(..) | Message::ExecutePlan | Message::DismissPlan => handlers::agent::handle(state, message),
+        Message::OpenConfig | Message::ConfigBack | Message::ProviderPicked(..) | Message::ApiKeyChanged(..) | Message::BaseUrlChanged(..) | Message::ModelChanged(..) | Message::EditReasoningPicked(..) | Message::TestConnection | Message::TestResult(..) | Message::UseDefaultBaseUrl | Message::UseDefaultModel | Message::ThemePicked(..) | Message::AccentPicked(..) | Message::TextSizePicked(..) | Message::DensityPicked(..) | Message::PermReadToggled(..) | Message::PermWriteToggled(..) | Message::PermBashToggled(..) | Message::PermNetToggled(..) | Message::PermInstallToggled(..) | Message::PermDomainsChanged(..) | Message::PermExtraChanged(..) | Message::SavePermLists | Message::LimitItersPicked(..) | Message::LimitTasksPicked(..) | Message::LimitTimeoutPicked(..) | Message::LimitUploadPicked(..) | Message::LimitReadPicked(..) | Message::LimitTokensPicked(..) | Message::LimitHistoryPicked(..) | Message::LimitFixCyclesPicked(..) | Message::ConfigTab(..) | Message::OpenModelBrowser | Message::CloseModelBrowser | Message::InitPricing | Message::ModelSearchChanged(..) | Message::ModelPriceFilterPicked(..) | Message::ModelOnlyToolsToggled(..) | Message::ModelSortPriceToggled(..) | Message::RefreshPricing | Message::PricingFetched(..) | Message::LocalModelsFetched(..) | Message::PickModel(..) | Message::ProfilePicked(..) | Message::ProfileNameChanged(..) | Message::ProfileSave | Message::ProfileDelete(..) | Message::ProfileMenuToggled(..) | Message::ProfileEdit(..) | Message::ProfileEditCancel | Message::ProfileEditNameChanged(..) | Message::ProfileEditProviderPicked(..) | Message::ProfileEditApiChanged(..) | Message::ProfileEditBaseChanged(..) | Message::ProfileEditModelChanged(..) | Message::ProfileEditReasoningPicked(..) | Message::ProfileUpdate | Message::GitEnabledToggled(..) | Message::GitAutoInitToggled(..) | Message::GitBranchModePicked(..) | Message::GitAutonomyPicked(..) | Message::GitPushToggled(..) | Message::GitBaseBranchChanged(..) | Message::GitWorkBranchChanged(..) | Message::GitRemoteChanged(..) | Message::GitPushBranchChanged(..) | Message::GitAuthorNameChanged(..) | Message::GitAuthorEmailChanged(..) | Message::GitSave | Message::GitRefreshStatus | Message::GitInitWorkspace | Message::GitInitDone(..) | Message::GitPushDone(..) => handlers::config::handle(state, message),
         Message::QNext | Message::QBack | Message::QCancel | Message::QNombreChanged(..) | Message::QDescChanged(..) | Message::QUbicChanged(..) | Message::QObjChanged(..) | Message::QPublicoPicked(..) | Message::QInterfazPicked(..) | Message::FinishQuestionnaire => handlers::questionnaire::handle(state, message),
     }
 }
@@ -94,7 +95,7 @@ fn view_inner(state: &App) -> Element<'_, Message> {
 fn view_main(state: &App) -> Element<'_, Message> {
     use iced::widget::{container, row};
     row![
-        container(views::sidebar::view_sidebar(state)).width(248).height(iced::Fill).style(
+        container(views::sidebar::view_sidebar(state)).width(300).height(iced::Fill).style(
             |t: &Theme| crate::ui::design::sidebar(t)
         ),
         container(views::chat::view_chat(state)).width(iced::Fill).height(iced::Fill),
@@ -146,6 +147,7 @@ fn key_shortcut(
             "1" => Some(Message::ModePicked(db::Mode::Chat)),
             "2" => Some(Message::ModePicked(db::Mode::Plan)),
             "3" => Some(Message::ModePicked(db::Mode::Work)),
+            "z" | "Z" => Some(Message::UndoChat),
             _ => None,
         },
         _ => None,
@@ -181,8 +183,54 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_shortcuts_map_to_messages() {
-        use iced::keyboard::{Key, Modifiers, key::Named};
+    #[allow(clippy::field_reassign_with_default)]
+    fn config_back_and_esc_return_to_origin() {
+        use crate::app::View;
+        let mut app = crate::app::App::default();
+
+        // Home -> Config; Esc vuelve a Home.
+        app.view = View::Home;
+        let _ = super::update_inner(&mut app, Message::OpenConfig);
+        assert_eq!(app.view, View::Config);
+        let _ = super::update_inner(&mut app, Message::CloseOverlays);
+        assert_eq!(app.view, View::Home);
+
+        // Chat -> Config; el botón Volver regresa a Chat.
+        app.view = View::Chat;
+        let _ = super::update_inner(&mut app, Message::OpenConfig);
+        assert_eq!(app.view, View::Config);
+        let _ = super::update_inner(&mut app, Message::ConfigBack);
+        assert_eq!(app.view, View::Chat);
+
+        // Reabrir Ctrl+, estando en Config no atrapa el origen.
+        let _ = super::update_inner(&mut app, Message::OpenConfig);
+        let _ = super::update_inner(&mut app, Message::OpenConfig);
+        let _ = super::update_inner(&mut app, Message::ConfigBack);
+        assert_eq!(app.view, View::Chat);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn double_esc_stops_running_turn() {
+        let mut app = crate::app::App::default();
+        app.active_chat = None;
+        app.agent_running = true;
+        app.streaming = true;
+        app.stream_gen = 5;
+        let agen = app.agent_gen;
+        // Un solo Esc no detiene (solo cierra paneles / registra el momento).
+        let _ = super::update_inner(&mut app, Message::CloseOverlays);
+        assert!(app.agent_running && app.streaming, "un Esc no debe detener");
+        // Doble Esc dentro de la ventana: detiene el turno en curso.
+        let _ = super::update_inner(&mut app, Message::CloseOverlays);
+        assert!(!app.agent_running, "doble Esc detiene el agente");
+        assert!(!app.streaming, "doble Esc detiene el stream");
+        assert!(app.agent_gen > agen, "invalida el turno del agente");
+        assert!(app.stream_gen > 5, "invalida los chunks del stream");
+    }
+
+    #[test]
+    fn keyboard_shortcuts_map_to_messages() {        use iced::keyboard::{Key, Modifiers, key::Named};
         use crate::db::Mode;
         let ctrl = Modifiers::CTRL;
         let none = Modifiers::empty();

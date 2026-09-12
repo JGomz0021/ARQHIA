@@ -2,7 +2,7 @@
 
 Políticas de uso, privacidad, propiedad del código y licencias del STACK.
 
-SSOT para estos temas. Referenciado desde `PROJECT.md` y los ESPEC generados.
+SSOT para estos temas. Referenciado desde `PROJECT.md` y los `SPECS.md` generados.
 Idioma: español (docs de producto). Revisar antes de v1.0 con criterio legal real
 (este documento es política de producto, no asesoría jurídica).
 
@@ -25,7 +25,7 @@ Al chatear se envía al provider activo (OpenAI, Anthropic, OpenRouter, LM Studi
 *   el historial de la conversación activa,
 *   el system prompt de ARQHIA,
 *   en modo agente: fragmentos del workspace necesarios para la tarea
-    (contenido de archivos leídos, `context_block`, ESPEC, PLAN/TEMP).
+    (contenido de archivos leídos, `context_block`, `SPECS.md`, `PLAN`/`TEMP`).
 
 No hay telemetría. No hay cuentas ni tracking. La DB (`arqhia.db`), la config
 (`config.toml`) y la papelera viven en el equipo del usuario.
@@ -36,7 +36,7 @@ usuario marque como sensibles no se adjuntan al contexto LLM (lista en Config).
 
 ## 3. Propiedad del código
 
-*   El código del usuario (workspace, ESPEC, PLAN) **pertenece al usuario**.
+*   El código del usuario (workspace, `Project/`, `SPECS.md`, `PLAN`) **pertenece al usuario**.
 *   El código generado por el agente a petición del usuario **pertenece al
     usuario** desde su creación, bajo la licencia que el usuario elija para su
     proyecto.
@@ -62,7 +62,7 @@ metadatos del item, no del autor.
 *   **v0.9:** identidad local (nombre + email) solo para firmar metadatos del
     STACK. Sin contraseñas, sin servidor.
 *   **v1.0:** autenticación real contra el backend nube (token en Config→Nube).
-    El token nunca se escribe en logs ni en ESPEC/TEMP.
+    El token nunca se escribe en logs ni en `SPECS`/`TEMP`.
 
 ## 6. Licencias Pro (desde v1.1)
 
@@ -78,8 +78,29 @@ metadatos del item, no del autor.
 
 ## 7. Instalación y datos
 
-*   El instalador nunca borra `arqhia.db`, `config.toml` ni workspaces.
+*   El instalador y el **updater** nunca borran `arqhia.db`, `config.toml` ni
+    workspaces. El updater (v1.0) solo **notifica** y enlaza a la descarga; no
+    reemplaza binarios en caliente en esta fase.
 *   Cambios de esquema SQLite son migrados con `ALTER TABLE` idempotente;
     entre versiones con instalador se documenta la migración en el CHANGELOG.
 *   Exportar proyecto = copiar su carpeta (el workspace es autocontenido:
-    código + `CONTEXT/`).
+    `Project/` + `CONTEXT/` + `ToDo.md`).
+*   **Consulta de versión:** el updater hace una petición anónima a
+    `updates/latest.json` en la web. No envía datos del usuario ni del código.
+
+## 8. Git y control de versiones (v0.7.2)
+
+*   Git es **local por defecto**: cada workspace se inicializa como repo y el
+    agente trabaja en la rama `ARQHIA`; la rama base (`main`/`master`) está
+    protegida y nunca recibe commits del agente.
+*   **Autonomía explícita** (`ReadOnly` / `CommitLocal` / `CommitAndPush`). Con
+    `CommitLocal` el agente puede commitear en local; **push a GitHub está OFF
+    por defecto y requiere aprobación** (categoría `GitPush`).
+*   Comandos destructivos (`push --force`, `reset --hard`, `clean`, `rebase`,
+    `config`, `remote add/remove`) están **bloqueados** para el agente.
+*   El auto-commit solo ocurre si la puerta de calidad pasa (`cargo check` +
+    `test` + `clippy`) y si el árbol de trabajo estaba limpio al iniciar el
+    turno: no se commitean cambios manuales ajenos ni código roto.
+*   El usuario controla rama, remoto, rama de push y autor de commits desde
+    Configuración → Git. Empujar a GitHub envía código a un tercero: es
+    responsabilidad del usuario revisar qué se sube.

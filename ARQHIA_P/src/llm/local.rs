@@ -27,7 +27,7 @@ pub async fn chat_stream(
         .iter()
         .map(|m| crate::llm::estimate_tokens_text(&m.content))
         .sum();
-    let client = crate::llm::http_client();
+    let client = crate::llm::http_stream_client();
     let messages: Vec<_> = history
         .iter()
         .map(|m| json!({"role": m.role.as_str(), "content": m.content}))
@@ -68,7 +68,17 @@ pub async fn chat_stream(
     let mut out_chars = 0usize;
     let mut usage: Option<crate::llm::Usage> = None;
     while let Some(item) = stream.next().await {
-        let bytes = item.map_err(|e| format!("Corte de stream: {e}"))?;
+        let bytes = match item {
+            Ok(b) => b,
+            Err(e) => {
+                // Sin texto aún es un fallo real; con texto, cierre parcial.
+                if out_chars == 0 {
+                    return Err(format!("Corte de stream: {e}"));
+                }
+                on_chunk("\n\n_(se cortó la conexión; respuesta parcial)_".to_string());
+                break;
+            }
+        };
         buf.push_str(&String::from_utf8_lossy(&bytes));
         while let Some(pos) = buf.find('\n') {
             let line: String = buf.drain(..=pos).collect();

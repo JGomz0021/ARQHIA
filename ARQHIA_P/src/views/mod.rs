@@ -112,6 +112,9 @@ mod tests {
         app.active_chat = None;
         app.messages.clear();
         app.md.clear();
+        app.msg_usage.clear();
+        app.msg_times.clear();
+        app.msg_ids.clear();
         app.pending_project = None;
         app.view = View::Chat;
         let _ = crate::view(&app);
@@ -122,6 +125,37 @@ mod tests {
         let _ = crate::view(&app);
         app.view = View::Chat;
         let _ = crate::view(&app);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn git_tab_builds_with_workspace_and_repo() {
+        // Workspace real con repo git: cubre la rama "es repo" del card de estado.
+        let ws = std::env::temp_dir().join("arqhia-view-git-ws");
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).unwrap();
+        crate::git::init_repo(&ws, "main").unwrap();
+        let path = ws.to_string_lossy().to_string();
+        let mut app = App::default();
+        app.config_tab = ConfigTab::Git;
+        app.projects.push(crate::db::Project { id: -7, name: "T".to_string(), path: Some(path) });
+        app.chats.push(crate::db::ChatMeta {
+            id: -7,
+            title: "T".to_string(),
+            project_id: Some(-7),
+            archived: false,
+            mode: crate::db::Mode::Chat,
+        });
+        app.active_chat = Some(-7);
+        app.refresh_git_status();
+        assert!(app.git_status.is_repo);
+        let _ = config_view::view_config(&app);
+        // Y sin repo (misma ruta, borrando .git): rama "Inicializar git".
+        let _ = std::fs::remove_dir_all(ws.join(".git"));
+        app.refresh_git_status();
+        assert!(!app.git_status.is_repo);
+        let _ = config_view::view_config(&app);
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[test]

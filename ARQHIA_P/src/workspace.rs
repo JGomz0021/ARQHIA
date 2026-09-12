@@ -93,11 +93,6 @@ pub fn default_project_dir(name: &str) -> PathBuf {
         .join(slugify(name))
 }
 
-/// Tope histórico por archivo subido (50 MB). El valor efectivo sale de
-/// `Limits::max_upload_mb` en config; se conserva como referencia.
-#[allow(dead_code)]
-pub const UPLOAD_MAX_BYTES: u64 = 50 * 1024 * 1024;
-
 pub fn uploads_dir(workspace: &Path) -> PathBuf {
     workspace.join("uploads")
 }

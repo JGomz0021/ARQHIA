@@ -1,84 +1,94 @@
-#ARQHIA
+# ARQHIA
 
-##Descripcion:
+## Descripción
 
-- Un agente de ia que acompaña al usuario desde la definicion del proyecto hasta su resolucion. Toma en cuenta la experiencia del usuario para realizar el proyecto paso a paso y de forma estable.
- 
-- Este producto estara hecho para desarrolladores independientes, pequeños grupos e incluso grandes empresas.
- 
-- Este agente a diferencia de otros no solo se encargara de escribir y desarrollar codigo, tambien podra ayudar a diseñar un proyecto, sus especificaciones y funcionalidades.
- 
-- Este agente acompaña al usuario en el desarrollo de su proyecto desde la idea, haciendo preguntas pertinentes y creando especificaciones pre-generadas o generadas por ia. Puede ir desde cosas basicas como el planteamiento hasta la seleccion del stack tecnologico.
- 
-- Este debe ser una agente debido a que debe desarrollar un proyecto, el usuario deberia poder delegar la mayor cantidad de trabajo de manera confiable.
- 
-##Flujo:
- 
-    Creacion de proyecto (Nombre, descripcion, preguntas basicas predefinidas) > Cuestionario de ARQHIA (Stack tecnologico, definiciones claras, UI/UX, alcance, etc) > Desarrollo del plan (CONCEPTO.md, ROUTE.md, VERSIONS.md) > Inicio del chat (Dos modos: Plan y Build) > Desarrollo y modificacion del proyecto
-    
-##Flujo del Agente:
+- Un agente de IA que acompaña al usuario desde la definición del proyecto hasta su resolución. Toma en cuenta la experiencia del usuario para realizar el proyecto paso a paso y de forma estable.
 
-    Peticion del usuario > Revision del CONTEXT (CONCEPTO.md, ROUTE.md, VERSIONS.md) > Revision del codigo > Diseña tareas > Orquestador despliega agentes > Finaliza tareas > Orquestador despliega agentes auditores > Se almacenan los errores en TEMP.md > Orquestador lee y diseña plan > Despliega agentes > Repetir hasta que haya una version estable
-    
-##Flujo de agente con STACK de Codigo:
+- Este producto está hecho para desarrolladores independientes, pequeños grupos e incluso grandes empresas.
 
-    Peticion del usuario > Revision del CONTEXT > Revision del codigo > Peticion al STACK en nube > Analiza coincidencias > Aprueba y despliega agentes > Finaliza tareas > Despliega auditores > Se almacenan errores > Lee y diseña plan > Despliegue de agentes > Loop > Version estable > Sube el codigo con metadatos al STACK
-    
-##Capas: 
+- Este agente, a diferencia de otros, no solo escribe y desarrolla código: también ayuda a diseñar un proyecto, sus especificaciones y funcionalidades.
 
-###Chat:
-    
+- Acompaña al usuario desde la idea haciendo preguntas pertinentes y creando especificaciones preconfiguradas o generadas por IA. Puede ir desde lo básico (planteamiento) hasta la selección del stack tecnológico.
+
+- Debe ser un agente porque debe desarrollar un proyecto: el usuario debería poder delegar la mayor cantidad de trabajo de forma confiable.
+
+## Flujo
+
+    Creación de proyecto (nombre, descripción, objetivo, funcionalidades) >
+    Cuestionario de ARQHIA (genérico + preguntas por nivel + preguntas opcionales
+    por IA) > Generación de PROJECT.md + SPECS.md + CONTEXT.md y estructura
+    (Project/, ToDo.md, CONTEXT/) > Plan (ROADMAP.md, VERSIONS.md,
+    VERSIONS/v0.x.md) > Chat en modos Chat / Plan / Work > Desarrollo y
+    modificación del proyecto > versiones estables
+
+## Flujo del Agente
+
+    Petición del usuario > Analista dedicado (revisa CONTEXT.md / PROJECT.md /
+    SPECS.md / VERSIONS.md y outlines del código en Project/) > Brief de estado >
+    Planner diseña tareas > Orquestador despliega workers > Finaliza tareas >
+    Despliega auditor > Guarda errores en TEMP.md > Loop de fixes > Repetir
+    hasta que la auditoría quede verde > Commit (rama ARQHIA) > Push (opcional)
+
+## Flujo del agente con STACK de código
+
+    Petición del usuario > Analista (CONTEXT + código) > Petición
+    al STACK (nube o local) > Analiza coincidencias > Aprueba y despliega
+    workers > Finaliza tareas > Despliega auditor > Guarda errores en TEMP.md >
+    Loop de fixes hasta verde > Commit (rama ARQHIA) > Push (opcional) >
+    Versión estable > Sube el código con metadatos al STACK
+
+## Capas
+
+### Chat
+
     Un IDE de agente donde planear o construir el proyecto.
-    
+
     Archivo / View / API's / Models
-    _____________________________________________________________________________________________________________________________________________________________________________________________________________________
-    Settings                      |                                                                                                                                                
+    _____________________________________________________________________________________
+    Settings                      |
     CONTEXT                       |
     Chat ¬                        |
     1. Concepto                   |
     2. v0.1                       |
     3. Cambio de especificaciones |
-                                  |                                        
                                   |
                                   |
                                   |
+                                  | ___________________________________________________________________
+                                  | ¿Qué deseas hacer hoy?                                      Build >
                                   |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  |
-                                  | _________________________________________________________________________________________
-                                  | Que deseas hacer hoy?                                                            Build >
-                                  |
-                                  |
-                                  | _____________________________________________________________________________________________________________________________________________________________________________________
+                                  | ___________________________________________________________________
                                   | Log > Edit File.txt
                                   |       Read File.txt
-                                  |
-    Cuenta > 
-    
-###Cuestionario:
+    Cuenta >
 
-    Inicio del proyecto, una caja en medio que va haciendo preguntas de opcion multiple o de respuesta escrita.
-    
-###Stack: 
+### Cuestionario
 
-    Un sistema en nube que almacena y categoriza archivos de codigo con metadatos que incluye: Opiniones de usuarios y IA's, dependencias, versiones, calificacion, ejecuciones, bugs reportados.
-    
-    
-###Agente:
+    Inicio del proyecto: una caja que va haciendo preguntas genéricas, luego
+    preguntas propias del nivel (Principiante / Intermedio / Avanzado) y por
+    último preguntas opcionales generadas por IA. Al terminar genera los
+    documentos y la estructura del proyecto.
 
-    Un orquestador que analiza el contexto, envia peticiones al stack audita su propio codigo, da recomendaciones y consejos.
-    
- 
-    
+### Estructura del proyecto generado
+
+    {workspace}/
+      Project/                 # código + git
+      ToDo.md                  # tablero de ejecución
+      CONTEXT/
+        CONTEXT.md             # índice + estado vivo
+        PROJECT.md             # visión, objetivo, alcance, usuario
+        SPECS.md               # especificación funcional
+        ROADMAP.md             # versiones de alto nivel
+        VERSIONS.md            # índice de estado por versión
+        VERSIONS/              # un .md por versión
+
+### Stack
+
+    Un sistema (nube + local) que almacena y categoriza archivos de código con
+    metadatos: opiniones de usuarios e IA, dependencias, versiones,
+    calificación, ejecuciones y bugs reportados.
+
+### Agente
+
+    Un orquestador que analiza el contexto, consulta el STACK, audita su propio
+    código, da recomendaciones y consejos.

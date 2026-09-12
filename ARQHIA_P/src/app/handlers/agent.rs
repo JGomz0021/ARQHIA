@@ -19,6 +19,64 @@ use crate::llm::Role;
 
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::AgentAnalyze(turn, res) => {
+            if turn != state.agent_gen {
+                return Task::none(); // turno cancelado, resultado tardío
+            }
+            let (provider, cfg, ws) = match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
+                (Some(p), Some(c), Some(w)) => (p, c, w),
+                _ => {
+                    abort_agent_placeholder(state);
+                    state.agent_running = false;
+                    return Task::none();
+                }
+            };
+            let pedido = state
+                .o_history
+                .iter()
+                .rev()
+                .find(|m| m.role == Role::User)
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+            // Fallback v0.7.3: sin provider/timeout → contexto crudo.
+            let brief = match res {
+                Ok(b) if !b.trim().is_empty() => b,
+                _ => {
+                    state.push_log("⚠️ analista no disponible: uso contexto crudo".to_string());
+                    crate::workspace::context_block(&ws)
+                }
+            };
+            // Trazabilidad: CONTEXT/ANALYSIS.md (lo consume el planner y el worker).
+            let dir = ws.join("CONTEXT");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("ANALYSIS.md"), &brief);
+            state.push_log(format!("🧠 brief listo ({} chars)", brief.chars().count()));
+            let mode = state.o_mode;
+            let context = crate::workspace::context_block(&ws);
+            let espec = agent::read_espec_md(&ws);
+            let label = match mode {
+                db::Mode::Plan => "Plan",
+                _ => "Work",
+            };
+            Task::perform(
+                async move {
+                    agent::plan_tasks(
+                        provider,
+                        &pedido,
+                        &context,
+                        espec.as_deref(),
+                        Some(&brief),
+                        &cfg,
+                        label,
+                    )
+                    .await
+                },
+                move |r| match mode {
+                    db::Mode::Plan => Message::PlanDone(turn, r),
+                    _ => Message::AgentPlan(turn, r),
+                },
+            )
+        }
         Message::AgentPlan(turn, res) => {
             if turn != state.agent_gen {
                 return Task::none(); // turno cancelado, resultado tardío
@@ -102,7 +160,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             finish_agent_answer(
                                 state,
                                 format!(
-                                    "Plan listo en `CONTEXT/PLAN.md`: {n} tareas, disco intacto (1 llamada). Revísalo abajo y pulsa **Ejecutar plan** para pasarlo a Work."
+                                    "Plan listo en `CONTEXT/PLAN.md`: {n} tareas; brief en `CONTEXT/ANALYSIS.md` (solo CONTEXT/, sin tocar código). Revísalo abajo y pulsa **Ejecutar plan** para pasarlo a Work."
                                 ),
                             );
                         }
@@ -150,6 +208,9 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 content: "orquestando...".to_string(),
             });
             state.md.push(markdown::parse("orquestando...").collect());
+            state.msg_usage.push(None);
+            state.msg_times.push(String::new());
+            state.msg_ids.push(0);
             state.agent_running = true;
             state.show_plan = false;
             state.o_provider = Some(provider);
@@ -164,6 +225,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             if let Some(line) = agent::ensure_agents_md(&ws) {
                 state.push_log(line);
             }
+            // v0.7.2: rama de trabajo + árbol limpio antes de tocar nada.
+            crate::app::orchestrator::prepare_git_turn(state);
             state.push_log(format!("▶ ejecutando plan ({} tareas)", state.orch_tasks.len()));
             start_worker(state, 0)
         }
@@ -319,6 +382,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                         drv.read_cache.insert(key, text);
                     }
             }
+            // v0.7.4 Fuentes: captura URLs de fetch_url para el bloque clicable.
+            for c in calls.iter() {
+                if c.name == "fetch_url"
+                    && let Some(u) = c.args.get("url").and_then(|v| v.as_str())
+                    && !u.trim().is_empty()
+                    && !state.chat_sources.iter().any(|x| x == u.trim()) {
+                        state.chat_sources.push(u.trim().to_string());
+                    }
+            }
             for line in logs {
                 state.push_log(line);
             }
@@ -377,22 +449,31 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             request_next_llm_step(state)
         }
         Message::StopAgent => {
-            if !state.agent_running {
+            if !state.agent_running && !state.streaming {
                 return Task::none();
             }
-            // Invalida todo lo que siga en vuelo de este turno
+            // Invalida todo lo que siga en vuelo de este turno (agente) y los
+            // chunks del stream de chat plano.
             state.agent_gen += 1;
             state.agent_running = false;
             state.driver = None;
             state.pending_calls.clear();
+            state.stream_gen += 1;
+            state.streaming = false;
+            // Conserva lo parcial si ya había texto; si no, marca detenido.
             if let Some(last) = state.messages.last_mut()
                 && last.role == Role::Assistant {
-                    last.content = "_Turno detenido por el usuario._".to_string();
+                    if last.content.trim().is_empty() {
+                        last.content = "_Turno detenido por el usuario._".to_string();
+                    } else {
+                        last.content.push_str("\n\n_(detenido por el usuario)_");
+                    }
                 }
             state.reparse_last_md();
             if let Some(chat_id) = state.active_chat
                 && let Some(last) = state.messages.last() {
                     let _ = db::save_msg(chat_id, "assistant", &last.content);
+                    state.resync_msg_meta(chat_id);
                 }
             state.push_log("⏹ turno detenido por el usuario".to_string());
             state.status.clear();
@@ -404,14 +485,16 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             match res {
                 Err(e) => {
-                    // Auditor caído: finaliza con lo que haya
+                    // Auditor caído: finaliza con lo que haya, sin commit.
+                    state.git_verify_ok = false;
                     state.push_log(format!("⚠️ auditor no disponible: {e}"));
                     finish_orchestrator(state, " (auditor no disponible)".to_string())
                 }
-                Ok((temp, logs)) => {
+                Ok((temp, logs, clean)) => {
                     for line in logs {
                         state.push_log(line);
                     }
+                    state.git_verify_ok = clean;
                     let ws = match state.o_ws.clone() {
                         Some(w) => w,
                         None => return finish_orchestrator(state, String::new()),
@@ -421,6 +504,23 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     let file = dir.join("TEMP.md");
                     let _ = std::fs::write(&file, &temp);
                     if agent::temp_has_issues(&temp) {
+                        let issues_n = temp
+                            .lines()
+                            .filter(|l| l.trim_start().starts_with('-'))
+                            .count();
+                        // v0.7.3: bucle sin tope salvo max_fix_cycles (0 = ilimitado).
+                        let max = state.config.limits.clamped().max_fix_cycles;
+                        if matches!(fix_decision(true, state.fix_cycle, max), FixDecision::CapReached) {
+                            state.push_log(format!(
+                                "⏹ tope de ciclos ({max}) con issues: sin commit"
+                            ));
+                            return finish_orchestrator(state, String::new());
+                        }
+                        state.fix_cycle += 1;
+                        state.push_log(format!(
+                            "↻ ciclo {}: {} issues",
+                            state.fix_cycle, issues_n
+                        ));
                         let preview: String = temp
                             .lines()
                             .filter(|l| l.starts_with('-') || l.starts_with('#'))
@@ -428,29 +528,25 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             .collect::<Vec<_>>()
                             .join(" / ");
                         state.push_log(format!("📝 TEMP.md con issues: {}", preview));
-                        if state.fix_cycle < 1 {
-                            // Una pasada de fixes y re-auditoría final
-                            state.fix_cycle += 1;
-                            let fix_desc = format!(
-                                "Corrige estos issues del auditor (sin cambiar nada más):\n{}",
-                                temp.chars().take(1200).collect::<String>()
-                            );
-                            state.orch_tasks.push(OrchTask {
-                                desc: "Fixes del auditor".to_string(),
-                                files: Vec::new(),
-                                done: false,
-                                active: false,
-                            });
-                            let idx = state.orch_tasks.len() - 1;
-                            let task = agent::WTask {
-                                desc: fix_desc,
-                                files: Vec::new(),
-                            };
-                            return start_worker_with_task(state, idx, task);
-                        }
-                    } else {
-                        state.push_log("✅ auditor sin issues".to_string());
+                        let fix_desc = format!(
+                            "Corrige estos issues del auditor (ciclo {}, sin cambiar nada más):\n{}",
+                            state.fix_cycle,
+                            temp.chars().take(1200).collect::<String>()
+                        );
+                        state.orch_tasks.push(OrchTask {
+                            desc: format!("Fixes del auditor (ciclo {})", state.fix_cycle),
+                            files: Vec::new(),
+                            done: false,
+                            active: false,
+                        });
+                        let idx = state.orch_tasks.len() - 1;
+                        let task = agent::WTask {
+                            desc: fix_desc,
+                            files: Vec::new(),
+                        };
+                        return start_worker_with_task(state, idx, task);
                     }
+                    state.push_log(format!("✅ estable tras {} ciclos", state.fix_cycle));
                     finish_orchestrator(state, String::new())
                 }
             }
@@ -481,6 +577,8 @@ fn stop_worker_for_budget(state: &mut App) -> Task<Message> {
             t.active = false;
         }
     state.push_log("⏹ presupuesto de tokens agotado".to_string());
+    // v0.7.3: si el presupuesto corta el turno, no se commitea.
+    state.git_turn_interrupted = true;
     continue_after_worker(state)
 }
 
@@ -508,7 +606,7 @@ fn render_plan_md(tasks: &[agent::WTask], user_text: &str) -> String {
         };
         out.push_str(&format!("- [ ] {}. {}{}\n", i + 1, t.desc, files));
     }
-    out.push_str("\n> Generado por ARQHIA en modo Plan (1 llamada, disco intacto). Pulsa «Ejecutar plan» en el chat para pasarlo a Work.\n");
+    out.push_str("\n> Generado por ARQHIA en modo Plan (analista + 1 llamada; solo escribe CONTEXT/). Pulsa «Ejecutar plan» en el chat para pasarlo a Work.\n");
     out
 }
 
@@ -523,4 +621,46 @@ fn write_plan_md(state: &App, md: &str) -> Result<String, String> {
     let file = dir.join("PLAN.md");
     std::fs::write(&file, md).map_err(|e| format!("no se pudo escribir: {e}"))?;
     Ok(file.to_string_lossy().to_string())
+}
+/// Decisión del bucle de estabilidad (v0.7.3). Pura para poder testear el
+/// tope de ciclos sin red ni UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FixDecision {
+    /// Auditor limpio: se cierra el turno (commit si git está verde).
+    Clean,
+    /// Hay issues: correr un worker de fixes y re-auditar.
+    Fix,
+    /// Tope de ciclos alcanzado con issues: cerrar sin commit.
+    CapReached,
+}
+
+/// `max == 0` ⇒ ilimitado. Con issues y ciclo ya en el tope ⇒ `CapReached`.
+pub(crate) fn fix_decision(has_issues: bool, cycle: usize, max: usize) -> FixDecision {
+    if !has_issues {
+        FixDecision::Clean
+    } else if max != 0 && cycle >= max {
+        FixDecision::CapReached
+    } else {
+        FixDecision::Fix
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stability_loop_walks_until_green_or_cap() {
+        // Sin issues: cierra.
+        assert_eq!(fix_decision(false, 0, 0), FixDecision::Clean);
+        assert_eq!(fix_decision(false, 3, 2), FixDecision::Clean);
+        // Ilimitado (0): siempre hay otro ciclo, sin importar el contador.
+        assert_eq!(fix_decision(true, 0, 0), FixDecision::Fix);
+        assert_eq!(fix_decision(true, 5, 0), FixDecision::Fix);
+        // Tope 2: ciclos 0 y 1 corren fix; al 2 se topa con issues.
+        assert_eq!(fix_decision(true, 0, 2), FixDecision::Fix);
+        assert_eq!(fix_decision(true, 1, 2), FixDecision::Fix);
+        assert_eq!(fix_decision(true, 2, 2), FixDecision::CapReached);
+        assert_eq!(fix_decision(true, 9, 2), FixDecision::CapReached);
+    }
 }

@@ -8,14 +8,29 @@ use iced::Task;
 use crate::app::state::App;
 use crate::app::Message;
 use crate::app::View;
+use crate::app::ConfigTab;
 use crate::config;
 
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::OpenConfig => {
-            state.config_from = state.view.clone();
+            // No pisar el origen si ya estamos en Config (Ctrl+, repetido):
+            // si no, "Volver" quedaría atrapado en Config.
+            if state.view != View::Config {
+                state.config_from = state.view.clone();
+            }
             state.view = View::Config;
             state.status.clear();
+            state.config.ensure_profiles();
+            state.profile_name = state
+                .config
+                .active_profile
+                .as_deref()
+                .and_then(|id| state.config.profile_by_id(id))
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            state.profile_menu = None;
+            state.editing_profile = None;
             Task::none()
         }
         Message::ConfigBack => {
@@ -46,16 +61,231 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.edit_reasoning = if v == "auto" { String::new() } else { v };
             Task::none()
         }
-        Message::SaveConfig => {
+        Message::ProfilePicked(key) => {
+            // Acepta id o label ("Nombre (Provider · modelo)") o nombre visible.
+            let id = state
+                .config
+                .profile_by_id(&key)
+                .map(|p| p.id.clone())
+                .or_else(|| {
+                    state
+                        .config
+                        .model_profiles
+                        .iter()
+                        .find(|p| p.label() == key || p.name == key)
+                        .map(|p| p.id.clone())
+                });
+            match id {
+                Some(pid) if state.config.apply_profile(&pid) => {
+                    state.edit_provider = state.config.active;
+                    state.sync_edit_fields();
+                    state.profile_name = state.config.profile_by_id(&pid).map(|p| p.name.clone()).unwrap_or_default();
+                    let _ = state.config.save();
+                    state.status = "Perfil activado.".to_string();
+                }
+                _ => state.status = "Perfil no encontrado.".to_string(),
+            }
+            Task::none()
+        }
+        Message::ProfileNameChanged(v) => {
+            state.profile_name = v;
+            Task::none()
+        }
+        Message::ProfileSave => {
+            // "Guardar como perfil" con el MISMO nombre actualiza el perfil
+            // existente (api+base+modelo+nivel+provider); con nombre nuevo lo
+            // crea. Así el perfil siempre contiene todo lo necesario para
+            // cambiar de provider sin perder nada.
+            let name = state.profile_name.trim();
+            let name = if name.is_empty() { "Perfil" } else { name };
+            let cfg = edit_cfg(state);
+            // ¿Ya existe un perfil con ese nombre? -> actualiza en sitio.
+            let existing_idx = state
+                .config
+                .model_profiles
+                .iter()
+                .position(|p| p.name.eq_ignore_ascii_case(name));
+            if let Some(idx) = existing_idx {
+                let pid;
+                let final_name;
+                {
+                    let existing = &mut state.config.model_profiles[idx];
+                    existing.provider = state.edit_provider;
+                    existing.base_url = cfg.base_url.clone();
+                    existing.api_key = cfg.api_key.clone();
+                    existing.model = cfg.model.clone();
+                    existing.reasoning_effort = cfg.reasoning_effort.clone();
+                    pid = existing.id.clone();
+                    final_name = existing.name.clone();
+                }
+                state.config.active_profile = Some(pid);
+                state.config.active = state.edit_provider;
+                // Sincroniza también el slot del provider para coherencia.
+                let target = state.config.active_config_mut();
+                *target = cfg;
+                state.profile_name = final_name;
+                match state.config.save() {
+                    Ok(()) => state.status = "Perfil actualizado.".to_string(),
+                    Err(e) => state.status = format!("Perfil actualizado pero no se guardó: {e}"),
+                }
+                return Task::none();
+            }
+            let mut p = crate::config::ModelProfile::new(name, state.edit_provider, &cfg);
+            // Garantiza id único.
+            while state.config.profile_by_id(&p.id).is_some() {
+                p.id.push('x');
+            }
+            let pid = p.id.clone();
+            let final_name = p.name.clone();
+            state.config.model_profiles.push(p);
+            state.config.active_profile = Some(pid.clone());
             state.config.active = state.edit_provider;
-            let target = state.config.active_config_mut();
-            target.api_key = state.edit_api_key.trim().to_string();
-            target.base_url = state.edit_base_url.trim().to_string();
-            target.model = state.edit_model.trim().to_string();
-            target.reasoning_effort = state.edit_reasoning.trim().to_string();
+            state.profile_name = final_name;
             match state.config.save() {
-                Ok(()) => state.status = "Configuración guardada.".to_string(),
-                Err(e) => state.status = format!("No se pudo guardar: {e}"),
+                Ok(()) => state.status = "Perfil guardado.".to_string(),
+                Err(e) => state.status = format!("Perfil creado pero no se guardó: {e}"),
+            }
+            Task::none()
+        }
+        Message::ProfileDelete(pid) => {
+            if state.config.profile_by_id(&pid).is_none() {
+                state.status = "Perfil no encontrado.".to_string();
+                return Task::none();
+            }
+            if state.config.model_profiles.len() <= 1 {
+                state.status = "No se puede borrar el único perfil.".to_string();
+                return Task::none();
+            }
+            state.config.model_profiles.retain(|p| p.id != pid);
+            if state.profile_menu.as_deref() == Some(pid.as_str()) {
+                state.profile_menu = None;
+            }
+            if state.editing_profile.as_deref() == Some(pid.as_str()) {
+                state.editing_profile = None;
+            }
+            // Si era el activo, activa el primero que quede.
+            if state.config.active_profile.as_deref() == Some(pid.as_str()) {
+                let first = state.config.model_profiles.first().cloned();
+                if let Some(f) = first {
+                    state.config.apply_profile(&f.id);
+                    state.edit_provider = f.provider;
+                    state.sync_edit_fields();
+                    state.profile_name = f.name;
+                }
+            }
+            match state.config.save() {
+                Ok(()) => state.status = "Perfil borrado.".to_string(),
+                Err(e) => state.status = format!("Borrado pero no se guardó: {e}"),
+            }
+            Task::none()
+        }
+        Message::ProfileMenuToggled(pid) => {
+            state.profile_menu = if state.profile_menu.as_deref() == Some(pid.as_str()) {
+                None
+            } else {
+                Some(pid)
+            };
+            Task::none()
+        }
+        Message::ProfileEdit(pid) => {
+            let Some(p) = state.config.profile_by_id(&pid).cloned() else {
+                state.status = "Perfil no encontrado.".to_string();
+                return Task::none();
+            };
+            state.editing_profile = Some(pid);
+            state.profile_menu = None;
+            state.eprofile_name = p.name;
+            state.eprofile_provider = p.provider;
+            state.eprofile_api = p.api_key;
+            state.eprofile_base = p.base_url;
+            state.eprofile_model = p.model;
+            state.eprofile_reasoning = p.reasoning_effort;
+            Task::none()
+        }
+        Message::ProfileEditCancel => {
+            state.editing_profile = None;
+            Task::none()
+        }
+        Message::ProfileEditNameChanged(v) => {
+            state.eprofile_name = v;
+            Task::none()
+        }
+        Message::ProfileEditProviderPicked(p) => {
+            state.eprofile_provider = p;
+            Task::none()
+        }
+        Message::ProfileEditApiChanged(v) => {
+            state.eprofile_api = v;
+            Task::none()
+        }
+        Message::ProfileEditBaseChanged(v) => {
+            state.eprofile_base = v;
+            Task::none()
+        }
+        Message::ProfileEditModelChanged(v) => {
+            state.eprofile_model = v;
+            Task::none()
+        }
+        Message::ProfileEditReasoningPicked(v) => {
+            state.eprofile_reasoning = if v == "auto" { String::new() } else { v };
+            Task::none()
+        }
+        Message::ProfileUpdate => {
+            let Some(pid) = state.editing_profile.clone() else {
+                return Task::none();
+            };
+            let name = state.eprofile_name.trim().to_string();
+            if name.is_empty() {
+                state.status = "El perfil necesita un nombre.".to_string();
+                return Task::none();
+            }
+            if state
+                .config
+                .model_profiles
+                .iter()
+                .any(|p| p.id != pid && p.name.eq_ignore_ascii_case(&name))
+            {
+                state.status = "Ya existe otro perfil con ese nombre.".to_string();
+                return Task::none();
+            }
+            let (prov, api, base, model, reasoning) = (
+                state.eprofile_provider,
+                state.eprofile_api.trim().to_string(),
+                state.eprofile_base.trim().to_string(),
+                state.eprofile_model.trim().to_string(),
+                state.eprofile_reasoning.trim().to_string(),
+            );
+            if prov.requires_key() && api.is_empty() {
+                state.status = "Ese provider necesita API key.".to_string();
+                return Task::none();
+            }
+            if model.trim().is_empty() {
+                state.status = "El perfil necesita un modelo.".to_string();
+                return Task::none();
+            }
+            if let Some(p) = state.config.model_profiles.iter_mut().find(|p| p.id == pid) {
+                p.name = name;
+                p.provider = prov;
+                p.api_key = api;
+                p.base_url = base;
+                p.model = model;
+                p.reasoning_effort = reasoning;
+            }
+            // Si es el activo, refleja el cambio en el chat de inmediato.
+            if state.config.active_profile.as_deref() == Some(pid.as_str()) {
+                state.config.apply_profile(&pid);
+                state.edit_provider = state.config.active;
+                state.sync_edit_fields();
+                state.profile_name = state
+                    .config
+                    .profile_by_id(&pid)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+            }
+            state.editing_profile = None;
+            match state.config.save() {
+                Ok(()) => state.status = "Perfil actualizado.".to_string(),
+                Err(e) => state.status = format!("Actualizado pero no se guardó: {e}"),
             }
             Task::none()
         }
@@ -246,9 +476,17 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let _ = state.config.save();
             Task::none()
         }
+        Message::LimitFixCyclesPicked(v) => {
+            // 0 = ilimitado (default); si >0 se recorta a rango sano.
+            state.config.limits.max_fix_cycles = v;
+            state.config.limits = state.config.limits.clamped();
+            let _ = state.config.save();
+            Task::none()
+        }
         Message::ConfigTab(tab) => {
             state.config_tab = tab;
             state.config_pending_delete = None;
+            state.profile_menu = None;
             // Staging de listas al abrir Permisos (no se pierde lo guardado).
             state.perm_domains = state.config.permissions.net_domains.join(", ");
             state.perm_extra = state
@@ -259,6 +497,133 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .map(|p| p.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
+            // Git: staging + estado del workspace activo (v0.7.2).
+            if tab == ConfigTab::Git {
+                state.sync_git_staging();
+                state.refresh_git_status();
+            }
+            Task::none()
+        }
+        Message::GitEnabledToggled(v) => {
+            state.config.git.enabled = v;
+            state.config.git = state.config.git.clone().validated();
+            let _ = state.config.save();
+            Task::none()
+        }
+        Message::GitAutoInitToggled(v) => {
+            state.config.git.auto_init = v;
+            let _ = state.config.save();
+            Task::none()
+        }
+        Message::GitBranchModePicked(m) => {
+            state.config.git.branch_mode = m;
+            let _ = state.config.save();
+            Task::none()
+        }
+        Message::GitAutonomyPicked(a) => {
+            state.config.git.autonomy = a;
+            let _ = state.config.save();
+            Task::none()
+        }
+        Message::GitPushToggled(v) => {
+            state.config.git.push_enabled = v;
+            let _ = state.config.save();
+            Task::none()
+        }
+        Message::GitBaseBranchChanged(v) => {
+            state.git_base_branch = v;
+            Task::none()
+        }
+        Message::GitWorkBranchChanged(v) => {
+            state.git_work_branch = v;
+            Task::none()
+        }
+        Message::GitRemoteChanged(v) => {
+            state.git_remote = v;
+            Task::none()
+        }
+        Message::GitPushBranchChanged(v) => {
+            state.git_push_branch = v;
+            Task::none()
+        }
+        Message::GitAuthorNameChanged(v) => {
+            state.git_author_name = v;
+            Task::none()
+        }
+        Message::GitAuthorEmailChanged(v) => {
+            state.git_author_email = v;
+            Task::none()
+        }
+        Message::GitSave => {
+            let mut git = state.config.git.clone();
+            git.base_branch = state.git_base_branch.trim().to_string();
+            git.work_branch = state.git_work_branch.trim().to_string();
+            git.remote = state.git_remote.trim().to_string();
+            git.push_branch = state.git_push_branch.trim().to_string();
+            git.author_name = state.git_author_name.trim().to_string();
+            git.author_email = state.git_author_email.trim().to_string();
+            state.config.git = git.validated();
+            state.sync_git_staging();
+            state.refresh_git_status();
+            match state.config.save() {
+                Ok(()) => state.status = "Configuración git guardada.".to_string(),
+                Err(e) => state.status = format!("No se pudo guardar git: {e}"),
+            }
+            Task::none()
+        }
+        Message::GitRefreshStatus => {
+            state.refresh_git_status();
+            Task::none()
+        }
+        Message::GitInitWorkspace => {
+            let git = state.config.git.clone();
+            match state.active_workspace() {
+                Some(ws) => {
+                    state.status = "Inicializando git…".to_string();
+                    Task::perform(
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                crate::git::init_repo(&ws, &git.base_branch)
+                                    .and_then(|()| crate::git::ensure_work_branch(&ws, &git))
+                                    .map(|()| {
+                                        crate::git::current_branch(&ws)
+                                            .unwrap_or_else(|| git.work_branch.clone())
+                                    })
+                            })
+                            .await
+                            .map_err(|e| format!("tarea git: {e}"))?
+                        },
+                        Message::GitInitDone,
+                    )
+                }
+                None => {
+                    state.status = "Sin workspace activo (abre un proyecto primero).".to_string();
+                    Task::none()
+                }
+            }
+        }
+        Message::GitInitDone(res) => {
+            state.refresh_git_status();
+            match res {
+                Ok(branch) => {
+                    state.status = format!("Git listo en rama {branch}.");
+                    state.push_log(format!("🌿 git: rama {branch}"));
+                }
+                Err(e) => state.status = format!("No se pudo inicializar git: {e}"),
+            }
+            Task::none()
+        }
+        Message::GitPushDone(res) => {
+            match res {
+                Ok(msg) => {
+                    state.push_log(format!("⬆ push OK: {msg}"));
+                    state.status = "Push completado.".to_string();
+                }
+                Err(e) => {
+                    state.push_log(format!("⚠️ push falló: {e}"));
+                    state.status = format!("Push falló: {e}");
+                }
+            }
             Task::none()
         }
         Message::InitPricing => {
@@ -358,6 +723,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
         }
         Message::PickModel(id) => {
             state.edit_model = id.clone();
+            // Si el overlay de edición está abierto, el modelo elegido va a él.
+            if state.editing_profile.is_some() {
+                state.eprofile_model = id.clone();
+            }
             state.model_browser = false;
             state.model_status.clear();
             state.status = format!("Modelo elegido: {id}. Pulsa Guardar para aplicarlo.");

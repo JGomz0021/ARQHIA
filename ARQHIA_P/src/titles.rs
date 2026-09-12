@@ -1,4 +1,24 @@
 //! Títulos de chats: truncado seguro para cabeceras y filas. Puro, con tests.
+
+/// Limpia un título propuesto por la IA (v0.7.4): 1 línea, sin comillas,
+/// máx 40 chars; vacío → fallback al primer mensaje.
+pub fn sanitize_ai_title(raw: &str, fallback_msg: &str) -> String {
+    let one: String = raw
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches(['"', '\'', '«', '»', '.', '!', '¡', '?', '¿'])
+        .trim()
+        .to_string();
+    let short: String = one.chars().take(40).collect();
+    if short.trim().is_empty() {
+        title_for(fallback_msg)
+    } else {
+        short
+    }
+}
+
 pub fn title_for(first_msg: &str) -> String {
     let t = first_msg.trim();
     if t.is_empty() {
@@ -33,5 +53,14 @@ mod tests {
         let t = title_for(long);
         assert!(t.ends_with('…'));
         assert_eq!(t.chars().count(), 31);
+    }
+
+    #[test]
+    fn ai_title_sanitizes_and_falls_back() {
+        assert_eq!(sanitize_ai_title("\"Mi proyecto web\"\nsegunda línea", "hola"), "Mi proyecto web");
+        assert_eq!(sanitize_ai_title("   ", "hola mundo"), "hola mundo");
+        assert_eq!(sanitize_ai_title("", ""), "Nuevo chat");
+        let long = "a".repeat(100);
+        assert_eq!(sanitize_ai_title(&long, "x").chars().count(), 40);
     }
 }

@@ -130,6 +130,10 @@ pub struct Limits {
     /// Lo más viejo colapsa con marcador en vez de enviarse.
     #[serde(default = "default_history_limit")]
     pub history_limit: usize,
+    /// Ciclos máximos `auditor → fix` por turno Work (v0.7.3).
+    /// 0 = ilimitado (default): el bucle sigue hasta quedar verde.
+    #[serde(default)]
+    pub max_fix_cycles: usize,
 }
 
 /// Ignorados por defecto en búsqueda/listado recursivo (v0.7.1).
@@ -157,6 +161,7 @@ impl Default for Limits {
             max_read_kb: 256,
             max_tokens_turn: 0,
             history_limit: 20,
+            max_fix_cycles: 0,
         }
     }
 }
@@ -176,12 +181,22 @@ impl Limits {
                 self.max_tokens_turn.clamp(1_000, 500_000)
             },
             history_limit: self.history_limit.clamp(5, 100),
+            max_fix_cycles: if self.max_fix_cycles == 0 {
+                0
+            } else {
+                self.max_fix_cycles.clamp(1, 20)
+            },
         }
     }
 
     /// true si el turno tiene presupuesto configurado (≠ 0 = ilimitado).
     pub fn has_token_budget(self) -> bool {
         self.clamped().max_tokens_turn > 0
+    }
+
+    /// true si los ciclos de fix son ilimitados (0, default).
+    pub fn unlimited_fix_cycles(self) -> bool {
+        self.clamped().max_fix_cycles == 0
     }
 }
 
@@ -279,6 +294,169 @@ pub struct Appearance {
     pub density: Density,
 }
 
+/// Estrategia de rama de trabajo (v0.7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BranchMode {
+    /// Una sola rama `work_branch` por workspace (def).
+    #[default]
+    Single,
+    /// `arqhia/<tarea>` por cada tarea (reservado).
+    PerTask,
+}
+
+impl fmt::Display for BranchMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BranchMode::Single => write!(f, "ARQHIA única"),
+            BranchMode::PerTask => write!(f, "Por tarea"),
+        }
+    }
+}
+
+impl BranchMode {
+    pub const ALL: [BranchMode; 2] = [BranchMode::Single, BranchMode::PerTask];
+}
+
+/// Autonomía git del agente (v0.7.2). Default: commit local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Default)]
+pub enum GitAutonomy {
+    /// Solo lectura: no toca el repo.
+    ReadOnly,
+    /// init/add/commit/stash automáticos.
+    #[default]
+    CommitLocal,
+    /// Además push (si `push_enabled`).
+    CommitAndPush,
+}
+
+impl fmt::Display for GitAutonomy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GitAutonomy::ReadOnly => write!(f, "Solo lectura"),
+            GitAutonomy::CommitLocal => write!(f, "Commit local"),
+            GitAutonomy::CommitAndPush => write!(f, "Commit y push"),
+        }
+    }
+}
+
+impl GitAutonomy {
+    pub const ALL: [GitAutonomy; 3] = [
+        GitAutonomy::ReadOnly,
+        GitAutonomy::CommitLocal,
+        GitAutonomy::CommitAndPush,
+    ];
+}
+
+/// Configuración de Git (v0.7.2). Repo por workspace, rama de trabajo
+/// dedicada y base protegida. `#[serde(default)]` migra configs viejas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitConfig {
+    /// Inicia git en cada workspace (def true).
+    pub enabled: bool,
+    /// `git init` si el workspace aún no es repo (def true).
+    pub auto_init: bool,
+    /// Rama base protegida (def "main").
+    pub base_branch: String,
+    /// Rama de trabajo del agente (def "ARQHIA").
+    pub work_branch: String,
+    pub branch_mode: BranchMode,
+    pub autonomy: GitAutonomy,
+    /// Habilita el push a GitHub (def false; pide aprobación).
+    pub push_enabled: bool,
+    /// Remoto (def "origin").
+    pub remote: String,
+    /// Rama de push ("" = igual que work_branch).
+    pub push_branch: String,
+    /// Ramas intocables (def ["main", "master"]).
+    pub protected: Vec<String>,
+    /// Autor de commits ("" = identidad global de git).
+    pub author_name: String,
+    pub author_email: String,
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_init: true,
+            base_branch: "main".to_string(),
+            work_branch: "ARQHIA".to_string(),
+            branch_mode: BranchMode::Single,
+            autonomy: GitAutonomy::CommitLocal,
+            push_enabled: false,
+            remote: "origin".to_string(),
+            push_branch: String::new(),
+            protected: vec!["main".to_string(), "master".to_string()],
+            author_name: String::new(),
+            author_email: String::new(),
+        }
+    }
+}
+
+/// Limpia un nombre de rama: sin espacios ni `..`; vacío -> fallback.
+fn sanitize_branch(raw: &str, fallback: &str) -> String {
+    let cleaned: String = raw.trim().chars().filter(|c| !c.is_whitespace()).collect();
+    let cleaned = cleaned.replace("..", "");
+    if cleaned.is_empty() {
+        fallback.to_string()
+    } else {
+        cleaned
+    }
+}
+
+impl GitConfig {
+    /// Recorta valores inseguros y garantiza que `work_branch` no esté
+    /// protegida (cae a "ARQHIA"). Nunca deja `main`/`master` tocables.
+    pub fn validated(mut self) -> Self {
+        self.base_branch = sanitize_branch(&self.base_branch, "main");
+        self.work_branch = sanitize_branch(&self.work_branch, "ARQHIA");
+        self.remote = sanitize_branch(&self.remote, "origin");
+        self.push_branch = sanitize_branch(&self.push_branch, "");
+        self.author_name = self.author_name.trim().to_string();
+        self.author_email = self.author_email.trim().to_string();
+        self.protected = self
+            .protected
+            .iter()
+            .map(|b| sanitize_branch(b, ""))
+            .filter(|b| !b.is_empty())
+            .collect();
+        if self.protected.is_empty() {
+            self.protected = vec!["main".to_string(), "master".to_string()];
+        }
+        // La rama de trabajo jamás puede ser la base ni una protegida.
+        if self.work_branch == self.base_branch
+            || self.protected.iter().any(|p| p == &self.work_branch)
+        {
+            self.work_branch = "ARQHIA".to_string();
+        }
+        self
+    }
+
+    /// true si la política permite push automático (CommitAndPush + flag).
+    pub fn auto_push(&self) -> bool {
+        matches!(self.autonomy, GitAutonomy::CommitAndPush) && self.push_enabled
+    }
+
+    /// Rama destino del push: `push_branch` o `work_branch` si vacía.
+    pub fn push_target(&self) -> &str {
+        if self.push_branch.trim().is_empty() {
+            &self.work_branch
+        } else {
+            &self.push_branch
+        }
+    }
+
+    /// Autor (nombre, email) si ambos están configurados.
+    pub fn author(&self) -> Option<(String, String)> {
+        if self.author_name.trim().is_empty() || self.author_email.trim().is_empty() {
+            None
+        } else {
+            Some((self.author_name.trim().to_string(), self.author_email.trim().to_string()))
+        }
+    }
+}
+
 impl fmt::Display for ThemeMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -292,6 +470,63 @@ impl ThemeMode {
     pub const ALL: [ThemeMode; 2] = [ThemeMode::Dark, ThemeMode::Light];
 }
 
+/// Perfil de modelo con nombre visible (v0.7.4): snapshot de provider +
+/// credenciales + modelo + nivel, elegible por nombre en Config y composer.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelProfile {
+    pub id: String,
+    pub name: String,
+    pub provider: Provider,
+    #[serde(default)]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub reasoning_effort: String,
+}
+
+impl ModelProfile {
+    pub fn new(name: &str, provider: Provider, cfg: &ProviderConfig) -> Self {
+        let base = name.trim();
+        let stem = if base.is_empty() { "Perfil".to_string() } else { base.to_string() };
+        // id estable y único sin dependencias externas: slug + nanos.
+        let slug: String = stem
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        Self {
+            id: format!("{}-{nanos}", if slug.is_empty() { "perfil".to_string() } else { slug }),
+            name: stem,
+            provider,
+            base_url: cfg.base_url.clone(),
+            api_key: cfg.api_key.clone(),
+            model: cfg.model.clone(),
+            reasoning_effort: cfg.reasoning_effort.clone(),
+        }
+    }
+
+    /// Etiqueta visible en selectores: "Nombre (Provider · modelo)".
+    pub fn label(&self) -> String {
+        let m = if self.model.trim().is_empty() {
+            "(elige modelo)".to_string()
+        } else {
+            self.model.clone()
+        };
+        format!("{} ({} · {m})", self.name, self.provider)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub active: Provider,
@@ -300,6 +535,12 @@ pub struct AppConfig {
     pub openrouter: ProviderConfig,
     #[serde(default = "default_local_cfg")]
     pub local: ProviderConfig,
+    /// Perfiles guardados con nombre (v0.7.4). Vacío en configs viejas.
+    #[serde(default)]
+    pub model_profiles: Vec<ModelProfile>,
+    /// Id del perfil activo (None = sin perfil, se usa `active` + configs).
+    #[serde(default)]
+    pub active_profile: Option<String>,
     #[serde(default)]
     pub theme: ThemeMode,
     #[serde(default)]
@@ -308,6 +549,9 @@ pub struct AppConfig {
     pub limits: Limits,
     #[serde(default)]
     pub appearance: Appearance,
+    /// Configuración de Git (v0.7.2).
+    #[serde(default)]
+    pub git: GitConfig,
     /// Aviso de privacidad del workspace ya mostrado (v0.7 Track B).
     #[serde(default)]
     pub privacy_notice_shown: bool,
@@ -329,10 +573,13 @@ impl Default for AppConfig {
             anthropic: ProviderConfig::new(Provider::Anthropic),
             openrouter: ProviderConfig::new(Provider::OpenRouter),
             local: ProviderConfig::new(Provider::Local),
+            model_profiles: Vec::new(),
+            active_profile: None,
             theme: ThemeMode::Dark,
             permissions: Permissions::default(),
             limits: Limits::default(),
             appearance: Appearance::default(),
+            git: GitConfig::default(),
             privacy_notice_shown: false,
             search_ignores: Vec::new(),
             perms_migrated: true,
@@ -359,12 +606,51 @@ impl AppConfig {
         }
     }
 
+    /// Perfil activo por id, si existe.
+    pub fn profile_by_id(&self, id: &str) -> Option<&ModelProfile> {
+        self.model_profiles.iter().find(|p| p.id == id)
+    }
+
+    /// Garantiza al menos un perfil ("Perfil por defecto" desde el activo).
+    /// Migración v0.7.4: configs viejas sin perfiles no se rompen.
+    pub fn ensure_profiles(&mut self) {
+        if self.model_profiles.is_empty() {
+            let cfg = self.active_config();
+            let mut p = ModelProfile::new("Perfil por defecto", self.active, &cfg);
+            // id estable para la migración (no depende del reloj en tests).
+            p.id = "default".to_string();
+            self.model_profiles.push(p);
+            self.active_profile = Some("default".to_string());
+        }
+        if self.active_profile.is_none()
+            && let Some(first) = self.model_profiles.first() {
+                self.active_profile = Some(first.id.clone());
+            }
+    }
+
+    /// Aplica un perfil al activo (provider + credenciales en sus slots).
+    /// Devuelve false si el id no existe.
+    pub fn apply_profile(&mut self, id: &str) -> bool {
+        let Some(p) = self.profile_by_id(id).cloned() else {
+            return false;
+        };
+        self.active = p.provider;
+        let target = self.active_config_mut();
+        target.api_key = p.api_key.clone();
+        target.base_url = p.base_url.clone();
+        target.model = p.model.clone();
+        target.reasoning_effort = p.reasoning_effort.clone();
+        self.active_profile = Some(p.id);
+        true
+    }
+
     pub fn load() -> Self {
         let path = config_path();
         let mut cfg: Self = match fs::read_to_string(&path) {
             Ok(content) => toml::from_str(&content).unwrap_or_default(),
             Err(_) => Self::default(),
         };
+        cfg.ensure_profiles();
         // Migración v0.7 Track B: configs guardadas antes no conocen los
         // permisos peligrosos -> nacen desactivados una sola vez. Después se
         // respeta lo que el usuario elija (el flag queda persistido al guardar).
@@ -374,6 +660,7 @@ impl AppConfig {
             cfg.perms_migrated = true;
         }
         cfg.limits = cfg.limits.clamped();
+        cfg.git = cfg.git.validated();
         cfg
     }
 
@@ -510,17 +797,21 @@ model = "y"
         cfg.permissions.auto_net = true;
         assert!(cfg.permissions.auto_net);
         // Límites recortados a rango.
-        let lim = Limits { max_iters: 99, max_tasks: 0, bash_timeout_s: 1, max_upload_mb: 999, max_read_kb: 1, max_tokens_turn: 0, history_limit: 0 };
+        let lim = Limits { max_iters: 99, max_tasks: 0, bash_timeout_s: 1, max_upload_mb: 999, max_read_kb: 1, max_tokens_turn: 0, history_limit: 0, max_fix_cycles: 0 };
         let c = lim.clamped();
         assert_eq!((c.max_iters, c.max_tasks, c.bash_timeout_s, c.max_upload_mb, c.max_read_kb), (30, 1, 5, 200, 64));
         assert_eq!(c.max_tokens_turn, 0, "0 = sin límite, se respeta");
         assert_eq!(c.history_limit, 5, "historial recorta al mínimo");
-        let budgeted = Limits { max_tokens_turn: 999_999, history_limit: 200, ..Limits::default() };
+        assert_eq!(c.max_fix_cycles, 0, "0 = ciclos ilimitados, se respeta");
+        let budgeted = Limits { max_tokens_turn: 999_999, history_limit: 200, max_fix_cycles: 99, ..Limits::default() };
         let cb = budgeted.clamped();
         assert_eq!(cb.max_tokens_turn, 500_000);
         assert_eq!(cb.history_limit, 100);
+        assert_eq!(cb.max_fix_cycles, 20);
         assert!(!Limits::default().has_token_budget());
         assert!(Limits { max_tokens_turn: 5000, ..Limits::default() }.has_token_budget());
+        assert!(Limits::default().unlimited_fix_cycles());
+        assert!(!Limits { max_fix_cycles: 3, ..Limits::default() }.unlimited_fix_cycles());
     }
 
     #[test]
@@ -573,5 +864,161 @@ model = "openai/gpt-4o-mini"
         let back: AppConfig = toml::from_str(s).unwrap();
         assert_eq!(back.theme, ThemeMode::Dark);
         assert_eq!(back.openai.api_key, "gsk-test");
+    }
+
+    #[test]
+    fn git_defaults_migrate_and_roundtrip() {
+        // Defaults v0.7.2.
+        let g = GitConfig::default();
+        assert!(g.enabled && g.auto_init);
+        assert_eq!(g.base_branch, "main");
+        assert_eq!(g.work_branch, "ARQHIA");
+        assert_eq!(g.autonomy, GitAutonomy::CommitLocal);
+        assert!(!g.push_enabled);
+        assert_eq!(g.protected, vec!["main", "master"]);
+        assert!(!g.auto_push());
+        assert_eq!(g.push_target(), "ARQHIA");
+        // Config vieja sin [git]: serde default no rompe.
+        let old = r#"
+active = "OpenAI"
+[openai]
+api_key = ""
+base_url = "https://api.openai.com"
+model = "gpt-4o-mini"
+[anthropic]
+api_key = ""
+base_url = "https://api.anthropic.com"
+model = "x"
+[openrouter]
+api_key = ""
+base_url = "https://openrouter.ai"
+model = "y"
+"#;
+        let back: AppConfig = toml::from_str(old).unwrap();
+        assert!(back.git.enabled);
+        assert_eq!(back.git.work_branch, "ARQHIA");
+        // Roundtrip toml.
+        let mut cfg = AppConfig::default();
+        cfg.git.autonomy = GitAutonomy::CommitAndPush;
+        cfg.git.push_enabled = true;
+        cfg.git.push_branch = "arqhia".to_string();
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        let again: AppConfig = toml::from_str(&s).unwrap();
+        assert_eq!(again.git, cfg.git.validated());
+        assert!(again.git.auto_push());
+        assert_eq!(again.git.push_target(), "arqhia");
+    }
+
+    #[test]
+    fn git_validation_rejects_unsafe_names_and_protected_work() {
+        // Espacios y `..` fuera; work_branch protegida -> cae a ARQHIA.
+        let g = GitConfig {
+            base_branch: "  ma in  ".to_string(),
+            work_branch: "main".to_string(),
+            remote: "ori gin".to_string(),
+            push_branch: "a..b".to_string(),
+            protected: vec![" main ".to_string(), "".to_string()],
+            ..GitConfig::default()
+        }
+        .validated();
+        assert_eq!(g.base_branch, "main");
+        assert_eq!(g.remote, "origin");
+        assert_eq!(g.push_branch, "ab");
+        assert_eq!(g.work_branch, "ARQHIA", "work_branch no puede ser la base/protegida");
+        assert_eq!(g.protected, vec!["main"]);
+        // Autonomía: solo CommitAndPush + push_enabled habilita auto push.
+        let partial = GitConfig {
+            autonomy: GitAutonomy::CommitAndPush,
+            push_enabled: false,
+            ..GitConfig::default()
+        };
+        assert!(!partial.auto_push());
+        let readonly = GitConfig { autonomy: GitAutonomy::ReadOnly, ..GitConfig::default() };
+        assert!(!readonly.auto_push());
+        // Autor solo con nombre+email.
+        assert!(GitConfig::default().author().is_none());
+        let with_author = GitConfig {
+            author_name: "Ana".to_string(),
+            author_email: "ana@x.dev".to_string(),
+            ..GitConfig::default()
+        };
+        assert_eq!(with_author.author().unwrap(), ("Ana".to_string(), "ana@x.dev".to_string()));
+    }
+
+    #[test]
+    fn profiles_migrate_apply_and_roundtrip() {
+        // Config vieja sin perfiles: ensure crea "Perfil por defecto".
+        let old = r#"
+active = "OpenAI"
+[openai]
+api_key = "sk-x"
+base_url = "https://api.openai.com"
+model = "gpt-4o-mini"
+[anthropic]
+api_key = ""
+base_url = "https://api.anthropic.com"
+model = "x"
+[openrouter]
+api_key = ""
+base_url = "https://openrouter.ai"
+model = "y"
+"#;
+        let mut back: AppConfig = toml::from_str(old).unwrap();
+        assert!(back.model_profiles.is_empty());
+        back.ensure_profiles();
+        assert_eq!(back.model_profiles.len(), 1);
+        assert_eq!(back.model_profiles[0].name, "Perfil por defecto");
+        assert_eq!(back.active_profile.as_deref(), Some("default"));
+        // Guardar 2 perfiles y alternar.
+        let cfg2 = ProviderConfig { api_key: "k2".to_string(), base_url: "https://x".to_string(), model: "m2".to_string(), reasoning_effort: String::new() };
+        let mut p2 = ModelProfile::new("Potente", Provider::Anthropic, &cfg2);
+        p2.id = "p2".to_string();
+        back.model_profiles.push(p2);
+        assert!(back.apply_profile("p2"));
+        assert_eq!(back.active, Provider::Anthropic);
+        assert_eq!(back.active_config().model, "m2");
+        assert!(!back.apply_profile("inexistente"));
+        // Roundtrip toml conserva perfiles.
+        let s = toml::to_string_pretty(&back).unwrap();
+        let again: AppConfig = toml::from_str(&s).unwrap();
+        assert_eq!(again.model_profiles.len(), 2);
+        assert_eq!(again.active_profile.as_deref(), Some("p2"));
+        // Label visible con nombre, no id crudo.
+        assert!(again.model_profiles[1].label().starts_with("Potente (Anthropic"));
+    }
+
+    #[test]
+    fn switching_profiles_restores_full_connection() {
+        // El perfil es la unidad completa: provider+api+base+modelo+nivel.
+        let mut cfg = AppConfig::default();
+        cfg.ensure_profiles();
+        let a = ProviderConfig {
+            api_key: "sk-rapido".to_string(),
+            base_url: "https://api.openai.com".to_string(),
+            model: "gpt-4o-mini".to_string(),
+            reasoning_effort: String::new(),
+        };
+        let b = ProviderConfig {
+            api_key: "sk-potente".to_string(),
+            base_url: "https://api.anthropic.com".to_string(),
+            model: "claude-3-5-sonnet-20241022".to_string(),
+            reasoning_effort: "high".to_string(),
+        };
+        let mut pa = ModelProfile::new("Rápido", Provider::OpenAI, &a);
+        pa.id = "rapido".to_string();
+        let mut pb = ModelProfile::new("Potente", Provider::Anthropic, &b);
+        pb.id = "potente".to_string();
+        cfg.model_profiles = vec![pa, pb];
+        assert!(cfg.apply_profile("potente"));
+        assert_eq!(cfg.active, Provider::Anthropic);
+        assert_eq!(cfg.active_config().api_key, "sk-potente");
+        assert_eq!(cfg.active_config().base_url, "https://api.anthropic.com");
+        assert_eq!(cfg.active_config().model, "claude-3-5-sonnet-20241022");
+        assert_eq!(cfg.active_config().reasoning_effort, "high");
+        assert!(cfg.apply_profile("rapido"));
+        assert_eq!(cfg.active, Provider::OpenAI);
+        assert_eq!(cfg.active_config().api_key, "sk-rapido");
+        assert_eq!(cfg.active_config().base_url, "https://api.openai.com");
+        assert_eq!(cfg.active_config().model, "gpt-4o-mini");
     }
 }

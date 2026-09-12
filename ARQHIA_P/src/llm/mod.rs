@@ -166,10 +166,24 @@ pub fn normalize_base_url(url: &str) -> String {
     s.trim_end_matches('/').to_string()
 }
 
-/// Cliente HTTP compartido con timeout para no dejar la UI colgada.
+/// Cliente HTTP compartido para peticiones one-shot (test, pricing, pasos de
+/// agente sin streaming). Timeout total amplio: un turno con contexto grande
+/// puede tardar más de 20 s sin que sea un fallo de red.
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
+        .timeout(std::time::Duration::from_secs(120))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Cliente HTTP para streaming SSE. **Sin timeout total** (una generación
+/// larga puede durar minutos): solo acota la conexión, y el stream queda
+/// acotado por el botón Detener y `max_tokens_turn`. Evita el "error decoding
+/// response body" que lanzaba el timeout total de 20 s a mitad de stream.
+pub fn http_stream_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 }
@@ -299,6 +313,18 @@ pub fn friendly_error(raw: &str) -> String {
     if low.contains("timeout") || low.contains("timed out") {
         return "Tiempo de espera agotado: el proveedor no respondió. Reintenta.".to_string();
     }
+    if low.contains("corte de stream")
+        || low.contains("error decoding response body")
+        || low.contains("connection closed")
+        || low.contains("unexpected eof")
+        || low.contains("stream error")
+        || low.contains("reset by peer")
+        || low.contains("broken pipe")
+    {
+        return "Se cortó la conexión con el proveedor mientras respondía \
+            (respuesta larga o red inestable). Reintenta el mensaje."
+            .to_string();
+    }
     // Genérico: corta el volcado a una línea legible.
     let one: String = raw.replace('\n', " ").chars().take(220).collect();
     if raw.chars().count() > 220 {
@@ -363,6 +389,12 @@ mod tests {
         assert!(friendly_error("401 Unauthorized: bad key").contains("401"));
         assert!(friendly_error("OpenRouter 404: No endpoints found").contains("404"));
         assert!(friendly_error("boom").contains("boom"));
+        // Corte de stream (v0.7.2): el error de reqwest no se muestra crudo.
+        let cut = friendly_error("Corte de stream: error decoding response body");
+        assert!(cut.contains("cortó la conexión"), "{cut}");
+        assert!(!cut.contains("decoding"), "{cut}");
+        assert!(friendly_error("connection closed before message completed").contains("cortó"));
+        assert!(friendly_error("unexpected eof").contains("cortó"));
     }
 
     #[test]

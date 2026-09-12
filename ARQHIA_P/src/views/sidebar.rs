@@ -15,13 +15,18 @@ pub(crate) fn chat_row<'a>(state: &'a App, chat: &'a ChatMeta) -> Element<'a, Me
     let selected = state.active_chat == Some(chat.id);
     let ts = state.config.appearance.text_size.scale();
     if state.pending_delete == Some(chat.id) {
-        return row![
-            text("Borrar esta conversación?").size(design::fs(ts, type_scale::SECONDARY)),
-            components::danger_btn("Sí".to_string()).on_press(Message::ConfirmDeleteChat),
-            components::icon_btn("No".to_string()).on_press(Message::CancelDelete),
+        // Confirmación apilada: el texto arriba y los botones debajo para que
+        // no se aplasten en el ancho del sidebar.
+        return column![
+            text("¿Borrar este chat?").size(design::fs(ts, type_scale::SECONDARY)),
+            row![
+                components::danger_btn("Sí".to_string()).on_press(Message::ConfirmDeleteChat),
+                components::head_btn("No".to_string()).on_press(Message::CancelDelete),
+            ]
+            .spacing(6),
         ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center)
+        .spacing(4)
+        .width(iced::Fill)
         .into();
     }
     let label = titles::chat_label(&chat.title);

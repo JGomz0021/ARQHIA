@@ -25,16 +25,18 @@ pub enum ConfigTab {
     Api,
     Apariencia,
     Permisos,
+    Git,
     Proyectos,
     /// v0.7.1: lista de solo lectura de atajos de teclado.
     Atajos,
 }
 
 impl ConfigTab {
-    pub const ALL: [ConfigTab; 5] = [
+    pub const ALL: [ConfigTab; 6] = [
         ConfigTab::Api,
         ConfigTab::Apariencia,
         ConfigTab::Permisos,
+        ConfigTab::Git,
         ConfigTab::Proyectos,
         ConfigTab::Atajos,
     ];
@@ -44,6 +46,7 @@ impl ConfigTab {
             ConfigTab::Api => "API",
             ConfigTab::Apariencia => "Apariencia",
             ConfigTab::Permisos => "Permisos",
+            ConfigTab::Git => "Git",
             ConfigTab::Proyectos => "Proyectos",
             ConfigTab::Atajos => "Atajos",
         }
@@ -54,12 +57,13 @@ impl ConfigTab {
 pub enum Message {
     InputChanged(String),
     SendPressed,
-    StreamChunk(String),
+    /// Chunk de texto del stream (generación para ignorar resultados tardíos).
+    StreamChunk(u64, String),
     /// Uso de tokens del turno (input, output, cached, coste real opcional)
     /// al terminar el stream.
-    StreamUsage(u32, u32, u32, Option<f64>),
-    StreamDone,
-    StreamError(String),
+    StreamUsage(u64, u32, u32, u32, Option<f64>),
+    StreamDone(u64),
+    StreamError(u64, String),
     OpenConfig,
     GoChat,
     GoHome,
@@ -78,9 +82,8 @@ pub enum Message {
     ApiKeyChanged(String),
     BaseUrlChanged(String),
     ModelChanged(String),
-    /// Nivel de razonamiento elegido en Config (se guarda con Guardar).
+    /// Nivel de razonamiento elegido en Config (se guarda con el perfil).
     EditReasoningPicked(String),
-    SaveConfig,
     TestConnection,
     TestResult(Result<String, String>),
     UseDefaultBaseUrl,
@@ -122,9 +125,11 @@ pub enum Message {
     ClearWorkspace(i64),
     // v0.6 — orquestador paso a paso
     AgentPlan(u64, Result<Vec<agent::WTask>, String>),
+    /// Analista dedicado (v0.7.3): brief antes del planner.
+    AgentAnalyze(u64, Result<String, String>),
     AgentLlm(u64, Result<agent::StepOutcome, String>),
     AgentExecDone(u64, Vec<agent::PendingCall>, Vec<serde_json::Value>, Vec<String>),
-    AgentAudit(u64, Result<(String, Vec<String>), String>),
+    AgentAudit(u64, Result<(String, Vec<String>, bool), String>),
     ApproveTools,
     DenyTools,
     DenyToolsRemember,
@@ -170,8 +175,27 @@ pub enum Message {
     LimitReadPicked(u64),
     LimitTokensPicked(u64),
     LimitHistoryPicked(usize),
+    /// Ciclos máximos auditor→fix por turno (v0.7.3, 0 = ilimitado).
+    LimitFixCyclesPicked(usize),
     // v0.7 — config por pestañas + uploads
     ConfigTab(ConfigTab),
+    // v0.7.2 — Git nativo
+    GitEnabledToggled(bool),
+    GitAutoInitToggled(bool),
+    GitBranchModePicked(crate::config::BranchMode),
+    GitAutonomyPicked(crate::config::GitAutonomy),
+    GitPushToggled(bool),
+    GitBaseBranchChanged(String),
+    GitWorkBranchChanged(String),
+    GitRemoteChanged(String),
+    GitPushBranchChanged(String),
+    GitAuthorNameChanged(String),
+    GitAuthorEmailChanged(String),
+    GitSave,
+    GitRefreshStatus,
+    GitInitWorkspace,
+    GitInitDone(Result<String, String>),
+    GitPushDone(Result<String, String>),
     ConfigDeleteProject(i64),
     ConfirmConfigDelete,
     CancelConfigDelete,
@@ -194,4 +218,34 @@ pub enum Message {
     QPublicoPicked(Publico),
     QInterfazPicked(Interfaz),
     FinishQuestionnaire,
+    // v0.7.4 — perfiles de modelo con nombre
+    ProfilePicked(String),
+    ProfileNameChanged(String),
+    ProfileSave,
+    ProfileDelete(String),
+    /// Abre/cierra el menú "···" de un perfil de la lista.
+    ProfileMenuToggled(String),
+    /// Abre el overlay de edición de un perfil.
+    ProfileEdit(String),
+    ProfileEditCancel,
+    ProfileEditNameChanged(String),
+    ProfileEditProviderPicked(Provider),
+    ProfileEditApiChanged(String),
+    ProfileEditBaseChanged(String),
+    ProfileEditModelChanged(String),
+    ProfileEditReasoningPicked(String),
+    /// Guarda los cambios del overlay de edición.
+    ProfileUpdate,
+    // v0.7.4 — utilidades de chat
+    UndoChat,
+    BranchChatFrom(usize),
+    ChatTitleFetched(u64, i64, String),
+    /// Abre/cierra el menú contextual de un mensaje (clic derecho o ···).
+    ChatMsgMenu(usize),
+    /// Copia el contenido de un mensaje al portapapeles.
+    CopyMsg(usize),
+    /// Pide deshacer hasta un mensaje (muestra aviso: borra el resto).
+    TruncateRequest(usize),
+    ConfirmTruncate,
+    CancelTruncate,
 }

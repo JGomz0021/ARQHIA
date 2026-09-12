@@ -26,7 +26,7 @@
 - Provider Local (LM Studio): 4º provider OpenAI-compatible (`llm/local.rs`), default `http://localhost:1234`, sin key obligatoria (`requires_key`/`is_configured_for`), modelo = id exacto cargado en LM Studio, `Probar conexión` sin auth lista modelos, hints propios en Config, visible siempre en el selector rápido. `normalize_base_url` ahora también recorta `/v1` y `/api/v1` pegados. `cargo test` 28/28 OK.
 - Cierre v0.6: ESPEC.md inyectado en planner + workers (~2000 chars); retry sin tools ante 400 con "tool" (modelos locales); botón `⏹ Detener` con generaciones (ignora resultados tardíos); higiene (`orchestrator.rs` stub y handler `AgentDone` eliminados); papelera `~/.local/share/arqhia/papelera/` al borrar proyecto (con fallback copiar+borrar); `Denegar y no preguntar más` con memoria por turno; visor `📝 TEMP` en el chat. Tests: inyección ESPEC, papelera mueve archivos, `cargo test` 31/31 OK, `cargo check` sin warnings, binario reconstruido.
 - v0.6 probada por el usuario. v0.6 🟢 Done.
-- v0.7 en curso: CONTEXT reescrito (config por pestañas, uploads, borrado); Config con columna `API|Apariencia|Permisos|Proyectos`; pestaña Proyectos con borrado a papelera (reusa `remove_project_everywhere`) y lista `uploads/` con borrado individual (guard anti-escape); botón `Subir` por proyecto (`rfd::pick_files` en `spawn_blocking` → `{ws}/uploads/`, tope 50 MB, `nombre (2).ext`); `workspace::{upload_files,list_uploads,delete_upload}` + tests. `cargo test` 32/32 OK, sin warnings.
+- v0.7 🟢 Done (probada y revisada): CONTEXT reescrito (config por pestañas, uploads, borrado); Config con columna `API|Apariencia|Permisos|Proyectos`; pestaña Proyectos con borrado a papelera (reusa `remove_project_everywhere`) y lista `uploads/` con borrado individual (guard anti-escape); botón `Subir` por proyecto (`rfd::pick_files` en `spawn_blocking` → `{ws}/uploads/`, tope 50 MB, `nombre (2).ext`); `workspace::{upload_files,list_uploads,delete_upload}` + tests. `cargo test` 32/32 OK, sin warnings.
 - Fix crash pestaña Proyectos: `scrollable(list).height(Fill)` anidado dentro del scrollable de Config (panic "must not fill its vertical scrolling axis"). El tab devuelve la columna y el scroll lo pone el contenedor. Test headless `config_tabs_build_without_panic` que construye las 4 pestañas. `cargo test` 33/33 OK.
 - Estilo general: `⏻ Salir` al fondo del sidebar (`iced::exit()`); botones compactos en toda la app (helpers `icon_btn/primary_btn/danger_btn`, padding 4–14); burbujas de chat, tarjetas de proyecto, modal de permisos y paneles con `rounded_box`; CTAs en primary, borrados en danger; pickers con ancho fijo anti-desborde; `cargo clippy` a cero warnings (`--fix` + ajustes manuales). `cargo test` 33/33 OK, binario reconstruido.
 - System prompt (`llm::system_identity`): cada conversación arranca con identidad de ARQHIA, capacidades (con/sin tools) y reglas (idioma, Markdown, modelo en uso). Nuevo `Role::System`; Anthropic lo manda en su parámetro `system`, el resto como mensaje `system`. No se persiste en DB. `cargo test` 35/35 OK.
@@ -37,7 +37,8 @@
 
 # Siguiente paso
 
-- Prueba manual v0.7.1 (GUI): `pkill arqhia_p; cargo run`. Chat nuevo → badge dice Chat aunque haya workspace; `Ctrl+2` → Plan, "revisa el proyecto" → `CONTEXT/PLAN.md` existe, disco intacto, 1 llamada; Ejecutar plan → pasa a Work y orquesta; Work sobre repo grande → Log con `🪙` y `target/` ignorado; `max_tokens_turn=5000` + tarea larga → para al 100% con mensaje. Si OK, marcar v0.7.1 🟢 y seguir v0.8 (cuestionario 3 niveles). Nota: v0.7 sigue pendiente de su prueba manual (ver arriba); puede probarse junta.
+- **v0.7, v0.7.1 y v0.7.2 marcadas 🟢 Done.** Se dan por cerradas: tabs/uploads/permisos/límites/apariencia/POLICIES (v0.7), agente eficiente + Modos Chat/Plan/Work (v0.7.1) y Git nativo + puerta de calidad (v0.7.2).
+- Siguiente: **v0.7.3 — Bucle de estabilidad** (spec en `CONTEXT/VERSIONS/v0.7.3.md`; ver "v0.7.3 — Bucle de estabilidad (diseño)" más abajo).
 
 # UI polish + tokens (ronda actual)
 
@@ -109,4 +110,121 @@
 - Nuevo `src/views/{sidebar,chat,questionnaire,config_view}.rs` (render puro; `views::app_theme` compartido). Botones a `ui/components.rs`. Stubs muertos eliminados (`chat.rs`, `stack.rs`, `views/config.rs`, `views/stack.rs`, `ui/markdown.rs`).
 - DB: `chats.archived` con migración + `set_archived`; tests de vistas movidos a `views/tests`; `friendly_error` para 429/401/402/404/timeout.
 - Producción sin `unwrap`/`expect` (quedaban solo en tests + 1 en `worker_seed`, eliminado). Sin nuevas dependencias, sin cambios de comportamiento. `cargo test` 40/40, `cargo clippy --all-targets` cero warnings.
-- v0.7.1 implementada (código, pendiente prueba GUI): modos `Chat/Plan/Work` por chat (`db::Mode`, migración `chats.mode`, default Chat, badge en header + segmento en composer, `ModePicked` persiste); Plan = 1 llamada sin tools → `CONTEXT/PLAN.md` + checklist + `Ejecutar plan` (pasa a Work); Work = orquestador (Chat sin workspace = directo); atajos `Ctrl+N/1/2/3/O/,` + `Esc` (suscripción teclado, sin robar input) + pestaña Atajos; `search_files` v2 (bloques con 3 líneas ctx, máx 20, ranking nombre>contenido, ignora `target/.git/node_modules/*.lock`); `read_file` paginado (`offset/limit`, `líneas X–Y de Z`); `get_file_outline` (firmas); ventana historial configurable (def 20, con marcador) en chat plano y workers; ESPEC/AGENTS una vez como mensaje de contexto (system lean); colapso progresivo de outputs (últimos 4) + al 80% del presupuesto; caché de lecturas por turno (`📦`); parada temprana (calls idénticas 2×); presupuesto `max_tokens_turn` (0 = ilimitado) + badge `🪙` reescrito en Log (estimador `chars/4` ±30%); `busy_timeout` 5s en SQLite (adiós flake de tests paralelos). `cargo test` 64/64 OK, `cargo clippy --all-targets` cero warnings, binario reconstruido.
+- v0.7.1 implementada, probada en GUI y revisada 🟢 Done: modos `Chat/Plan/Work` por chat (`db::Mode`, migración `chats.mode`, default Chat, badge en header + segmento en composer, `ModePicked` persiste); Plan = 1 llamada sin tools → `CONTEXT/PLAN.md` + checklist + `Ejecutar plan` (pasa a Work); Work = orquestador (Chat sin workspace = directo); atajos `Ctrl+N/1/2/3/O/,` + `Esc` (suscripción teclado, sin robar input) + pestaña Atajos; `search_files` v2 (bloques con 3 líneas ctx, máx 20, ranking nombre>contenido, ignora `target/.git/node_modules/*.lock`); `read_file` paginado (`offset/limit`, `líneas X–Y de Z`); `get_file_outline` (firmas); ventana historial configurable (def 20, con marcador) en chat plano y workers; ESPEC/AGENTS una vez como mensaje de contexto (system lean); colapso progresivo de outputs (últimos 4) + al 80% del presupuesto; caché de lecturas por turno (`📦`); parada temprana (calls idénticas 2×); presupuesto `max_tokens_turn` (0 = ilimitado) + badge `🪙` reescrito en Log (estimador `chars/4` ±30%); `busy_timeout` 5s en SQLite (adiós flake de tests paralelos). `cargo test` 64/64 OK, `cargo clippy --all-targets` cero warnings, binario reconstruido.
+
+# v0.7.2 — Git nativo + puerta de calidad (🟢 Done)
+
+- Contexto escrito: `CONTEXT/VERSIONS/v0.7.2.md` (spec completa), `VERSIONS.md` (🟢), `ROADMAP.md` (tabla + stack), `PROJECT.md` (§3.2, §4, §5.2, §8.7, §10, §13).
+- Decisiones: repo por workspace con rama de trabajo fija `ARQHIA` (base `main` protegida); autonomía por defecto `CommitLocal`; push a GitHub **OFF + aprobación**; auto-commit tras cada tarea exitosa.
+- Implementado:
+  - `config.rs`: `GitConfig` (+ `BranchMode`, `GitAutonomy`), defaults (`enabled`/`auto_init` true, `base_branch` main, `work_branch` ARQHIA, `protected` main/master) y `validated()` (recorta ramas/remoto, evita `work_branch` protegida). Migración por `#[serde(default)]`.
+  - `git.rs` (nuevo): `is_repo`, `current_branch`, `remotes`, `status_short`, `is_clean`, `init_repo`, `ensure_work_branch`, `commit_all` (guarda anti-sucio), `push` (async, `GIT_TERMINAL_PROMPT=0` + timeout 60s), `diff_stat`, `workspace_status`. 3 tests con repo temporal.
+  - `agent/tools.rs`: `classify_git` (Read/Write/Net/Blocked), `GitKind`, categorías `ToolCat::Git`/`GitPush`, `ExecPolicy` con autonomía/push/protegidas, allowlist `cargo clippy`/`cargo fmt` + `git`, bloqueo de `push --force`/`reset --hard`/`clean`/`rebase`/`config`/`remote add-remove`/`-C`, commit sobre rama protegida. Tests de política.
+  - UI: pestaña `ConfigTab::Git` con 3 cards (Repositorio, Autonomía, Estado del workspace) + `GitInitWorkspace` async; mensajes `Git*`, staging en `state.rs`.
+  - `app/projects.rs` + `handlers/projects.rs`: `init_workspace_git` al crear/abrir (init + rama ARQHIA).
+  - `orchestrator.rs`: `prepare_git_turn` (rama + árbol limpio) y `close_git_turn` (auto-commit `ARQHIA: <resumen>` solo si verde y árbol limpio; push si `CommitAndPush && push_enabled`).
+  - Auditor: `cargo check` + `cargo test` + `cargo clippy --all-targets` (timeout 600s), `TEMP.md` con secciones Verificación/Estado, `VERIFY: OK|FAIL`; auto-commit solo con `git_verify_ok` + `git diff --stat`.
+- `cargo test` 78/78 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings.
+
+# v0.7.3 — Bucle de estabilidad (🟢 Done)
+
+- Implementado:
+  - `config.rs`: `Limits.max_fix_cycles` (0 = ilimitado, default; clamp 1–20 si >0) + `unlimited_fix_cycles()`.
+  - `agent/mod.rs`: `read_context_docs` (PROJECT/SPECS/ESPEC/CONTEXT/VERSIONS/ROADMAP/PLAN/TEMP con tope 1500), `code_outlines` (firmas `tools::outline_of`, máx 12 archivos, ignora target/.git/node_modules), `analyze_workspace` (1 llamada sin tools → brief) y `read_analysis_md`.
+  - `plan_tasks` recibe `brief: Option<&str>`; `worker_context_block` inyecta `CONTEXT/ANALYSIS.md` una vez por worker.
+  - `agent/tools.rs`: `outline_of` reutilizable.
+  - `handlers/chat.rs`: Plan y Work llaman al analista antes del planner (cadena `AgentAnalyze`); fallback a `context_block` si falla; guarda `CONTEXT/ANALYSIS.md`.
+  - `handlers/agent.rs`: loop `auditor → fix` sin tope (salvo `max_fix_cycles`), `FixDecision` puro (`Clean`/`Fix`/`CapReached`), log `↻ ciclo N: M issues` y `✅ estable tras N ciclos`; al tope con issues: sin commit.
+  - Auditor: `VERDICT: CLEAN|ISSUES` (reseña LLM + check/test/clippy) y contador de ciclo en `TEMP.md`; si el LLM cae, no bloquea (manda la puerta de calidad).
+  - `orchestrator.rs`: `git_turn_interrupted` (presupuesto/parada) bloquea el commit; commit solo con turno verde.
+  - UI: límite `Ciclos de fix` en Config → Permisos.
+- `cargo test` 81/81 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings.
+
+# Fix navegación de Config (sin cambio de versión)
+
+- `Esc` en Config ahora vuelve al origen (misma acción que `Volver`), además de cerrar menús/paneles (`CloseOverlays`).
+- `Ctrl+,` estando ya en Config no pisa el origen: reabrir `Ajustes` con el atajo no deja atrapado el botón `Volver`.
+- Test `config_back_and_esc_return_to_origin` (Home→Config→Esc=Home; Chat→Config→Volver=Chat; Ctrl+, repetido no atrapa). `cargo test` 82/82 OK, clippy 0 warnings.
+
+# Fix sidebar y confirmación de borrado (sin cambio de versión)
+
+- Sidebar izquierdo 248 → **300 px** (un poco más ancho).
+- Confirmación de borrar chat (`... → Borrar`): antes era una fila con texto + 2 botones que se aplastaba; ahora el texto va arriba y los botones (`Sí`/`No`) debajo, con `width(Fill)`. `cargo test` 82/82, clippy 0 warnings.
+- Chat: padding derecho de 14px en el contenido del scrollable de mensajes para separar la barra de deslizamiento del texto (a la derecha).
+
+# Fix "Corte de stream: error decoding response body" (sin cambio de versión)
+
+- Causa: `http_client()` aplicaba un timeout total de 20 s también al streaming SSE; una generación larga (p. ej. cuento con OpenRouter/DeepSeek) se cortaba a mitad y reqwest lo reportaba como `Kind::Decode` ("error decoding response body").
+- Arreglo:
+  - `llm/mod.rs`: nuevo `http_stream_client()` (solo `connect_timeout` 15 s, sin timeout total) para los 4 `chat_stream`; `http_client()` one-shot sube a 120 s (cubre `agent::llm_step`/`simple_chat`/auditor/pricing).
+  - `openai/openrouter/anthropic/local.rs`: cierre de stream tolerante: error antes de texto → error real; error después de texto → cierra como parcial con aviso `_(se cortó la conexión; respuesta parcial)_`.
+  - `Cargo.toml`: reqwest con `gzip`, `brotli`, `deflate`, `zstd`.
+  - `friendly_error`: mapea `error decoding response body` / `connection closed` / `unexpected eof` / `stream error` / `reset by peer` / `broken pipe` / `corte de stream` a un mensaje claro en español.
+- `cargo test` 82/82 OK, `cargo clippy --all-targets` 0 warnings, `cargo build` OK.
+
+# Detener agente + scrollbar (sin cambio de versión)
+
+- Botón **Detener** que reemplaza a **Enviar** durante la ejecución (stream o agente), en el mismo sitio del composer (`views/chat.rs`).
+- **Doble Esc** detiene el turno en curso (ventana 600 ms); un solo Esc sigue cerrando menús / saliendo de Configuración.
+- `StopAgent` ahora corta también el stream de chat plano: nueva generación `stream_gen` en `Message::Stream{Chunk,Usage,Done,Error}` para ignorar chunks tardíos; conserva el texto parcial y añade `_(detenido por el usuario)_`.
+- Scrollbar del chat: padding derecho 14 → **28 px** para separarlo más del texto.
+- El `provider · modelo` activo se movió de la caja de entrada (composer) a la **cabecera** del chat, junto al proyecto y el nombre del chat.
+- Atajos (Config): añadida fila `Doble Esc — Detener el turno en curso`.
+- Test `double_esc_stops_running_turn`. `cargo test` 83/83 OK, clippy 0 warnings, `cargo build` OK.
+
+# Roadmap: sesiones de chat asignadas a v0.8
+
+- La feature de **sesiones** (id estable por chat reutilizado por el provider) deja de ser backlog sin versión y pasa a **v0.8**.
+- Spec ampliada en `CONTEXT/VERSIONS/v0.8.md` (§E): `chats.session_id` + migración, `ChatMeta.session_id`, `llm::session_body_fields` (OpenRouter `session_id`, OpenAI/Groq `prompt_cache_key`, Anthropic header `x-session-id`), acción `Reiniciar sesión`, tests.
+- Actualizados: `ROADMAP.md` (fila v0.8 + backlog §6), `PROJECT.md` (§5.4, §8.9, §10, §13), `VERSIONS.md`.
+
+# Roadmap: nueva v0.7.4 (Chat UX + modelos con nombre)
+
+- **Decisión:** crear versión intermedia **v0.7.4** para no sobrecargar v0.8 (que ya carga cuestionario + estructura + onboarding + sesiones).
+- Contenido (§A/§B de `CONTEXT/VERSIONS/v0.7.4.md`):
+  - **Perfiles de modelo con nombre visible** (provider + base_url + API key + model + nivel), selector por nombre en Config y composer; CRUD + migración.
+  - **Utilidades de chat:** título por IA (fallback), undo (`Ctrl+Z`), copiar chat, nuevo chat desde un mensaje (bifurcar), fecha/hora por mensaje (`messages.created_at`), reintento con icono `↻`, y **citar fuentes** (`Fuentes` clicables) tras `fetch_url`.
+- Docs: `VERSIONS/v0.7.4.md` (nueva), `VERSIONS.md`, `ROADMAP.md` (tabla + §6), `PROJECT.md` (§5.4, §8.10, §10, §13).
+- Las **sesiones** siguen en v0.8 §E.
+
+# Siguiente paso
+
+- **v0.7, v0.7.1, v0.7.2 y v0.7.3 🟢 Done.** Flujo pre-STACK completo implementado; ARQHIA puede dogfoodear su propio código.
+- Siguiente, en orden: **v0.7.4** (chat UX + perfiles de modelo) → **v0.8** (cuestionario + estructura + onboarding + sesiones) → **v0.9** (STACK local + `.deb` + CI) → **WEB** (dependencia) → **v1.0** → v1.1 → v1.2.
+
+# v0.7.3 — Bucle de estabilidad (diseño)
+
+Flujo pre-STACK acordado: `petición → orquestador → analista (contexto/specs/código)
+→ planner → workers → auditor → TEMP → loop fix hasta verde → commit → push (opcional)`.
+
+- Spec escrita: `CONTEXT/VERSIONS/v0.7.3.md`; fila en `VERSIONS.md` (🟢) y `ROADMAP.md`.
+- Decisiones: commit **1 por turno con el loop verde**; análisis como **llamada
+  dedicada** (brief `CONTEXT/ANALYSIS.md` consumido por el planner, con fallback);
+  bucle **ilimitado hasta verde** (freno: `Detener`, `max_tokens_turn`, parada
+  temprana; `Limits.max_fix_cycles` def 0 = ilimitado); push OFF + aprobación.
+- v0.7.3 reubica el auto-commit de v0.7.2 (de "fin de turno" a "fin de bucle verde").
+- Docs actualizados: `CONCEPTO.md` (flujo del agente), `PROJECT.md` (§6, §8.8, §10, §13),
+  `ROADMAP.md` (stack + tabla), `VERSIONS.md`, `VERSIONS/v0.7.2.md` (nota).
+
+# v0.7.4 — Chat UX + modelos con nombre (🟢 Done)
+
+- `config.rs`: `ModelProfile{id,name,provider,base_url,api_key,model,reasoning_effort}` + `model_profiles/active_profile` + `ensure_profiles()` ("Perfil por defecto") + `apply_profile/sync_active_profile`; CRUD Guardar/Renombrar/Duplicar/Borrar/Activar; selector por nombre visible.
+- `db.rs`: migración `messages.created_at` + `load_chat_history_full` + `copy_chat`/`branch_chat` transaccionales + `delete_last_messages`; test 3→copia 3→rama 2.
+- Chat: timestamps `DD/MM HH:MM`, `Deshacer`(Ctrl+Z 1 paso, envío+borrado), `Copiar`, `Rama desde aquí`, `Título` (IA 1 llamada + fallback + Regenerar), reintento icono `↻`, bloque `Fuentes` clicables (fetch_url args + extract_urls, anexadas al cerrar turno).
+- Fixes: perfil = unidad completa (provider+api+base+modelo+nivel); `Guardar` de provider ya no pisa perfiles, "Guardar como perfil" con mismo nombre actualiza; fecha/hora + "Rama desde aquí" al pie de cada burbuja; toolbar siempre visible `Deshacer (Ctrl+Z) | Copiar chat | Título por IA`; aire inferior 24px + separador 4px para que el composer no tape el último mensaje; Ctrl+Z en Atajos.
+- Rediseño Config → API centrado en perfiles: formulario "Nuevo perfil" (nombre → provider → API key → URL base → modelo + Buscar → nivel → Guardar perfil/Probar); lista "Mis perfiles" con una caja por perfil (nombre + modelo, badge activo/provider, `···` con Borrar/Editar); overlay "Editar perfil" (nombre/provider/api/base/modelo+BUSCAR/nivel, Guardar cambios/Cancelar, Esc cierra). Buscador sin scroll horizontal (textos Fill + id truncado + padding 20px para la barra).
+- Corrección chat: fuera botones superiores (Deshacer/Copiar/Título); título IA 100% automático y silencioso (fallback + 1 llamada, sin "generando título"); pie de cada mensaje con fecha + `Copiar` (portapapeles) + `···`; clic derecho o `···` abre `Deshacer hasta aquí` (aviso "Se borrará el resto. ¿Seguir?" Sí/No) y `Rama desde aquí`; Ctrl+Z recupera lo truncado (reinserta la cola en DB).
+- `cargo test` 88/88 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings.
+
+# Refactor pre-v0.8 (debug + optimización + dedup)
+
+- Helpers centrales en `App`: `pop_last_message()` (pops alineados) y `resync_msg_meta()` (relee ids/timestamps); eliminados `refresh_ids_times`/`now_ts` duplicados y el bloque inline de `finish_agent_answer`.
+- `begin_analysis_turn()` unifica los arranques Plan/Work (eran ~50 líneas duplicadas); `spawn_chat()` unifica NewChat/NewChatInProject.
+- Fuente única: `tools::default_ignores` → `config::default_ignores`; `agent::estimate_tokens` → `llm::estimate_tokens_text`; `short_preview` → `design::trunc_end`.
+- Bugs: `agent::short` hacía slice por bytes (panic con UTF-8) → recorte por chars; Undo de envío borraba `added+1` filas fijas (podía llevarse mensajes viejos si el stream falló) → borrado por diferencia con `db::count_messages`; `ExecutePlan` y `Abrir proyecto` dejaban paralelos desalineados → pushes/clears completos; eliminado `sync_active_profile` muerto, shims `save_msg_legacy`/`load_chat_history`/`load_history` y const `UPLOAD_MAX_BYTES` sin uso (~80 líneas menos).
+- `cargo clippy --all-targets` 0 warnings, `cargo test` 88/88 OK (3 ignorados), `cargo build` OK. 15.865 líneas Rust.
+
+# Siguiente paso (actualizado)
+
+- **v0.7.2, v0.7.3 y v0.7.4 🟢 Done + refactor verde.**
+- Siguiente: **v0.8** (cuestionario + estructura + onboarding + sesiones) → v0.9 (STACK) → WEB → v1.0 → v1.1 → v1.2.

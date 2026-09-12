@@ -6,7 +6,6 @@
 use iced::Task;
 
 use crate::app::state::App;
-use crate::llm::{ChatMsg, Role};
 use crate::app::Message;
 use crate::app::projects::{create_project_with_dir, enter_questionnaire, remove_project_everywhere, resolve_project_dir};
 use crate::app::state::clear_turn_state;
@@ -142,10 +141,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .map(|p| p.name.clone())
                 .unwrap_or_else(|| base_name.clone());
             let _ = db::touch_project(pid);
+            // v0.7.2: git init + rama de trabajo si está habilitado.
+            super::super::projects::init_workspace_git(state, &canon);
             // Sin chat inicial: el chat se crea al enviar el primer mensaje.
             state.active_chat = None;
             state.messages.clear();
             state.md.clear();
+            state.msg_usage.clear();
+            state.msg_times.clear();
+            state.msg_ids.clear();
             state.pending_project = Some(pid);
             state.push_log(format!("📁 abierto {shown} -> {path_str}"));
             state.status.clear();
@@ -464,21 +468,16 @@ pub(crate) fn navigate_project(state: &mut App, pid: Option<i64>) -> Task<Messag
     {
         Some(id) => {
             state.active_chat = Some(id);
-            state.messages = db::load_chat_history(id, 500)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(role, content)| ChatMsg {
-                    role: Role::from_str(&role),
-                    content,
-                })
-                .collect();
-            state.reparse_md();
+            state.reload_active_chat();
             state.pending_project = None;
         }
         None => {
             state.active_chat = None;
             state.messages.clear();
             state.md.clear();
+            state.msg_times.clear();
+            state.msg_ids.clear();
+            state.msg_usage.clear();
             state.pending_project = pid;
         }
     }

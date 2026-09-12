@@ -82,6 +82,12 @@ pub fn init() -> Result<(), String> {
         conn.execute_batch("ALTER TABLE chats ADD COLUMN mode TEXT DEFAULT NULL;")
             .map_err(|e| e.to_string())?;
     }
+    // Migración v0.7.4: messages.created_at (fecha/hora por mensaje).
+    // La tabla nueva ya la trae; DBs viejas la reciben aditiva.
+    if !column_exists(&conn, "messages", "created_at") {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'));")
+            .map_err(|e| e.to_string())?;
+    }
     // Mensajes huérfanos (v0.1) van a un chat "General", pero SOLO si existen:
     // ya no se crea ningún chat automáticamente al entrar.
     let orphans: i64 = conn
@@ -363,57 +369,174 @@ pub fn save_msg(chat_id: i64, role: &str, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Compat: guarda en el primer chat (usado solo por tests viejos).
-#[allow(dead_code)]
-pub fn save_msg_legacy(role: &str, content: &str) -> Result<(), String> {
+/// Mensaje con id y timestamp (v0.7.4): fecha/hora visible por mensaje.
+#[derive(Debug, Clone)]
+pub struct ChatMessage {
+    pub id: i64,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+}
+
+/// Historial completo con id y created_at (v0.7.4). Legacy sin columna = "".
+pub fn load_chat_history_full(chat_id: i64, limit: usize) -> Result<Vec<ChatMessage>, String> {
     let conn = connect()?;
-    let id = ensure_general_chat(&conn)?;
+    let with_ts = column_exists(&conn, "messages", "created_at");
+    let sql = if with_ts {
+        "SELECT id, role, content, created_at FROM messages WHERE chat_id = ?1 ORDER BY id ASC LIMIT ?2"
+    } else {
+        "SELECT id, role, content FROM messages WHERE chat_id = ?1 ORDER BY id ASC LIMIT ?2"
+    };
+    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![chat_id, limit as i64], |row| {
+            let id: i64 = row.get(0)?;
+            let role: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            let created_at: String = if with_ts { row.get(3)? } else { String::new() };
+            Ok(ChatMessage { id, role, content, created_at })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Duplica un chat completo: nuevo chat con mismo título + " (copia)",
+/// proyecto y modo, y todas las filas de mensajes. Transaccional.
+/// (Reservado: el "copiar" visible del chat es por mensaje al portapapeles.)
+#[allow(dead_code)]
+pub fn copy_chat(src_id: i64) -> Result<i64, String> {
+    let mut conn = connect()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (title, project_id, mode): (String, Option<i64>, Option<String>) = tx
+        .query_row(
+            "SELECT title, project_id, mode FROM chats WHERE id = ?1",
+            params![src_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO chats (title, project_id, mode) VALUES (?1, ?2, ?3)",
+        params![format!("{title} (copia)"), project_id, mode],
+    )
+    .map_err(|e| e.to_string())?;
+    let new_id = tx.last_insert_rowid();
+    {
+        let mut stmt = tx
+            .prepare("SELECT role, content, created_at FROM messages WHERE chat_id = ?1 ORDER BY id ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![src_id], |row| {
+                let role: String = row.get(0)?;
+                let content: String = row.get(1)?;
+                let ts: String = row.get(2)?;
+                Ok((role, content, ts))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let (role, content, ts) = r.map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![new_id, role, content, ts],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(new_id)
+}
+
+/// Bifurca desde un mensaje (v0.7.4): nuevo chat con el historial hasta el
+/// mensaje N inclusive (por id de fila). Transaccional.
+pub fn branch_chat(src_id: i64, upto_msg_id: i64) -> Result<i64, String> {
+    let mut conn = connect()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let (title, project_id, mode): (String, Option<i64>, Option<String>) = tx
+        .query_row(
+            "SELECT title, project_id, mode FROM chats WHERE id = ?1",
+            params![src_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO chats (title, project_id, mode) VALUES (?1, ?2, ?3)",
+        params![format!("{title} (rama)"), project_id, mode],
+    )
+    .map_err(|e| e.to_string())?;
+    let new_id = tx.last_insert_rowid();
+    {
+        let mut stmt = tx
+            .prepare(
+                "SELECT role, content, created_at FROM messages WHERE chat_id = ?1 AND id <= ?2 ORDER BY id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![src_id, upto_msg_id], |row| {
+                let role: String = row.get(0)?;
+                let content: String = row.get(1)?;
+                let ts: String = row.get(2)?;
+                Ok((role, content, ts))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut n = 0;
+        for r in rows {
+            let (role, content, ts) = r.map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO messages (chat_id, role, content, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![new_id, role, content, ts],
+            )
+            .map_err(|e| e.to_string())?;
+            n += 1;
+        }
+        if n == 0 {
+            return Err("Nada que bifurcar hasta ese mensaje.".to_string());
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(new_id)
+}
+
+/// Borra todos los mensajes posteriores a una fila (para "deshacer hasta
+/// aquí"): conserva hasta `msg_id` inclusive. Devuelve cuántas borró.
+pub fn delete_messages_after(chat_id: i64, msg_id: i64) -> Result<usize, String> {
+    let conn = connect()?;
+    let n = conn
+        .execute(
+            "DELETE FROM messages WHERE chat_id = ?1 AND id > ?2",
+            params![chat_id, msg_id],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n)
+}
+
+/// Cuenta los mensajes persistidos de un chat (para Undo por diferencia).
+pub fn count_messages(chat_id: i64) -> Result<usize, String> {
+    let conn = connect()?;
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE chat_id = ?1",
+            params![chat_id],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(n.max(0) as usize)
+}
+
+/// Borra los últimos N mensajes de un chat (para Undo de envío).
+pub fn delete_last_messages(chat_id: i64, n: usize) -> Result<(), String> {
+    if n == 0 {
+        return Ok(());
+    }
+    let conn = connect()?;
     conn.execute(
-        "INSERT INTO messages (chat_id, role, content) VALUES (?1, ?2, ?3)",
-        params![id, role, content],
+        "DELETE FROM messages WHERE id IN (SELECT id FROM messages WHERE chat_id = ?1 ORDER BY id DESC LIMIT ?2)",
+        params![chat_id, n as i64],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-pub fn load_chat_history(chat_id: i64, limit: usize) -> Result<Vec<(String, String)>, String> {
-    let conn = connect()?;
-    let mut stmt = conn
-        .prepare("SELECT role, content FROM messages WHERE chat_id = ?1 ORDER BY id ASC LIMIT ?2")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![chat_id, limit as i64], |row| {
-            let role: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            Ok((role, content))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
-}
-
-/// Compat v0.1: historial global (para migración ya hecha, devuelve todo).
-#[allow(dead_code)]
-pub fn load_history(limit: usize) -> Result<Vec<(String, String)>, String> {
-    let conn = connect()?;
-    let mut stmt = conn
-        .prepare("SELECT role, content FROM messages ORDER BY id ASC LIMIT ?1")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![limit as i64], |row| {
-            let role: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            Ok((role, content))
-        })
-        .map_err(|e| e.to_string())?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -457,5 +580,44 @@ mod tests {
         assert!(init().is_ok());
         let chats = list_chats().unwrap_or_default();
         let _ = chats.iter().map(|c| c.mode).collect::<Vec<_>>();
+    }
+
+    #[test]
+    fn copy_and_branch_chat_duplicate_rows() {
+        assert!(init().is_ok());
+        let src = create_chat("v0.7.4-tmp").expect("crear chat tmp");
+        save_msg(src, "user", "hola 1").unwrap();
+        save_msg(src, "assistant", "respuesta 1").unwrap();
+        save_msg(src, "user", "hola 2").unwrap();
+        // created_at presente (migración v0.7.4).
+        let full = load_chat_history_full(src, 10).unwrap();
+        assert_eq!(full.len(), 3);
+        assert!(full.iter().all(|m| m.id > 0));
+        // Copiar duplica todo.
+        let cp = copy_chat(src).expect("copiar");
+        let cpf = load_chat_history_full(cp, 10).unwrap();
+        assert_eq!(cpf.len(), 3);
+        assert_eq!(cpf[0].content, "hola 1");
+        // Bifurcar hasta el 2º mensaje deja 2.
+        let upto = full[1].id;
+        let br = branch_chat(src, upto).expect("bifurcar");
+        let brf = load_chat_history_full(br, 10).unwrap();
+        assert_eq!(brf.len(), 2);
+        // Undo helper: borrar últimos 2 deja 1.
+        delete_last_messages(src, 2).unwrap();
+        assert_eq!(load_chat_history_full(src, 10).unwrap().len(), 1);
+        assert_eq!(count_messages(src).unwrap(), 1);
+        // Deshacer hasta aquí: borra lo posterior al 1er mensaje.
+        save_msg(src, "assistant", "r2").unwrap();
+        save_msg(src, "user", "hola 3").unwrap();
+        let full2 = load_chat_history_full(src, 10).unwrap();
+        assert_eq!(full2.len(), 3);
+        let kept = full2[0].id;
+        assert_eq!(delete_messages_after(src, kept).unwrap(), 2);
+        assert_eq!(load_chat_history_full(src, 10).unwrap().len(), 1);
+        // Limpieza para no contaminar la DB del dev.
+        delete_chat(src).unwrap();
+        delete_chat(cp).unwrap();
+        delete_chat(br).unwrap();
     }
 }

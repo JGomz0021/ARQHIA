@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 
-/// Política de ejecución de tools (v0.7 Track B + v0.7.1 ignorados).
+use crate::config::{GitAutonomy, GitConfig};
+
+/// Política de ejecución de tools (v0.7 Track B + v0.7.1 ignorados + v0.7.2 git).
 /// La construye el handler desde config + aprobación del lote.
 #[derive(Debug, Clone)]
 pub struct ExecPolicy {
@@ -16,6 +18,14 @@ pub struct ExecPolicy {
     pub net_approved: bool,
     /// Patrones ignorados en búsqueda/listado (v0.7.1). Vacío = defaults.
     pub ignores: Vec<String>,
+    /// Autonomía git del agente (v0.7.2).
+    pub git_autonomy: GitAutonomy,
+    /// Push habilitado explícitamente (v0.7.2).
+    pub git_push_enabled: bool,
+    /// El lote git fue aprobado por el usuario (salta los gates de política).
+    pub git_approved: bool,
+    /// Ramas intocables (main/master por defecto).
+    pub git_protected: Vec<String>,
 }
 
 impl Default for ExecPolicy {
@@ -27,19 +37,19 @@ impl Default for ExecPolicy {
             net_domains: Vec::new(),
             net_approved: false,
             ignores: default_ignores(),
+            git_autonomy: GitAutonomy::CommitLocal,
+            git_push_enabled: false,
+            git_approved: false,
+            git_protected: vec!["main".to_string(), "master".to_string()],
         }
     }
 }
 
 /// Ignorados por defecto (v0.7.1): build, control de versiones,
 /// dependencias y lockfiles. Sin confirmaciones.
+/// Fuente única en `config::default_ignores` (los valores deben coincidir).
 pub fn default_ignores() -> Vec<String> {
-    vec![
-        "target/".to_string(),
-        ".git/".to_string(),
-        "node_modules/".to_string(),
-        "*.lock".to_string(),
-    ]
+    crate::config::default_ignores()
 }
 
 /// Patrones efectivos: los configurados o los defaults si vacío.
@@ -83,6 +93,7 @@ pub fn is_ignored(rel: &str, ignores: &[String]) -> bool {
 }
 
 /// Política efectiva desde config + si el lote pasó por aprobación.
+#[allow(clippy::too_many_arguments)]
 pub fn policy_for(
     auto_install: bool,
     batch_approved: bool,
@@ -90,6 +101,7 @@ pub fn policy_for(
     max_read_chars: usize,
     net_domains: &[String],
     ignores: &[String],
+    git: &GitConfig,
 ) -> ExecPolicy {
     ExecPolicy {
         timeout_s,
@@ -98,6 +110,10 @@ pub fn policy_for(
         net_domains: net_domains.to_vec(),
         net_approved: batch_approved,
         ignores: effective_ignores(ignores),
+        git_autonomy: git.autonomy,
+        git_push_enabled: git.push_enabled,
+        git_approved: batch_approved,
+        git_protected: git.protected.clone(),
     }
 }
 
@@ -306,7 +322,7 @@ pub async fn list_dir(
 /// Comandos permitidos en v0.3 (prefijo o igualdad exacta).
 /// `pub` para testear la política sin ejecutar nada.
 pub fn is_allowed(cmd: &str) -> bool {
-    const ALLOW: [&str; 10] = [
+    const ALLOW: [&str; 12] = [
         "ls",
         "cat",
         "echo",
@@ -317,6 +333,8 @@ pub fn is_allowed(cmd: &str) -> bool {
         "cargo build",
         "cargo test",
         "cargo run",
+        "cargo clippy",
+        "cargo fmt",
     ];
     let c = cmd.trim();
     // Instaladores y sudo pasan al gate de permiso (executor): sin
@@ -326,11 +344,16 @@ pub fn is_allowed(cmd: &str) -> bool {
     {
         return true;
     }
+    // Git: el allowlist deja pasar; la política por comando (classify_git)
+    // decide en el executor qué se ejecuta y qué pide permiso.
+    if c == "git" || c.starts_with("git ") {
+        return true;
+    }
     ALLOW.iter().any(|a| c == *a || c.starts_with(&format!("{a} ")))
 }
 
 fn allowed_list() -> &'static str {
-    "ls, cat, echo, pwd, cargo --version, rustc --version, cargo check, cargo build, cargo test, cargo run (+instaladores solo con permiso Install)"
+    "ls, cat, echo, pwd, cargo --version, rustc --version, cargo check, cargo build, cargo test, cargo run, cargo clippy, cargo fmt, git (política por subcomando) (+instaladores solo con permiso Install)"
 }
 
 /// Prefijos que instalan software (v0.7 Track B): categoría Install,
@@ -354,6 +377,88 @@ pub fn is_install_cmd(cmd: &str) -> bool {
     let c = cmd.trim();
     INSTALL_PREFIXES.iter().any(|p| c == *p || c.starts_with(&format!("{p} ")))
         || c.starts_with("sudo ")
+}
+
+/// Clasificación de un comando `git ...` (v0.7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitKind {
+    /// status, diff, log, show, branch, rev-parse, remote (consulta).
+    Read,
+    /// init, add, commit, stash, reset (no --hard).
+    Write,
+    /// push, fetch, pull.
+    Net,
+    /// Destructivos/desconocidos: nunca se ejecutan.
+    Blocked,
+}
+
+/// Clasifica un comando `git`. `None` si no empieza por `git`.
+/// Conservador: subcomandos no reconocidos o flags globales raros se
+/// consideran bloqueados.
+pub fn classify_git(cmd: &str) -> Option<GitKind> {
+    let c = cmd.trim();
+    let rest = c.strip_prefix("git")?.trim_start();
+    if rest.is_empty() {
+        return Some(GitKind::Read);
+    }
+    let lower = rest.to_lowercase();
+    let mut words = lower.split_whitespace();
+    let first = words.next().unwrap_or("");
+    // Flags globales: solo --version/--help son lectura. Cualquier otro
+    // (p.ej. -C para salir del workspace) se bloquea.
+    if first.starts_with('-') {
+        return Some(if matches!(first, "--version" | "--help" | "-h" | "-v") {
+            GitKind::Read
+        } else {
+            GitKind::Blocked
+        });
+    }
+    let second = words.next().unwrap_or("");
+    match first {
+        "status" | "diff" | "log" | "show" | "branch" | "rev-parse" => Some(GitKind::Read),
+        "remote" => {
+            if matches!(second, "add" | "remove" | "rm" | "set-url" | "rename") {
+                Some(GitKind::Blocked)
+            } else {
+                Some(GitKind::Read)
+            }
+        }
+        "init" | "add" | "commit" | "stash" => Some(GitKind::Write),
+        "push" => {
+            if lower.contains("--force") || lower.split_whitespace().any(|a| a == "-f") {
+                Some(GitKind::Blocked)
+            } else {
+                Some(GitKind::Net)
+            }
+        }
+        "fetch" | "pull" => Some(GitKind::Net),
+        "reset" => {
+            if lower.contains("--hard") {
+                Some(GitKind::Blocked)
+            } else {
+                Some(GitKind::Write)
+            }
+        }
+        // Destructivos y cambios de rama: bloqueados siempre.
+        _ => Some(GitKind::Blocked),
+    }
+}
+
+/// Clasificación git a partir de los args de una call `bash`.
+pub fn git_call_kind(args: &serde_json::Value) -> Option<GitKind> {
+    let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+    classify_git(cmd)
+}
+
+/// true si el comando es `git commit` (para la guarda de rama protegida).
+fn is_git_commit(cmd: &str) -> bool {
+    cmd.trim()
+        .strip_prefix("git")
+        .map(|r| {
+            let r = r.trim_start();
+            r == "commit" || r.starts_with("commit ")
+        })
+        .unwrap_or(false)
 }
 
 /// Host de una URL http(s) en minúsculas, o "" si inválida.
@@ -420,6 +525,39 @@ pub async fn bash(workspace: &Path, extra: &[PathBuf], cmd: &str, policy: &ExecP
     if is_install_cmd(cmd) && !policy.allow_install {
         return Err("⛔ Instalación no aprobada: actívala en Permisos o aprueba la acción.".to_string());
     }
+    // Política git por comando (v0.7.2): lo destructivo se bloquea siempre;
+    // el resto respeta autonomía/push salvo que el lote esté aprobado.
+    if let Some(kind) = classify_git(cmd) {
+        if matches!(kind, GitKind::Blocked) {
+            return Err(format!(
+                "⛔ comando git bloqueado por seguridad: `{}`",
+                cmd.trim()
+            ));
+        }
+        if matches!(kind, GitKind::Write)
+            && is_git_commit(cmd)
+            && let Some(br) = crate::git::current_branch(workspace)
+            && policy.git_protected.iter().any(|p| p == &br)
+        {
+            return Err(format!("⛔ commit sobre rama protegida `{br}` (usa la rama de trabajo)"));
+        }
+        if !policy.git_approved {
+            let allowed = match kind {
+                GitKind::Read => true,
+                GitKind::Write => policy.git_autonomy >= GitAutonomy::CommitLocal,
+                GitKind::Net => {
+                    policy.git_push_enabled && policy.git_autonomy == GitAutonomy::CommitAndPush
+                }
+                GitKind::Blocked => false,
+            };
+            if !allowed {
+                return Err(format!(
+                    "⛔ acción git no permitida por la política: `{}`. Apruébala o ajústala en Config → Git.",
+                    cmd.trim()
+                ));
+            }
+        }
+    }
     let ws = workspace
         .canonicalize()
         .map_err(|e| format!("Workspace inválido: {e}"))?;
@@ -458,7 +596,7 @@ fn rel(workspace: &Path, path: &Path) -> String {
         .unwrap_or_else(|_| path.display().to_string())
 }
 
-/// Categoría de permiso de cada tool (v0.6 + v0.7 Track B).
+/// Categoría de permiso de cada tool (v0.6 + v0.7 Track B + v0.7.2 git).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCat {
     Read,
@@ -468,6 +606,10 @@ pub enum ToolCat {
     Net,
     /// Instaladores (bash con install o sudo).
     Install,
+    /// Comandos git locales (lectura o escritura de repo).
+    Git,
+    /// Git que toca la red (push/fetch/pull).
+    GitPush,
 }
 
 pub fn category(name: &str) -> ToolCat {
@@ -479,10 +621,16 @@ pub fn category(name: &str) -> ToolCat {
     }
 }
 
-/// Categoría real de una llamada (bash puede ser Install según sus args).
+/// Categoría real de una llamada (bash puede ser Install o git según args).
 pub fn category_of_call(name: &str, args: &serde_json::Value) -> ToolCat {
     if name == "bash" {
         let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(kind) = classify_git(cmd) {
+            return match kind {
+                GitKind::Net => ToolCat::GitPush,
+                _ => ToolCat::Git,
+            };
+        }
         if is_install_cmd(cmd) {
             return ToolCat::Install;
         }
@@ -752,6 +900,25 @@ pub async fn get_file_outline(
     Ok(out)
 }
 
+/// Firmas de un archivo (v0.7.3) para el analista: reutiliza `outline_sig`
+/// sin pasar por el guard (la ruta ya viene del workspace). Devuelve "" si
+/// no se puede leer.
+pub fn outline_of(path: &Path) -> String {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let mut sigs: Vec<String> = Vec::new();
+    for (i, line) in content.lines().enumerate() {
+        if let Some(sig) = outline_sig(line) {
+            sigs.push(format!("{}: {sig}", i + 1));
+            if sigs.len() >= 60 {
+                break;
+            }
+        }
+    }
+    sigs.join("\n")
+}
+
 /// Despacha una tool por nombre con args JSON. Retorna texto para el LLM/UI.
 pub async fn execute(
     workspace: &Path,
@@ -820,7 +987,7 @@ pub fn openai_schemas() -> serde_json::Value {
         {"type": "function", "function": {"name": "edit_file", "description": "Reemplaza EXACTAMENTE 1 ocurrencia de `old` por `new`.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"}}, "required": ["path", "old", "new"]}}},
         {"type": "function", "function": {"name": "delete_file", "description": "Borra un archivo del workspace.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "list_dir", "description": "Lista una carpeta del workspace.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": []}}},
-        {"type": "function", "function": {"name": "bash", "description": "Ejecuta comando permitido (ls, cat, echo, pwd, cargo --version, rustc --version, cargo check, cargo build, cargo test, cargo run) en el workspace.", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}},
+        {"type": "function", "function": {"name": "bash", "description": "Ejecuta comando permitido (ls, cat, echo, pwd, cargo --version, rustc --version, cargo check, cargo build, cargo test, cargo run, cargo clippy, cargo fmt, git con política por subcomando) en el workspace.", "parameters": {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]}}},
         {"type": "function", "function": {"name": "search_files", "description": "Busca texto en el workspace. Devuelve máx 20 bloques path:línea con 3 líneas de contexto, rankeados. Nunca archivos completos. Ignora target/, .git/, node_modules/, *.lock.", "parameters": {"type": "object", "properties": {"query": {"type": "string"}, "dir": {"type": "string"}}, "required": ["query"]}}},
         {"type": "function", "function": {"name": "get_file_outline", "description": "Solo firmas de un archivo (funciones, structs, imports) para decidir QUÉ leer. Úsalo antes de read_file en archivos grandes.", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
         {"type": "function", "function": {"name": "fetch_url", "description": "Descarga una URL http(s) como texto (tope 64k). Dominios no autorizados piden permiso.", "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}}
@@ -933,8 +1100,64 @@ mod tests {
     }
 
     #[test]
-    fn url_domain_allowlist() {
-        let doms = vec!["example.com".to_string()];
+    fn git_policy_classifies_and_blocks() {
+        assert_eq!(classify_git("git status"), Some(GitKind::Read));
+        assert_eq!(classify_git("git diff --stat"), Some(GitKind::Read));
+        assert_eq!(classify_git("git remote -v"), Some(GitKind::Read));
+        assert_eq!(classify_git("git add -A"), Some(GitKind::Write));
+        assert_eq!(classify_git("git commit -m x"), Some(GitKind::Write));
+        assert_eq!(classify_git("git push origin ARQHIA"), Some(GitKind::Net));
+        assert_eq!(classify_git("git push --force origin x"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("git reset --hard HEAD"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("git clean -fd"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("git rebase main"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("git config user.name x"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("git remote add origin url"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("git -C /etc status"), Some(GitKind::Blocked));
+        assert_eq!(classify_git("ls -la"), None);
+        // Categorías de permiso para el panel.
+        let add = serde_json::json!({"cmd": "git add -A"});
+        let push = serde_json::json!({"cmd": "git push origin ARQHIA"});
+        assert_eq!(category_of_call("bash", &add), ToolCat::Git);
+        assert_eq!(category_of_call("bash", &push), ToolCat::GitPush);
+        // Allowlist deja pasar git + clippy/fmt; el executor decide política.
+        assert!(is_allowed("git status"));
+        assert!(is_allowed("cargo clippy --all-targets"));
+        assert!(is_allowed("cargo fmt"));
+    }
+
+    #[tokio::test]
+    async fn bash_git_blocks_destructive_and_gates_policy() {
+        let ws = tmp_ws("git-policy");
+        let policy = ExecPolicy::default();
+        for cmd in [
+            "git push --force",
+            "git reset --hard HEAD",
+            "git clean -fd",
+            "git rebase main",
+            "git config user.name x",
+        ] {
+            let err = bash(&ws, &[], cmd, &policy).await.unwrap_err();
+            assert!(err.contains("bloqueado"), "{cmd}: {err}");
+        }
+        // Write con autonomía ReadOnly: rechazado por política.
+        let ro = ExecPolicy { git_autonomy: GitAutonomy::ReadOnly, ..ExecPolicy::default() };
+        let err = bash(&ws, &[], "git add -A", &ro).await.unwrap_err();
+        assert!(err.contains("no permitida"), "{err}");
+        // Push sin push_enabled: rechazado por política (aunque CommitLocal).
+        let err = bash(&ws, &[], "git push origin ARQHIA", &policy).await.unwrap_err();
+        assert!(err.contains("no permitida"), "{err}");
+        // CommitAndPush + push_enabled: el gate pasa (falla luego git, no política).
+        let ap = ExecPolicy {
+            git_autonomy: GitAutonomy::CommitAndPush,
+            git_push_enabled: true,
+            ..ExecPolicy::default()
+        };
+        assert!(bash(&ws, &[], "git pull", &ap).await.is_ok());
+    }
+
+    #[test]
+    fn url_domain_allowlist() {        let doms = vec!["example.com".to_string()];
         assert!(url_domain_listed("https://example.com/x", &doms));
         assert!(url_domain_listed("https://sub.example.com/x", &doms));
         assert!(!url_domain_listed("https://evil-example.com/x", &doms));
@@ -996,6 +1219,11 @@ mod tests {
             "cargo run",
             "cargo run -- hola",
             "cargo --version",
+            "cargo clippy",
+            "cargo clippy --all-targets",
+            "cargo fmt",
+            "git status",
+            "git commit -m x",
         ] {
             assert!(is_allowed(cmd), "{cmd} debería estar permitido");
         }

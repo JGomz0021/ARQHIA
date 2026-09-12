@@ -17,7 +17,6 @@ use crate::config::Provider;
 use crate::db::{self, ChatMeta};
 use crate::llm::{ChatMsg, Role};
 use crate::titles;
-use crate::workspace;
 
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     match message {
@@ -52,25 +51,53 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 state.view = View::Config;
                 return Task::none();
             }
+            // Undo v0.7.4: snapshot de 1 paso antes de enviar (la vista
+            // manda; las filas a borrar se calculan por diferencia en DB).
+            state.undo = Some(crate::app::state::UndoSnapshot {
+                chat_id,
+                messages: state.messages.clone(),
+                msg_times: state.msg_times.clone(),
+                msg_ids: state.msg_ids.clone(),
+                truncated_tail: Vec::new(),
+                deleted_chat: None,
+                deleted_messages: Vec::new(),
+            });
             state.messages.push(ChatMsg {
                 role: Role::User,
                 content: text.clone(),
             });
+            state.md.push(Vec::new());
+            state.msg_usage.push(None);
+            state.msg_times.push(String::new());
+            state.msg_ids.push(0);
             let _ = db::save_msg(chat_id, "user", &text);
-            // Auto-título: primeros 30 chars del primer mensaje de usuario
+            // Refresca ids/timestamps desde DB (el insert deja id real).
+            state.resync_msg_meta(chat_id);
+            // Auto-título: fallback inmediato + propuesta IA async (v0.7.4).
             let user_count = state
                 .messages
                 .iter()
                 .filter(|m| m.role == Role::User)
                 .count();
+            let mut title_task = Task::none();
             if user_count == 1 {
                 let title = titles::title_for(&text);
                 let _ = db::rename_chat(chat_id, &title);
                 if let Some(c) = state.chats.iter_mut().find(|c| c.id == chat_id) {
                     c.title = title;
                 }
+                // 1 llamada corta sin tools; al llegar, ChatTitleFetched.
+                state.title_gen += 1;
+                let generation = state.title_gen;
+                let first = text.clone();
+                let cfg_title = cfg.clone();
+                title_task = Task::perform(
+                    async move { agent::ai_title(provider, &cfg_title, &first).await.unwrap_or_default() },
+                    move |t| Message::ChatTitleFetched(generation, chat_id, t),
+                );
             }
-            start_turn(state, provider, cfg, chat_id, text)
+            let turn = start_turn(state, provider, cfg, chat_id, text);
+            Task::batch(vec![title_task, turn])
         }
         Message::RetryLast => {
             // Reintenta el último turno de usuario sin volver a guardarlo en DB
@@ -99,8 +126,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .map(|m| m.role == Role::Assistant)
                 .unwrap_or(false)
             {
-                state.messages.pop();
-                state.md.pop();
+                state.pop_last_message();
             }
             let provider = state.config.active;
             let cfg = state.config.active_config();
@@ -113,7 +139,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.status.clear();
             start_turn(state, provider, cfg, chat_id, text)
         }
-        Message::StreamChunk(chunk) => {
+        Message::StreamChunk(sgen, chunk) => {
+            if sgen != state.stream_gen {
+                return Task::none(); // stream cancelado, chunk tardío
+            }
             if let Some(last) = state.messages.last_mut()
                 && last.role == Role::Assistant {
                     last.content.push_str(&chunk);
@@ -121,7 +150,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.reparse_last_md();
             Task::none()
         }
-        Message::StreamUsage(input, output, cached, reported_cost) => {
+        Message::StreamUsage(sgen, input, output, cached, reported_cost) => {
+            if sgen != state.stream_gen {
+                return Task::none();
+            }
             let usage = crate::llm::Usage { input, output, cached, cost: reported_cost };
             let n = state.messages.len();
             state.msg_usage.resize(n, None);
@@ -152,21 +184,27 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             ));
             Task::none()
         }
-        Message::StreamDone => {
+        Message::StreamDone(sgen) => {
+            if sgen != state.stream_gen {
+                return Task::none();
+            }
             state.streaming = false;
             state.reparse_last_md();
             if let (Some(chat_id), Some(last)) = (state.active_chat, state.messages.last())
                 && last.role == Role::Assistant && !last.content.trim().is_empty() {
                     let _ = db::save_msg(chat_id, "assistant", &last.content);
+                    state.resync_msg_meta(chat_id);
                 }
             Task::none()
         }
-        Message::StreamError(e) => {
+        Message::StreamError(sgen, e) => {
+            if sgen != state.stream_gen {
+                return Task::none();
+            }
             state.streaming = false;
             if let Some(last) = state.messages.last()
                 && last.role == Role::Assistant && last.content.trim().is_empty() {
-                    state.messages.pop();
-                    state.md.pop();
+                    state.pop_last_message();
                 }
             // Re-sincroniza por si algún flujo dejó md/uso desalineado.
             while state.md.len() > state.messages.len() {
@@ -174,6 +212,12 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             while state.msg_usage.len() > state.messages.len() {
                 state.msg_usage.pop();
+            }
+            while state.msg_times.len() > state.messages.len() {
+                state.msg_times.pop();
+            }
+            while state.msg_ids.len() > state.messages.len() {
+                state.msg_ids.pop();
             }
             state.push_log(format!("Error del proveedor: {e}"));
             state.status = format!("Error: {}", crate::llm::friendly_error(&e));
@@ -184,53 +228,14 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::NewChat => {
-            match db::create_chat("Nuevo chat") {
-                Ok(id) => {
-                    state.chats.push(ChatMeta {
-                        id,
-                        title: "Nuevo chat".to_string(),
-                        project_id: None,
-                        archived: false,
-                        mode: db::Mode::Chat,
-                    });
-                    state.active_chat = Some(id);
-                    state.messages.clear();
-                    state.md.clear();
-                    state.input.clear();
-                    state.status.clear();
-                    state.pending_delete = None;
-                    state.pending_project = None;
-                    clear_turn_state(state);
-                }
-                Err(e) => state.status = format!("No se pudo crear el chat: {e}"),
-            }
+            spawn_chat(state, None);
             Task::none()
         }
         Message::NewChatInProject(pid) => {
             if state.projects.iter().all(|p| p.id != pid) {
                 return Task::none();
             }
-            match db::create_chat("Nuevo chat") {
-                Ok(id) => {
-                    let _ = db::move_chat(id, Some(pid));
-                    state.chats.push(ChatMeta {
-                        id,
-                        title: "Nuevo chat".to_string(),
-                        project_id: Some(pid),
-                        archived: false,
-                        mode: db::Mode::Chat,
-                    });
-                    state.active_chat = Some(id);
-                    state.messages.clear();
-                    state.md.clear();
-                    state.input.clear();
-                    state.status.clear();
-                    state.pending_delete = None;
-                    state.pending_project = None;
-                    clear_turn_state(state);
-                }
-                Err(e) => state.status = format!("No se pudo crear el chat: {e}"),
-            }
+            spawn_chat(state, Some(pid));
             Task::none()
         }
         Message::SelectChat(id) => {
@@ -241,15 +246,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 clear_turn_state(state);
             }
             state.active_chat = Some(id);
-            state.messages = db::load_chat_history(id, 500)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(role, content)| ChatMsg {
-                    role: Role::from_str(&role),
-                    content,
-                })
-                .collect();
-            state.reparse_md();
+            state.reload_active_chat();
             state.status.clear();
             state.pending_delete = None;
             state.pending_project = None;
@@ -265,6 +262,19 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     state.status = "Espera a que termine la respuesta.".to_string();
                     return Task::none();
                 }
+                // Undo v0.7.4: guarda el chat + mensajes antes de borrar.
+                let doomed_meta = state.chats.iter().find(|c| c.id == id).cloned();
+                let doomed_msgs: Vec<(String, String, String)> =
+                    db::load_chat_history_full(id, 1000).unwrap_or_default().into_iter().map(|m| (m.role, m.content, m.created_at)).collect();
+                let snap = crate::app::state::UndoSnapshot {
+                    chat_id: id,
+                    messages: state.messages.clone(),
+                    msg_times: state.msg_times.clone(),
+                    msg_ids: state.msg_ids.clone(),
+                    truncated_tail: Vec::new(),
+                    deleted_chat: doomed_meta,
+                    deleted_messages: doomed_msgs,
+                };
                 match db::delete_chat(id) {
                     Ok(()) => {
                         state.chats.retain(|c| c.id != id);
@@ -275,27 +285,25 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                                 .find(|c| !c.archived)
                                 .map(|c| c.id);
                             clear_turn_state(state);
-                            state.messages = state
-                                .active_chat
-                                .and_then(|nid| db::load_chat_history(nid, 500).ok())
-                                .unwrap_or_default()
-                                .into_iter()
-                                .map(|(role, content)| ChatMsg {
-                                    role: Role::from_str(&role),
-                                    content,
-                                })
-                                .collect();
-                            state.reparse_md();
+                            state.reload_active_chat();
                         }
+                        // clear_turn_state borra el undo: lo restauramos.
+                        state.undo = Some(snap);
                         // Sin chats: queda vacío, el próximo se crea al conversar
                         if state.active_chat.is_none() {
                             state.messages.clear();
                             state.md.clear();
+                            state.msg_times.clear();
+                            state.msg_ids.clear();
+                            state.msg_usage.clear();
                         }
+                        state.status = "Chat borrado. Ctrl+Z para deshacer.".to_string();
                     }
                     Err(e) => state.status = format!("No se pudo borrar: {e}"),
                 }
                 state.pending_delete = None;
+                // Recupera el snapshot (clear_turn_state lo había limpiado).
+                // Se deja tal cual si el borrado falló (undo=None ya).
             }
             Task::none()
         }
@@ -356,20 +364,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             .find(|c| !c.archived)
                             .map(|c| c.id);
                         match state.active_chat {
-                            Some(nid) => {
-                                state.messages = db::load_chat_history(nid, 500)
-                                    .unwrap_or_default()
-                                    .into_iter()
-                                    .map(|(role, content)| ChatMsg {
-                                        role: Role::from_str(&role),
-                                        content,
-                                    })
-                                    .collect();
-                                state.reparse_md();
+                            Some(_) => {
+                                state.reload_active_chat();
                             }
                             None => {
                                 state.messages.clear();
                                 state.md.clear();
+                                state.msg_times.clear();
+                                state.msg_ids.clear();
+                                state.msg_usage.clear();
                             }
                         }
                         clear_turn_state(state);
@@ -411,6 +414,23 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
         Message::QuickSwitchModel(label) => {
             if label == "Sin modelos (Config)" {
                 state.view = View::Config;
+                return Task::none();
+            }
+            // v0.7.4: primero prueba perfiles por nombre/etiqueta.
+            if let Some(p) = state
+                .config
+                .model_profiles
+                .iter()
+                .find(|p| p.label() == label || p.name == label)
+                .cloned()
+            {
+                state.config.apply_profile(&p.id);
+                state.edit_provider = p.provider;
+                state.sync_edit_fields();
+                match state.config.save() {
+                    Ok(()) => state.status = format!("Perfil: {}", p.name),
+                    Err(e) => state.status = format!("Perfil cambiado pero no se guardó: {e}"),
+                }
                 return Task::none();
             }
             let name = label.split(" · ").next().unwrap_or("").trim();
@@ -483,17 +503,269 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::CloseOverlays => {
-            // Esc: cierra menús y paneles, sin borrar nada.
+            // Doble Esc: detiene el turno en curso (agente o stream).
+            let now = std::time::Instant::now();
+            let double = state
+                .last_esc
+                .map(|t| now.duration_since(t) < std::time::Duration::from_millis(600))
+                .unwrap_or(false);
+            state.last_esc = Some(now);
+            if double && (state.agent_running || state.streaming) {
+                return super::agent::handle(state, Message::StopAgent);
+            }
+            // Esc cierra menús y paneles. En Config, además, vuelve al origen
+            // (misma acción que el botón Volver).
+            if state.view == View::Config {
+                state.view = state.config_from.clone();
+                state.status.clear();
+                return Task::none();
+            }
             state.chat_menu = None;
             state.move_for = None;
             state.project_menu = None;
             state.pending_delete = None;
             state.pending_project_delete = None;
             state.config_pending_delete = None;
+            state.profile_menu = None;
+            state.editing_profile = None;
+            state.msg_menu = None;
+            state.pending_truncate = None;
+            Task::none()
+        }
+        Message::UndoChat => {
+            // Ctrl+Z v0.7.4: restaura el snapshot de 1 paso.
+            if state.streaming || state.agent_running {
+                state.status = "Espera a que termine el turno para deshacer.".to_string();
+                return Task::none();
+            }
+            let Some(snap) = state.undo.take() else {
+                state.status = "Nada que deshacer.".to_string();
+                return Task::none();
+            };
+            if let Some(active) = state.active_chat
+                && active != snap.chat_id {
+                    state.undo = Some(snap);
+                    state.status = "El undo es del chat anterior: vuelve a ese chat.".to_string();
+                    return Task::none();
+                }
+            // Si se borró un chat, lo recrea con sus mensajes.
+            if let Some(del) = snap.deleted_chat.clone() {
+                if let Ok(new_id) = db::create_chat(&del.title) {
+                    let _ = db::move_chat(new_id, del.project_id);
+                    let _ = db::set_chat_mode(new_id, del.mode);
+                    for (r, c, _) in &snap.deleted_messages {
+                        let _ = db::save_msg(new_id, r, c);
+                    }
+                    state.chats.push(ChatMeta {
+                        id: new_id,
+                        title: del.title.clone(),
+                        project_id: del.project_id,
+                        archived: del.archived,
+                        mode: del.mode,
+                    });
+                    state.active_chat = Some(new_id);
+                    state.reload_active_chat();
+                    state.status = "Chat restaurado.".to_string();
+                }
+                return Task::none();
+            }
+            // Si fue un "deshacer hasta aquí", reinserta la cola en DB.
+            if !snap.truncated_tail.is_empty() {
+                for (r, c) in &snap.truncated_tail {
+                    let _ = db::save_msg(snap.chat_id, r, c);
+                }
+                state.messages = snap.messages;
+                state.reparse_md();
+                state.resync_msg_meta(snap.chat_id);
+                state.status = "Recuperado.".to_string();
+                return Task::none();
+            }
+            // Si fue un envío, borra por diferencia lo que se añadió en DB
+            // desde el snapshot (1 fila si el stream falló, 2 si respondió).
+            // Así nunca se lleva por delante mensajes anteriores.
+            if let Ok(n_db) = db::count_messages(snap.chat_id) {
+                let extra = n_db.saturating_sub(snap.messages.len());
+                if extra > 0 {
+                    let _ = db::delete_last_messages(snap.chat_id, extra);
+                }
+            }
+            state.messages = snap.messages;
+            state.msg_times = snap.msg_times;
+            state.msg_ids = snap.msg_ids;
+            state.reparse_md();
+            state.resync_msg_meta(snap.chat_id);
+            state.status = "Deshecho.".to_string();
+            Task::none()
+        }
+        Message::ChatMsgMenu(idx) => {
+            if idx >= state.messages.len() {
+                return Task::none();
+            }
+            state.msg_menu = if state.msg_menu == Some(idx) { None } else { Some(idx) };
+            if state.msg_menu != Some(idx) {
+                state.pending_truncate = None;
+            }
+            Task::none()
+        }
+        Message::CopyMsg(idx) => {
+            let Some(m) = state.messages.get(idx) else {
+                state.status = "Nada que copiar.".to_string();
+                return Task::none();
+            };
+            let text = m.content.clone();
+            if text.trim().is_empty() {
+                state.status = "Mensaje vacío.".to_string();
+                return Task::none();
+            }
+            state.msg_menu = None;
+            state.status = "Copiado al portapapeles.".to_string();
+            iced::clipboard::write(text)
+        }
+        Message::TruncateRequest(idx) => {
+            if state.streaming || state.agent_running {
+                state.status = "Espera a que termine el turno.".to_string();
+                return Task::none();
+            }
+            if idx >= state.messages.len() {
+                return Task::none();
+            }
+            state.msg_menu = None;
+            state.pending_truncate = Some(idx);
+            Task::none()
+        }
+        Message::CancelTruncate => {
+            state.pending_truncate = None;
+            Task::none()
+        }
+        Message::ConfirmTruncate => {
+            let Some(idx) = state.pending_truncate else {
+                return Task::none();
+            };
+            state.pending_truncate = None;
+            state.msg_menu = None;
+            if state.streaming || state.agent_running {
+                state.status = "Espera a que termine el turno.".to_string();
+                return Task::none();
+            }
+            let Some(chat_id) = state.active_chat else {
+                state.status = "Sin chat activo.".to_string();
+                return Task::none();
+            };
+            if idx >= state.messages.len() {
+                return Task::none();
+            }
+            let Some(mid) = state.msg_ids.get(idx).copied().filter(|m| *m > 0) else {
+                state.status = "Ese mensaje aún no está guardado.".to_string();
+                return Task::none();
+            };
+            if idx + 1 >= state.messages.len() {
+                state.status = "Ya estás al final: no hay nada que borrar.".to_string();
+                return Task::none();
+            }
+            // Snapshot para Ctrl+Z: vista completa + cola para reinsertar.
+            let tail: Vec<(String, String)> = state.messages[idx + 1..]
+                .iter()
+                .map(|m| (m.role.as_str().to_string(), m.content.clone()))
+                .collect();
+            state.undo = Some(crate::app::state::UndoSnapshot {
+                chat_id,
+                messages: state.messages.clone(),
+                msg_times: state.msg_times.clone(),
+                msg_ids: state.msg_ids.clone(),
+                truncated_tail: tail,
+                deleted_chat: None,
+                deleted_messages: Vec::new(),
+            });
+            match db::delete_messages_after(chat_id, mid) {
+                Ok(_) => {
+                    state.messages.truncate(idx + 1);
+                    state.reparse_md();
+                    // Re-alinea la cola conservada con la DB.
+                    state.resync_msg_meta(chat_id);
+                    state.status = "Deshecho hasta aquí. Ctrl+Z para recuperar.".to_string();
+                }
+                Err(e) => {
+                    state.undo = None;
+                    state.status = format!("No se pudo deshacer: {e}");
+                }
+            }
+            Task::none()
+        }
+        Message::BranchChatFrom(idx) => {
+            let Some(id) = state.active_chat else {
+                state.status = "Sin chat activo.".to_string();
+                return Task::none();
+            };
+            let Some(mid) = state.msg_ids.get(idx).copied().filter(|m| *m > 0) else {
+                state.status = "Ese mensaje aún no está guardado.".to_string();
+                return Task::none();
+            };
+            match db::branch_chat(id, mid) {
+                Ok(new_id) => {
+                    let meta = db::list_chats().ok().and_then(|v| v.into_iter().find(|c| c.id == new_id));
+                    if let Some(m) = meta {
+                        state.chats.push(m);
+                    }
+                    state.active_chat = Some(new_id);
+                    state.reload_active_chat();
+                    clear_turn_state(state);
+                    state.status = "Rama creada desde ese mensaje.".to_string();
+                }
+                Err(e) => state.status = format!("No se pudo bifurcar: {e}"),
+            }
+            Task::none()
+        }
+        Message::ChatTitleFetched(generation, chat_id, title) => {
+            if generation != state.title_gen || title.trim().is_empty() {
+                return Task::none();
+            }
+            // Solo si el chat sigue activo y el título sigue siendo el fallback.
+            if state.active_chat != Some(chat_id) {
+                return Task::none();
+            }
+            let clean = titles::sanitize_ai_title(&title, "");
+            if clean.trim().is_empty() {
+                return Task::none();
+            }
+            let _ = db::rename_chat(chat_id, &clean);
+            if let Some(c) = state.chats.iter_mut().find(|c| c.id == chat_id) {
+                c.title = clean;
+            }
             Task::none()
         }
         // Inalcanzable si el dispatch exterior está al día (es total).
         _ => Task::none(),
+    }
+}
+
+/// Crea un chat vacío y lo activa (dentro de un proyecto o suelto).
+/// Extraído de `NewChat`/`NewChatInProject` (idénticos salvo el destino).
+fn spawn_chat(state: &mut App, project: Option<i64>) {
+    match db::create_chat("Nuevo chat") {
+        Ok(id) => {
+            if let Some(pid) = project {
+                let _ = db::move_chat(id, Some(pid));
+            }
+            state.chats.push(ChatMeta {
+                id,
+                title: "Nuevo chat".to_string(),
+                project_id: project,
+                archived: false,
+                mode: db::Mode::Chat,
+            });
+            state.active_chat = Some(id);
+            state.messages.clear();
+            state.md.clear();
+            state.msg_times.clear();
+            state.msg_ids.clear();
+            state.msg_usage.clear();
+            state.input.clear();
+            state.status.clear();
+            state.pending_delete = None;
+            state.pending_project = None;
+            clear_turn_state(state);
+        }
+        Err(e) => state.status = format!("No se pudo crear el chat: {e}"),
     }
 }
 
@@ -519,39 +791,18 @@ fn start_turn(
         if state.agent_running {
             return Task::none();
         }
-        let base_history = state.messages.clone();
-        state.messages.push(ChatMsg {
-            role: Role::Assistant,
-            content: "planificando...".to_string(),
-        });
-        state.md.push(Vec::new()); // usuario
-        state.md.push(markdown::parse("planificando...").collect());
-        state.input.clear();
-        state.status.clear();
-        state.agent_running = true;
-        state.o_provider = Some(provider);
-        state.o_cfg = Some(cfg.clone());
-        state.o_ws = Some(ws.clone());
-        state.o_chat = Some(chat_id);
-        state.o_history = base_history;
-        state.orch_tasks.clear();
-        state.worker_answers.clear();
-        state.fix_cycle = 0;
-        state.pending_calls.clear();
-        state.denied_tools.clear();
-        state.show_plan = false;
-        state.plan_md.clear();
-        state.driver = None;
-        state.agent_gen += 1;
-        let turn = state.agent_gen;
-        state.push_log(format!("🧭 plan en {}", ws.display()));
-        let context = workspace::context_block(&ws);
-        let espec = agent::read_espec_md(&ws);
-        return Task::perform(
-            async move {
-                agent::plan_tasks(provider, &text, &context, espec.as_deref(), &cfg, "Plan").await
-            },
-            move |res| Message::PlanDone(turn, res),
+        let log = format!("🧭 plan en {}", ws.display());
+        return begin_analysis_turn(
+            state,
+            provider,
+            cfg,
+            chat_id,
+            text,
+            ws,
+            db::Mode::Plan,
+            "planificando...",
+            log,
+            false,
         );
     }
     if mode == db::Mode::Work {
@@ -564,46 +815,84 @@ fn start_turn(
         if state.agent_running {
             return Task::none();
         }
-        let base_history = state.messages.clone();
-        state.messages.push(ChatMsg {
-            role: Role::Assistant,
-            content: "orquestando...".to_string(),
-        });
-        state.md.push(Vec::new()); // usuario
-        state.md.push(markdown::parse("orquestando...").collect());
-        state.input.clear();
-        state.status.clear();
-        state.agent_running = true;
-        state.o_provider = Some(provider);
-        state.o_cfg = Some(cfg.clone());
-        state.o_ws = Some(ws.clone());
-        state.o_chat = Some(chat_id);
-        state.o_history = base_history;
-        state.orch_tasks.clear();
-        state.worker_answers.clear();
-        state.fix_cycle = 0;
-        state.pending_calls.clear();
-        state.denied_tools.clear();
-        state.show_plan = false;
-        state.driver = None;
-        state.agent_gen += 1;
-        let turn = state.agent_gen;
-        if let Some(line) = agent::ensure_agents_md(&ws) {
-            state.push_log(line);
-        }
-        state.push_log(format!("🤖 turno en {}", ws.display()));
-        state.push_log("planificando...".to_string());
-        let context = workspace::context_block(&ws);
-        let espec = agent::read_espec_md(&ws);
-        return Task::perform(
-            async move {
-                agent::plan_tasks(provider, &text, &context, espec.as_deref(), &cfg, "Work").await
-            },
-            move |res| Message::AgentPlan(turn, res),
+        let log = format!("🤖 turno en {}", ws.display());
+        return begin_analysis_turn(
+            state,
+            provider,
+            cfg,
+            chat_id,
+            text,
+            ws,
+            db::Mode::Work,
+            "orquestando...",
+            log,
+            true,
         );
     }
     // Chat (default): conversación directa sin tools, haya o no workspace.
     send_plain_chat(state, provider, cfg)
+}
+
+/// Arranca un turno Plan/Work (v0.7.3): placeholder visible, estado del
+/// orquestador reseteado y 1 llamada al analista que desemboca en
+/// `AgentAnalyze`. `with_git` añade AGENTS.md + rama de trabajo (Work).
+#[allow(clippy::too_many_arguments)]
+fn begin_analysis_turn(
+    state: &mut App,
+    provider: Provider,
+    cfg: crate::config::ProviderConfig,
+    chat_id: i64,
+    text: String,
+    ws: std::path::PathBuf,
+    mode: db::Mode,
+    placeholder: &str,
+    log_line: String,
+    with_git: bool,
+) -> Task<Message> {
+    let base_history = state.messages.clone();
+    state.messages.push(ChatMsg {
+        role: Role::Assistant,
+        content: placeholder.to_string(),
+    });
+    state.md.push(markdown::parse(placeholder).collect());
+    state.msg_usage.push(None);
+    state.msg_times.push(String::new());
+    state.msg_ids.push(0);
+    state.input.clear();
+    state.status.clear();
+    state.agent_running = true;
+    state.o_provider = Some(provider);
+    state.o_cfg = Some(cfg.clone());
+    state.o_ws = Some(ws.clone());
+    state.o_chat = Some(chat_id);
+    state.o_history = base_history;
+    state.o_mode = mode;
+    state.orch_tasks.clear();
+    state.worker_answers.clear();
+    state.fix_cycle = 0;
+    state.pending_calls.clear();
+    state.denied_tools.clear();
+    state.show_plan = false;
+    state.plan_md.clear();
+    state.driver = None;
+    state.agent_gen += 1;
+    let turn = state.agent_gen;
+    if with_git {
+        if let Some(line) = agent::ensure_agents_md(&ws) {
+            state.push_log(line);
+        }
+        // v0.7.2: rama de trabajo + árbol limpio antes de tocar nada.
+        crate::app::orchestrator::prepare_git_turn(state);
+    }
+    state.push_log(log_line);
+    // v0.7.3: el analista produce el brief antes de planificar.
+    state.push_log("🔎 analizando contexto…".to_string());
+    let ws2 = ws.clone();
+    let pedido = text.clone();
+    Task::perform(
+        async move { agent::analyze_workspace(provider, &cfg, &ws2, &pedido).await },
+        move |res| Message::AgentAnalyze(turn, res),
+    )
 }
 
 /// Chat directo (v0.7.1, modo Chat o Work-sin-workspace): streaming sin
@@ -645,11 +934,16 @@ fn send_plain_chat(
         role: Role::Assistant,
         content: String::new(),
     });
-    state.md.push(Vec::new()); // usuario: sin markdown
     state.md.push(Vec::new()); // assistant: se re-parsea por chunk
+    state.msg_usage.push(None);
+    state.msg_times.push(String::new());
+    state.msg_ids.push(0);
     state.input.clear();
     state.status.clear();
     state.streaming = true;
+    // Nueva generación: los chunks de streams anteriores se ignoran.
+    state.stream_gen += 1;
+    let sgen = state.stream_gen;
 
     Task::stream(iced::stream::channel(100, move |mut output| async move {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -659,26 +953,27 @@ fn send_plain_chat(
             });
         let handle = tokio::spawn(fut);
         while let Some(chunk) = rx.recv().await {
-            let _ = output.send(Message::StreamChunk(chunk)).await;
+            let _ = output.send(Message::StreamChunk(sgen, chunk)).await;
         }
         match handle.await {
             Ok(Ok(usage)) => {
                 let _ = output
                     .send(Message::StreamUsage(
+                        sgen,
                         usage.input,
                         usage.output,
                         usage.cached,
                         usage.cost,
                     ))
                     .await;
-                let _ = output.send(Message::StreamDone).await;
+                let _ = output.send(Message::StreamDone(sgen)).await;
             }
             Ok(Err(e)) => {
-                let _ = output.send(Message::StreamError(e)).await;
+                let _ = output.send(Message::StreamError(sgen, e)).await;
             }
             Err(e) => {
                 let _ = output
-                    .send(Message::StreamError(format!("Tarea cancelada: {e}")))
+                    .send(Message::StreamError(sgen, format!("Tarea cancelada: {e}")))
                     .await;
             }
         }

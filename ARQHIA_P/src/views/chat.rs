@@ -11,9 +11,13 @@ use crate::llm::Role;
 use crate::ui::design::Tone;
 
 
-/// Etiquetas "Provider · modelo" para el selector rápido.
-/// Nube: solo con key. Local siempre visible (LM Studio puede no pedir key).
+/// Etiquetas para el selector rápido (v0.7.4): si hay perfiles, se muestra
+/// el **nombre visible** ("Nombre (Provider · modelo)"); si no, el formato
+/// legacy "Provider · modelo". Nube: solo con key. Local siempre visible.
 fn model_options(config: &AppConfig) -> Vec<String> {
+    if !config.model_profiles.is_empty() {
+        return config.model_profiles.iter().map(|p| p.label()).collect();
+    }
     let mut out = Vec::new();
     for p in Provider::ALL {
         let c = match p {
@@ -37,6 +41,55 @@ fn model_options(config: &AppConfig) -> Vec<String> {
     out
 }
 
+/// Fila contextual de un mensaje (v0.7.4): el menú del ···/clic derecho
+/// (Deshacer-hasta-aquí + Rama) y, al pedir deshacer, el aviso de que se
+/// borrará el resto con Sí/No. Vacía si nada está abierto para ese índice.
+fn msg_menu_row(state: &App, ts: f32, idx: usize) -> Element<'_, Message> {
+    use iced::widget::{row, text};
+    use crate::ui::{components, design};
+    let app_theme = super::app_theme(state);
+    if state.pending_truncate == Some(idx) {
+        return row![
+            text("Se borrará el resto. ¿Seguir?")
+                .size(design::fs(ts, 12))
+                .color(design::tone(&app_theme, design::Tone::Warn)),
+            iced::widget::horizontal_space(),
+            components::danger_btn("Sí".to_string()).on_press(Message::ConfirmTruncate),
+            components::quiet_btn("No".to_string()).on_press(Message::CancelTruncate),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .into();
+    }
+    if state.msg_menu == Some(idx) {
+        return row![
+            components::quiet_btn("Deshacer hasta aquí".to_string())
+                .on_press(Message::TruncateRequest(idx)),
+            components::quiet_btn("Rama desde aquí".to_string())
+                .on_press(Message::BranchChatFrom(idx)),
+            iced::widget::horizontal_space(),
+        ]
+        .spacing(8)
+        .align_y(iced::Alignment::Center)
+        .into();
+    }
+    iced::widget::vertical_space().height(0).into()
+}
+
+/// Timestamp corto "12/09 10:30" desde "YYYY-MM-DD HH:MM:SS".
+fn short_ts(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    if t.len() < 16 {
+        return None;
+    }
+    // "2026-09-12 10:30:45" -> "12/09 10:30".
+    let date = t.get(0..10)?;
+    let hm = t.get(11..16)?;
+    let day = date.get(8..10)?;
+    let month = date.get(5..7)?;
+    Some(format!("{day}/{month} {hm}"))
+}
+
 /// Categoría visible + resumen de una llamada pendiente:
 /// `tool · objetivo · alcance` (v0.7 Track B).
 fn call_summary(call: &crate::agent::PendingCall) -> (Tone, &'static str, String, String) {
@@ -47,6 +100,8 @@ fn call_summary(call: &crate::agent::PendingCall) -> (Tone, &'static str, String
         ToolCat::Bash => (ToolCat::Bash, "Consola", Tone::Warn),
         ToolCat::Net => (ToolCat::Net, "Red", Tone::Accent),
         ToolCat::Install => (ToolCat::Install, "Instalación", Tone::Err),
+        ToolCat::Git => (ToolCat::Git, "Git", Tone::Warn),
+        ToolCat::GitPush => (ToolCat::GitPush, "Git push", Tone::Accent),
     };
     let _ = cat;
     let objetivo = short_preview(&call.args.to_string());
@@ -61,12 +116,7 @@ fn call_summary(call: &crate::agent::PendingCall) -> (Tone, &'static str, String
 
 /// Vista previa de una línea para args JSON en el modal de permisos.
 fn short_preview(s: &str) -> String {
-    let one: String = s.replace('\n', " ").chars().take(70).collect();
-    if s.len() > 70 {
-        format!("{one}…")
-    } else {
-        one
-    }
+    crate::ui::design::trunc_end(&s.replace('\n', " "), 70)
 }
 
 /// Separador de miles con punto (p. ej. 264.000).
@@ -174,12 +224,25 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     // Header: proyecto · título · acciones. El modo vive en el composer y
     // volver a Inicio ya está en el sidebar (sin botón "<" duplicado).
     let mode = state.active_mode();
+    let active_profile_name: Option<String> = state
+        .config
+        .active_profile
+        .as_deref()
+        .and_then(|id| state.config.profile_by_id(id))
+        .map(|p| p.name.clone());
+    let model_line = match active_profile_name {
+        Some(n) => format!("{} · {}", n, state.config.active_config().model),
+        None => format!("{} · {}", state.config.active, state.config.active_config().model),
+    };
+    // Header minimalista: sin acciones de chat aquí (van en la toolbar
+    // de abajo, siempre visible, para que no se pierdan por ancho).
     let header = row![
         match project_of_chat.map(|p| p.name.clone()).or(pending_name) {
             Some(name) => components::badge(app_theme.clone(), Tone::Accent, name),
             None => components::badge(app_theme.clone(), Tone::Neutral, "Sin proyecto"),
         },
         text(title.clone()).size(design::fs(ts, type_scale::EMPHASIS)),
+        text(model_line).size(design::fs(ts, 11)).color(dim),
         iced::widget::horizontal_space(),
         pick_list(project_options, Some(current_project), Message::NavigateProject)
             .width(150)
@@ -352,41 +415,80 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
                             .into()
                         })
                         .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
-                    container(
-                        column![
-                            markdown::view(
-                                items.iter(),
-                                markdown::Settings::with_text_size(design::fs(ts, 14)),
-                                design::markdown_style(&app_theme),
-                            )
-                            .map(Message::LinkClicked),
-                            usage_el,
+                    // v0.7.4: pie con fecha/hora + Copiar + ···; el ··· (o clic
+                    // derecho) abre Deshacer-hasta-aquí (con aviso) y Rama.
+                    let ts_el: Element<'_, Message> = state
+                        .msg_times
+                        .get(i)
+                        .and_then(|t| short_ts(t))
+                        .map(|s| text(s).size(design::fs(ts, 11)).color(dim).into())
+                        .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
+                    let mut bubble = column![
+                        markdown::view(
+                            items.iter(),
+                            markdown::Settings::with_text_size(design::fs(ts, 14)),
+                            design::markdown_style(&app_theme),
+                        )
+                        .map(Message::LinkClicked),
+                        usage_el,
+                        row![
+                            ts_el,
+                            iced::widget::horizontal_space(),
+                            components::quiet_btn("Copiar".to_string())
+                                .on_press(Message::CopyMsg(i)),
+                            components::head_btn("···".to_string())
+                                .on_press(Message::ChatMsgMenu(i)),
                         ]
-                        .spacing(6),
+                        .align_y(iced::Alignment::Center),
+                    ]
+                    .spacing(6);
+                    bubble = bubble.push(msg_menu_row(state, ts, i));
+                    iced::widget::mouse_area(
+                        container(bubble)
+                            .padding(design::pad(cx, 10))
+                            .width(iced::Fill)
+                            .style(|t: &Theme| design::ai_msg(t)),
                     )
-                    .padding(design::pad(cx, 10))
-                    .width(iced::Fill)
-                    .style(|t: &Theme| design::ai_msg(t))
+                    .on_right_press(Message::ChatMsgMenu(i))
                     .into()
                 } else if m.role == Role::User {
                     // Burbuja del usuario: superficie elevada + borde de acento,
                     // alineada a la izquierda (antes se salía por la derecha).
-                    container(
-                        column![
-                            text("Tú").size(design::fs(ts, 12)).color(dim),
-                            text(&m.content).size(design::fs(ts, 14)),
-                            text(format!(
-                                "in ~{} tokens",
-                                crate::llm::estimate_tokens_text(&m.content)
-                            ))
-                            .size(design::fs(ts, 11))
-                            .color(dim),
+                    // Mismo pie + menú contextual que el agente.
+                    let ts_el: Element<'_, Message> = state
+                        .msg_times
+                        .get(i)
+                        .and_then(|t| short_ts(t))
+                        .map(|s| text(s).size(design::fs(ts, 11)).color(dim).into())
+                        .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
+                    let mut bubble = column![
+                        text("Tú").size(design::fs(ts, 12)).color(dim),
+                        text(&m.content).size(design::fs(ts, 14)),
+                        text(format!(
+                            "in ~{} tokens",
+                            crate::llm::estimate_tokens_text(&m.content)
+                        ))
+                        .size(design::fs(ts, 11))
+                        .color(dim),
+                        row![
+                            ts_el,
+                            iced::widget::horizontal_space(),
+                            components::quiet_btn("Copiar".to_string())
+                                .on_press(Message::CopyMsg(i)),
+                            components::head_btn("···".to_string())
+                                .on_press(Message::ChatMsgMenu(i)),
                         ]
-                        .spacing(2),
+                        .align_y(iced::Alignment::Center),
+                    ]
+                    .spacing(2);
+                    bubble = bubble.push(msg_menu_row(state, ts, i));
+                    iced::widget::mouse_area(
+                        container(bubble)
+                            .padding(design::pad(cx, 10))
+                            .width(iced::Fill)
+                            .style(|t: &Theme| design::user_msg(t)),
                     )
-                    .padding(design::pad(cx, 10))
-                    .width(iced::Fill)
-                    .style(|t: &Theme| design::user_msg(t))
+                    .on_right_press(Message::ChatMsgMenu(i))
                     .into()
                 } else {
                     text(&m.content).size(design::fs(ts, 12)).color(dim).into()
@@ -403,11 +505,12 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     } else {
         let kind = design::status_tone(&state.status);
         let color = design::tone(&app_theme, kind);
+        // v0.7.4: reintento como icono ↻ junto al error.
         let retry: Element<'_, Message> = if kind == Tone::Err
             && !state.streaming
             && !state.agent_running
         {
-            components::quiet_btn("Reintentar".to_string())
+            components::quiet_btn("↻".to_string())
                 .on_press(Message::RetryLast)
                 .into()
         } else {
@@ -428,29 +531,41 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
 
     // Composer: la caja de entrada va sola arriba; modos, modelo y datos
     // justo debajo. Envío primario a la derecha.
-    let send_label = if state.streaming || state.agent_running {
-        "..."
+    let running = state.streaming || state.agent_running;
+    // Durante la ejecución, Enviar se convierte en Detener (mismo sitio).
+    let action_btn: Element<'_, Message> = if running {
+        iced::widget::button(text("Detener").size(design::fs(ts, 14)))
+            .padding([10, 20])
+            .style(|t: &Theme, s| design::danger_btn(t, s))
+            .on_press(Message::StopAgent)
+            .into()
     } else {
-        "Enviar"
-    };
-    let mut send_btn = iced::widget::button(send_label)
-        .padding([10, 20])
-        .style(|t: &Theme, s| design::primary(t, s));
-    if !state.streaming && !state.agent_running && !state.input.trim().is_empty() {
-        send_btn = send_btn.on_press(Message::SendPressed);
-    }
-    let stop_btn: Element<'_, Message> = if state.agent_running {
-        components::quiet_btn("Detener".to_string()).on_press(Message::StopAgent).into()
-    } else {
-        iced::widget::horizontal_space().width(0).into()
+        let mut b = iced::widget::button(text("Enviar").size(design::fs(ts, 14)))
+            .padding([10, 20])
+            .style(|t: &Theme, s| design::primary(t, s));
+        if !state.input.trim().is_empty() {
+            b = b.on_press(Message::SendPressed);
+        }
+        b.into()
     };
     let model_opts = model_options(&state.config);
-    let active_prefix = format!("{} ·", state.config.active);
-    let current_opt = model_opts
-        .iter()
-        .find(|o| o.starts_with(&active_prefix))
-        .or(model_opts.first())
-        .cloned();
+    // v0.7.4: con perfiles, el activo es el label del perfil; sin ellos, legacy.
+    let current_opt = if !state.config.model_profiles.is_empty() {
+        state
+            .config
+            .active_profile
+            .as_deref()
+            .and_then(|id| state.config.profile_by_id(id))
+            .map(|p| p.label())
+            .or_else(|| model_opts.first().cloned())
+    } else {
+        let active_prefix = format!("{} ·", state.config.active);
+        model_opts
+            .iter()
+            .find(|o| o.starts_with(&active_prefix))
+            .or(model_opts.first())
+            .cloned()
+    };
     // Selector segmentado Chat | Plan | Work (v0.7.1): mismo alto para los
     // tres modos dentro de una pista, con el activo en acento.
     let mut seg = row![].spacing(2).align_y(iced::Alignment::Center);
@@ -502,7 +617,7 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     .width(iced::Fill);
     let composer = container(
         column![
-            row![input_box, stop_btn, send_btn]
+            row![input_box, action_btn]
                 .spacing(8)
                 .align_y(iced::Alignment::Center),
             row![
@@ -513,13 +628,6 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
                     .style(|t: &Theme, s| design::accent_pick(t, s)),
                 text("Nivel").size(design::fs(ts, 11)).color(dim),
                 reasoning_pick,
-                text(format!(
-                    "{} · {}",
-                    state.config.active,
-                    state.config.active_config().model
-                ))
-                .size(design::fs(ts, 11))
-                .color(dim),
                 iced::widget::horizontal_space(),
             ]
             .spacing(10)
@@ -675,20 +783,74 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
 
     // Caja de mensajes centrada y con ancho según densidad:
     // cómoda ~1020px, compacta ~860px (un 20% menos que a todo el ancho).
+    // Con aire inferior para que el último mensaje nunca quede tapado por
+    // el dock del composer (fix solape v0.7.4).
     let chat_w: f32 = if cx { 860.0 } else { 1020.0 };
     let messages_area = container(
-        container(scrollable(container(msgs).width(iced::Fill)).height(iced::Fill))
-            .max_width(chat_w)
+        container(
+            scrollable(
+                container(msgs)
+                    .width(iced::Fill)
+                    // Aire entre el texto y la barra de deslizamiento + cola
+                    // inferior para que el scroll final no muera bajo el dock.
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 28.0,
+                        bottom: 24.0,
+                        left: 0.0,
+                    }),
+            )
             .height(iced::Fill),
+        )
+        .max_width(chat_w)
+        .height(iced::Fill),
     )
     .width(iced::Fill)
     .height(iced::Fill)
+    .padding(iced::Padding {
+        top: 0.0,
+        right: 0.0,
+        bottom: 8.0,
+        left: 0.0,
+    })
     .center_x(iced::Fill);
+
+    // v0.7.4 Fuentes: URLs consultadas vía fetch_url, clicables.
+    let sources_panel: Element<'_, Message> = if state.chat_sources.is_empty() {
+        iced::widget::vertical_space().height(0).into()
+    } else {
+        use iced::widget::{column as col, row as rw};
+        let mut list = col![].spacing(2);
+        for (i, u) in state.chat_sources.iter().enumerate() {
+            // markdown::Url se construye por parse; fallback a texto si falla.
+            let btn: Element<'_, Message> = match u.parse::<markdown::Url>() {
+                Ok(url) => components::quiet_btn(format!("[{}] {u}", i + 1))
+                    .on_press(Message::LinkClicked(url))
+                    .into(),
+                Err(_) => text(format!("[{}] {u}", i + 1))
+                    .size(design::fs(ts, 12))
+                    .color(dim)
+                    .into(),
+            };
+            list = list.push(rw![btn].spacing(4));
+        }
+        container(
+            col![
+                components::section_label(app_theme.clone(), "Fuentes"),
+                list,
+            ]
+            .spacing(4),
+        )
+        .padding(10)
+        .style(|t: &Theme| design::well_box(t))
+        .into()
+    };
 
     let panels = container(
         column![
             context_warning,
             status,
+            sources_panel,
             approval_panel,
             tasks_panel,
             plan_panel
@@ -728,9 +890,11 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
             }),
         messages_area,
         panels,
+        // Separador fijo antes del dock: el composer nunca pisa el chat.
+        iced::widget::vertical_space().height(4),
         dock,
     ]
-    .spacing(8)
+    .spacing(0)
     .width(iced::Fill)
     .height(iced::Fill)
     .into()

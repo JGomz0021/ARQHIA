@@ -58,5 +58,35 @@ mod tests {
 
         let _ = questionnaire::handle(&mut app, Message::QCancel);
         assert_eq!(app.view, View::Chat);
+
+        // v0.7.4: menú contextual por mensaje + aviso de truncado.
+        app.messages.clear();
+        let _ = chat::handle(&mut app, Message::CopyMsg(0));
+        assert!(app.status.contains("Nada que copiar"));
+        let _ = chat::handle(&mut app, Message::ChatMsgMenu(3));
+        assert_eq!(app.msg_menu, None, "índice fuera de rango no abre menú");
+        let _ = chat::handle(&mut app, Message::TruncateRequest(0));
+        assert_eq!(app.pending_truncate, None, "sin mensajes no hay aviso");
+        let _ = chat::handle(&mut app, Message::CancelTruncate);
+        assert_eq!(app.pending_truncate, None);
+        let _ = chat::handle(&mut app, Message::ConfirmTruncate);
+        assert!(app.pending_truncate.is_none());
+        // v0.7.4: undo sin snapshot avisa; perfiles responden en config.
+        let _ = chat::handle(&mut app, Message::UndoChat);
+        assert!(app.status.contains("Nada que deshacer") || app.status.contains("Espera"));
+        let n_profiles = app.config.model_profiles.len();
+        let _ = config::handle(&mut app, Message::ProfileNameChanged("Tmp".to_string()));
+        assert_eq!(app.profile_name, "Tmp");
+        assert_eq!(app.config.model_profiles.len(), n_profiles);
+        // v0.7.4 rediseño: menú ··· por perfil + overlay de edición.
+        let _ = config::handle(&mut app, Message::ProfileMenuToggled("x".to_string()));
+        assert_eq!(app.profile_menu.as_deref(), Some("x"));
+        let _ = config::handle(&mut app, Message::ProfileMenuToggled("x".to_string()));
+        assert_eq!(app.profile_menu, None);
+        let _ = config::handle(&mut app, Message::ProfileEdit("no-existe".to_string()));
+        assert!(app.status.contains("no encontrado"));
+        assert_eq!(app.editing_profile, None);
+        let _ = config::handle(&mut app, Message::ProfileDelete("no-existe".to_string()));
+        assert_eq!(app.config.model_profiles.len(), n_profiles);
     }
 }

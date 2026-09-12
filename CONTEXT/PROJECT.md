@@ -30,28 +30,39 @@ Se adopta **Iced 0.13 desde v0.1** como stack único.
 
 *   **Core:** Rust + Tokio, Serde, Iced 0.13
 *   **Persistencia:** File-system + SQLite (índice de proyectos/chats, historial, STACK local)
+*   **Git (v0.7.2):** soporte nativo en `git.rs` (init, rama de trabajo `ARQHIA`, estado, commit, push). La política vive en `config.rs::GitConfig` y se aplica por comando en `agent/tools.rs`; el auto-commit solo ocurre si la puerta de calidad (`cargo check` + `test` + `clippy`) pasa.
 *   **LLM:** Clientes **nativos por provider** (`llm/openai.rs`, `llm/anthropic.rs`, `llm/openrouter.rs`, `llm/local.rs`) con trait común `Provider { chat_stream }`. Keys configurables en pantalla Config. Cada provider con su `base_url`, `api_key`, `model` y su formato de auth/cuerpo propio.
 *   **Local (LM Studio):** provider `Local (LM Studio)`, OpenAI-compatible contra `http://localhost:1234` (normaliza `/v1` pegado). No exige API key (LM Studio la ignora); sí exige el id exacto del modelo cargado (se ve en la app de LM Studio). `Probar conexión` lista modelos vía `GET /v1/models` sin auth.
 *   **Catálogo de modelos/precios:** `pricing.rs` usa `https://models.dev/api.json` (público) para precios por 1M tokens (input/output/cache), contexto, capacidades (tools/reasoning) y **niveles de razonamiento por modelo** (`reasoning_options`). Cache en disco; `RefreshPricing` lo actualiza. Alimenta el coste por mensaje, la ventana de contexto, el navegador de modelos y el selector de nivel.
-*   **Build Target:** Linux en v0.1–v0.9, multiplataforma en v1.0 si da tiempo (Iced lo permite sin cambios mayores).
+*   **Updater (v1.0):** `updates.rs` consulta `{web}/updates/latest.json`, compara semver y muestra banner en Home (notificar + descargar). En Windows-Store la Store actualiza sola.
+*   **Web (dependencia, `CONTEXT/WEB.md`):** sitio Astro + Cloudflare con descarga, precios, soporte, docs, legal y manifiesto de updates. No es una versión: es prerrequisito de v1.0.
+*   **Distribución:** Linux `.deb`/`.tar.gz`; Windows vía **Microsoft Store** (registro gratis, Microsoft firma el MSIX y auto-actualiza; sin certificado Authenticode propio). macOS (firma Developer ID + notarización) en v1.2, condicionado a base de usuarios PRO.
+*   **Build Target:** Linux y Windows en v1.0–v1.1; macOS en v1.2 (Iced lo permite sin cambios mayores).
 
 ## 4. Arquitectura Workspace
 
-Cada proyecto creado por ARQHIA contiene:
+Desde v0.8 cada proyecto creado por ARQHIA se estructura así:
 
 ```
-{proyecto}/
-├── Proyecto/          # Código generado del proyecto del usuario (desde v0.3 es el workspace asignado)
-└── CONTEXT/           # Fuente de verdad del proyecto
-    ├── ESPEC.md       # Generado por cuestionario v0.5+ (nombre, descripción, ubicación, objetivo, público, interfaz)
-    ├── CONCEPTO.md    # Idea, visión, objetivos (heredado / futuro)
-    ├── PROJECT.md     # Copia de este archivo + adaptaciones
-    ├── VERSIONS.md    # Índice de versiones
-    ├── VERSIONS/      # Un .md por versión
-    └── TEMP.md        # Errores de auditoría (efímero, desde v0.3/v0.6)
+{workspace}/
+├── Project/                 # Código + git del proyecto del usuario
+│   └── (vacío al inicio)
+├── ToDo.md                  # Tablero de ejecución (lo mantiene el agente)
+└── CONTEXT/                 # SSOT del proyecto generado
+    ├── CONTEXT.md           # Índice + estado vivo + siguiente paso (entrada del agente)
+    ├── PROJECT.md           # Visión, objetivo, alcance, usuario
+    ├── SPECS.md             # Especificación funcional (reemplaza ESPEC.md)
+    ├── ROADMAP.md           # Versiones de alto nivel
+    ├── VERSIONS.md          # Índice de estado por versión
+    ├── VERSIONS/            # Un .md por versión (v0.1.md, ... v1.0.md)
+    └── TEMP.md              # Errores de auditoría (efímero, desde v0.3/v0.6)
 ```
 
-En v0.2 `Proyecto` es solo agrupador lógico de chats (sin path en disco). Desde v0.3 cada proyecto tiene `path: PathBuf` asignado como workspace real con guards `canonicalize + starts_with`.
+*   **`CONTEXT.md` es índice + estado vivo**, no un volcado de todo: resume situación actual y siguiente paso (rol que en el producto cumple `HECHO.md`) y evita duplicar `PROJECT/SPECS/VERSIONS`.
+*   **`Project/` es la raíz de código/git.** El guard del agente permite escribir en `Project/`, `CONTEXT/` y `ToDo.md`, y sigue bloqueando fuera del workspace.
+*   `ROADMAP.md`, `VERSIONS.md` y `VERSIONS/v0.1.md` se generan al ejecutar el primer **Plan**; el cuestionario crea `PROJECT.md`, `SPECS.md` y `CONTEXT.md`.
+
+En v0.2 `Proyecto` es solo agrupador lógico de chats (sin path en disco). Desde v0.3 cada proyecto tiene `path: PathBuf` asignado como workspace real con guards `canonicalize + starts_with`. Desde v0.7.2, si Git está habilitado, el workspace se inicializa como repo y el agente trabaja en la rama de trabajo `ARQHIA`, dejando la rama base (`main`) protegida. **El naming estándar de especificaciones es `SPECS.md`** (se retira `ESPEC.md`; migración con nota legacy).
 
 *   `AGENTS.md:1` (desde v0.6) — Define herramientas permitidas, permisos y roles orquestador/worker/auditor.
 *   `CONTEXT/` es leído en cada petición del agente antes de revisar código.
@@ -70,16 +81,21 @@ ARQHIA_P/
     │   ├── orchestrator.rs# driver planner → workers → auditor
     │   └── handlers/      # brazos de update por dominio
     │       └── {navigation,chat,projects,agent,config,questionnaire}.rs
-    ├── views/             # render puro (home, sidebar, chat, questionnaire, config_view)
+    ├── views/             # render puro (home, sidebar, chat, questionnaire, config_view, stack)
     ├── ui/                # design tokens + componentes (design.rs, components.rs)
-    ├── config.rs          # providers + tema + permisos (toml)
-    ├── db.rs              # SQLite (chats + archived, projects, messages)
-    ├── sidebar.rs         # helpers de títulos (puro)
-    ├── workspace.rs       # guards + uploads + context_block
-    ├── questionnaire/     # modelo + validación + plantilla ESPEC.md
+    ├── config.rs          # providers + tema + permisos + git + cuenta/licencia (toml)
+    ├── db.rs              # SQLite (chats + archived, projects, messages, stack)
+    ├── titles.rs          # helpers de títulos (puro)
+    ├── workspace.rs       # guards + uploads + context_block + snapshot (v1.1)
+    ├── git.rs             # repo/rama/commit/push por workspace (v0.7.2)
+    ├── updates.rs         # updater embebido (v1.0): latest.json + semver + banner
+    ├── stack/{mod.rs, seed.rs, cloud.rs, mock_cloud.rs}   # STACK local/nube (v0.9/v1.0)
+    ├── license.rs         # licencias ed25519 + planes (v1.1)
+    ├── custom.rs          # agentes y flujos custom (v1.1)
+    ├── questionnaire/{mod.rs, levels.rs, ai.rs, templates.rs}  # PROJECT.md + SPECS.md
     ├── llm/{mod.rs, openai.rs, anthropic.rs, openrouter.rs, local.rs}
     ├── pricing.rs         # catálogo de modelos/precios (models.dev) + cache
-    └── agent/{mod.rs, tools.rs}
+    └── agent/{mod.rs, tools.rs, merge.rs}   # merge.rs en v1.1
 ```
 
 Regla de capas: `views/` no toca DB ni red; `handlers/` coordina vía
@@ -110,8 +126,10 @@ tools no conocen el estado UI.
 
 *   `Crear proyecto` → crea `Project{name, path}`.
 *   `Abrir proyecto` → `rfd::FileDialog::pick_folder()`.
+*   **Onboarding (v0.8):** si no hay ningún provider configurado, Home muestra un aviso de bienvenida que pide configurar una API (provider + key + model) con opción `Configurar después`. Al guardar la primera API, el aviso desaparece y no vuelve.
+*   **Updater (v1.0):** si `updates/latest.json` reporta una versión superior, Home muestra un banner (versión + novedades + `Descargar`). En Windows-Store se omite porque la Store auto-actualiza.
 *   `Configuración` abajo → API + tema.
-*   Desde v0.7 la Configuración va por pestañas: `API | Apariencia | Permisos | Proyectos` (columna izquierda + contenido). La pestaña Proyectos lista workspaces, borra proyectos (a papelera) y gestiona archivos subidos. Desde v0.7.1 hay apartado **Atajos** (lista de solo lectura: `Ctrl+N` nuevo chat, `Ctrl+1/2/3` modos, `Ctrl+O` abrir proyecto, `Ctrl+,` configuración, `Esc` cerrar).
+*   Desde v0.7 la Configuración va por pestañas: `API | Apariencia | Permisos | Git | Proyectos` (columna izquierda + contenido). La pestaña **Git** (v0.7.2) configura el repositorio (enabled, auto-init, rama base, rama de trabajo, remoto, rama de push), la autonomía del agente (`Solo lectura / Commit local / Commit y push`), el permiso de push a GitHub, el autor de commits y el estado del workspace activo (rama, cambios, botón `Inicializar git`). La pestaña Proyectos lista workspaces, borra proyectos (a papelera) y gestiona archivos subidos. Desde v0.7.1 hay apartado **Atajos** (lista de solo lectura: `Ctrl+N` nuevo chat, `Ctrl+1/2/3` modos, `Ctrl+O` abrir proyecto, `Ctrl+,` configuración, `Esc` cerrar, `Doble Esc` detener el turno en curso).
 
 ### 5.3 Layout Principal (Chat + Sidebar)
 
@@ -150,30 +168,56 @@ Pendiente de implementar en cualquiera de las versiones v0.8–v1.0:
 *   Control de datos: archivos, proyectos, caché y contexto (ver/exportar/limpiar).
 *   Especificaciones claras en cada límite (no solo historial del modelo), con **tooltip flotante** al pasar el cursor (ya iniciado en Límites).
 *   Config con sidebar de pestañas más ancha y bloques pequeños lado a lado (iniciado).
-*   **Guardar modelos/perfiles:** además de un modelo por provider, guardar varios modelos con su propia API key, `base_url` y provider, y alternar entre ellos rápidamente.
+*   **Guardar modelos/perfiles:** además de un modelo por provider, guardar varios modelos con su propia API key, `base_url`, provider y un **nombre visible** que aparezca en el selector. **Asignado a v0.7.4** (ver `CONTEXT/VERSIONS/v0.7.4.md` §A).
+*   **Utilidades de chat:** título generado por IA, undo, copiar chat, nuevo chat desde un mensaje, fecha/hora por mensaje, reintento con icono y **citar fuentes** tras investigar en la red (`fetch_url`). **Asignado a v0.7.4** (`§B`).
 *   **Lector de Markdown del chat:** verificar cobertura de sintaxis completa (tablas, listas anidadas, blockquotes, checkboxes, imágenes, HTML, LaTeX, código con lenguaje) y mejorar el aspecto visual (tipografía, espaciado, bloques de código, enlaces, tablas).
 *   **Repos guía:** usar los repositorios de **opencode**, **OpenHands** y **SWE-agent** como referencia para el orquestador, tools, prompts y flujo de agente.
-*   **Sesiones de chat:** separar los chats en **sesiones** con un id estable cuando el provider lo permita (OpenRouter, OpenAI, Anthropic, Groq…), para que lo detecten y mejoren caché/coste y trazabilidad (revisar doc de cada provider).
+*   **Sesiones de chat:** separar los chats en **sesiones** con un id estable cuando el provider lo permita (OpenRouter, OpenAI, Anthropic, Groq…), para que lo detecten y mejoren caché/coste y trazabilidad (revisar doc de cada provider). **Asignado a v0.8** (ver `CONTEXT/VERSIONS/v0.8.md` §E).
 
 ## 6. Flujo de Creación de Proyecto
 
 ```
-Home (Crear/Abrir) → Cuestionario inmediato → ESPEC.md → Chat (v0.1-v0.4) → Agente simple (v0.3+) → Orquestador (v0.6) → STACK (v0.9/v1.0)
+Home (Crear/Abrir) → Cuestionario (genérico + nivel + IA opcional) →
+PROJECT.md + SPECS.md + CONTEXT.md + estructura (Project/, ToDo.md, CONTEXT/) →
+Chat / Plan (ROADMAP.md + VERSIONS.md + VERSIONS/v0.x.md) → Work (orquestador) →
+STACK (v0.9/v1.0) → release
 ```
+
+Desde v0.7.3 el turno Work sigue el flujo de estabilidad:
+`petición → analista (CONTEXT/specs/outlines) → planner → workers → auditor →
+TEMP → loop fix hasta verde → commit (rama ARQHIA) → push (opcional)`.
 
 ## 7. Cuestionario
 
-### 7.1 v0.5 — Simple (único nivel)
+### 7.1 v0.5 — Base (histórico, Done)
 
-Texto libre: `nombre, descripción, ubicación en equipo (path), objetivo`.
-Opción múltiple: `público_objetivo[dev-indie, pequeño-equipo, empresa, estudiantes, otro]`, `interfaz[nativa, web, CLI, móvil, backend]`.
-Salida: `{workspace}/CONTEXT/ESPEC.md` vía plantilla `minijinja`.
+Wizard de preguntas fijas que generaba un único `.md` de especificaciones
+(`CONTEXT/ESPEC.md`). Queda como base; el diseño vigente es el de v0.8.
 
-### 7.2 v0.8 — Tres niveles
+### 7.2 v0.8 — Genérico + por nivel + IA
 
-*   **Principiante:** diseño y decisiones de proyecto, no código (problema, usuario, pantallas clave, prioridades).
-*   **Intermedio:** stack tecnológico y alcance (lenguaje, web/nativo/CLI, BD, MVP, auth).
-*   **Avanzado:** alcance, escalabilidad y arquitectura (módulos, escalado, multi-dispositivo, seguridad, CI/CD).
+**Paso 0 — Nivel:** `Principiante | Intermedio | Avanzado`.
+
+**Genéricas (siempre):** nombre, descripción, objetivo, características/funcionalidades.
+
+**Por nivel:**
+
+*   **Principiante (diseño y decisiones, no código):** estilo visual,
+    plataforma `{multiplataforma, web, nativa, juego}`, facturación
+    `{suscripciones, pago único, api, uso personal}`.
+*   **Intermedio:** UI/UX, plataforma, stack tecnológico (opcional), facturación.
+*   **Avanzado:** UI/UX, plataforma, stack tecnológico, arquitectura, facturación.
+
+**IA (opcional, saltable):** el provider activo propone 3–5 preguntas
+adicionales adaptadas a lo respondido. Sin provider, el paso se deshabilita y
+el flujo continúa.
+
+**Salida:** `PROJECT.md` (visión/objetivo/alcance/usuario), `SPECS.md`
+(funcionalidades + UI/UX + plataforma + stack + arquitectura + facturación
+según nivel) y `CONTEXT.md` (índice + estado vivo). Se crea la estructura
+`Project/`, `ToDo.md`, `CONTEXT/`. `ROADMAP.md`/`VERSIONS.md`/`VERSIONS/v0.1.md`
+se generan en el primer **Plan**. `ESPEC.md` se retira (migración con nota
+legacy).
 
 ## 8. Chat & Agente
 
@@ -221,6 +265,33 @@ Salida: `{workspace}/CONTEXT/ESPEC.md` vía plantilla `minijinja`.
 *   `Limits { max_iters, max_tasks, max_read_kb, bash_timeout_s, max_upload_mb }` con rangos validados. Planner sin tools (denegado por rol).
 *   Políticas vinculantes en `CONTEXT/POLICIES.md` (uso, privacidad, propiedad, licencias, consentimiento).
 
+### 8.7 Git (v0.7.2)
+
+*   **Configuración** (`GitConfig` en `config.rs`): `enabled` (def true), `auto_init` (def true), `base_branch` (def `main`), `work_branch` (def `ARQHIA`), `branch_mode` (`Single`/`PerTask`), `autonomy` (`ReadOnly`/`CommitLocal`/`CommitAndPush`, def `CommitLocal`), `push_enabled` (def false), `remote` (def `origin`), `push_branch`, `protected` (def `main`/`master`), autor opcional.
+*   **Módulo `git.rs`:** init del repo, rama de trabajo, estado (`status`, rama, remoto), `commit_all` y `push` (no interactivo + timeout). Guarda anti-sucio: no auto-commitea si el árbol venía sucio antes del turno.
+*   **Política por comando** (`agent/tools.rs`): lectura auto; `init/add/commit/stash` con `autonomy ≥ CommitLocal`; `push/fetch/pull` solo con `CommitAndPush && push_enabled` (si no, panel de aprobación). Bloqueados siempre `push --force`, `reset --hard`, `clean`, `rebase`, `config`, `remote add/remove` y commits sobre `protected`.
+*   **Flujo:** al crear/abrir proyecto se inicializa repo y rama `ARQHIA`; al cerrar un turno Work exitoso, commit `"ARQHIA: <resumen>"` **solo si** `cargo check`+`test`+`clippy` pasan. El auditor incluye `git diff --stat` en `TEMP.md`.
+*   **Push a GitHub:** desactivado por defecto; al activarlo, el agente pide aprobación (categoría `GitPush`) y puede empujar a `push_branch` (def = `ARQHIA`).
+
+### 8.8 Bucle de estabilidad (v0.7.3)
+
+*   **Flujo pre-STACK:** `petición → analista → planner → workers → auditor → TEMP → loop fix hasta verde → commit → push (opcional)`.
+*   **Analista dedicado:** `agent::analyze_workspace` (1 llamada sin tools) lee `CONTEXT/*.md` (ESPEC o PROJECT/SPECS/CONTEXT en v0.8), `VERSIONS.md`, `TEMP.md` previo y outlines de código, y produce un **brief** (`CONTEXT/ANALYSIS.md`) que consume el planner. Fallback a `context_block` si no hay provider/timeout.
+*   **Loop sin tope:** `auditor → fix worker → re-auditoría` hasta que no haya issues. `Limits.max_fix_cycles` (def `0` = ilimitado) permite caparlo. Frenos reales: `Detener`, `max_tokens_turn` y parada temprana.
+*   **Commit solo al cerrar verde:** el auto-commit del turno se mueve al final del bucle verde (auditor limpio + `check/test/clippy` OK). Detenido o con presupuesto agotado ⇒ sin commit.
+*   **Push opcional:** `autonomy == CommitAndPush && push_enabled` + aprobación `GitPush`.
+
+### 8.9 Sesiones de chat (v0.8)
+
+*   Cada chat guarda un **`session_id` estable** (`chats.session_id`, migración aditiva) que se genera al primer turno y sobrevive a archivar/mover.
+*   Se envía al provider que lo soporta: **OpenRouter** `session_id`, **OpenAI/Groq** `prompt_cache_key` (fallback `user`), **Anthropic** header `x-session-id` (trazabilidad); **Local** sin efecto. Helper `llm::session_body_fields`.
+*   Acción `Reiniciar sesión` en el menú `⋯` del chat regenera el id. Mejora caché/coste y trazabilidad; sin provider con soporte no cambia nada.
+
+### 8.10 Chat UX + modelos con nombre (v0.7.4)
+
+*   **Perfiles de modelo** con **nombre visible** (provider + `base_url` + API key + model + nivel): el nombre es lo que sale en el selector de Config y del composer. CRUD y migración desde el modelo activo.
+*   **Utilidades de chat:** título por IA (fallback al primer mensaje), undo (`Ctrl+Z`, 1 paso), copiar chat, nuevo chat desde un mensaje (bifurcar), fecha/hora por mensaje (`messages.created_at`), reintento con icono `↻` y **citar fuentes** (`Fuentes` clicables) cuando el agente usa `fetch_url`.
+
 ## 9. STACK
 
 ### 9.1 STACK Local (v0.9)
@@ -236,7 +307,7 @@ Salida: `{workspace}/CONTEXT/ESPEC.md` vía plantilla `minijinja`.
 
 > El agente consulta el STACK en cada tarea (desde v0.9): `Revisa CONTEXT → Revisa código → Consulta STACK → Diseña tareas → Ejecuta`.
 
-## 10. Resumen de Versiones (v0.1 → v1.0)
+## 10. Resumen de Versiones (v0.1 → v1.2)
 
 | Versión | Foco | Entregable clave |
 |---|---|---|
@@ -244,16 +315,21 @@ Salida: `{workspace}/CONTEXT/ESPEC.md` vía plantilla `minijinja`.
 | **v0.2** | Sidebar + temas + proyectos | Múltiples chats, left sidebar 260px, Dark/Light, proyectos como agrupadores |
 | **v0.3** | Agente simple | Workspace asignado, CRUD archivos, bash simple con allowlist |
 | **v0.4** | Home page | Vistas Home/Chat/Config, Crear/Abrir proyecto, Config abajo |
-| **v0.5** | Cuestionario simple | Wizard 6 preguntas → ESPEC.md |
+| **v0.5** | Cuestionario simple | Wizard preguntas fijas → doc de especificaciones (`ESPEC.md`, histórico) |
 | **v0.6** | Orquestador + permisos | Permisos modal, +tools, planner + 2 generadores + auditor |
 | **v0.7** | Polish + seguridad | Tabs, uploads, permisos ampliados (todo peligroso OFF), límites, apariencia, POLICIES |
 | **v0.7.1** | Agente eficiente + Modos | Matches/search v2, read paginado, outline, modos Chat/Plan/Work, atajos, presupuesto + badge tokens |
-| **v0.8** | Cuestionario 3 niveles + modos | Principiante/Intermedio/Avanzado + Chat/Plan/Work + PLAN.md + atajos |
+| **v0.7.2** | Git nativo + puerta de calidad | Repo por workspace + rama `ARQHIA` + pestaña Git + permisos por comando + auto-commit condicionado a `cargo check`/`test`/`clippy` |
+| **v0.7.3** | Bucle de estabilidad | Analista dedicado (CONTEXT/specs/outlines) + loop `auditor → fix` hasta verde + commit al cerrar verde + push opcional |
+| **v0.7.4** | Chat UX + modelos con nombre | Perfiles de modelo con nombre visible + título IA + undo + copiar/bifurcar chat + fecha/hora + reintento con icono + citar fuentes |
+| **v0.8** | Cuestionario genérico + nivel + IA, estructura, onboarding y sesiones | Genéricas + por nivel + IA opcional → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md`; onboarding de API; `session_id` estable por chat |
 | **v0.9** | STACK local + legal + instalador | Tags + FTS5 + author/license/consent + identidad local + .deb + CI mínimo |
-| **v1.0** | STACK nube + release | Push/pull/sync + auth + Windows + backup/export + release estable |
-| **v1.1** | Pro + macOS + licencias | Multi-agent paralelo + sandboxes + merge + agentes/flujos custom + planes Trial/$5/$12/$20 + `.dmg` Apple Silicon |
+| **WEB** | Sitio del producto (dependencia, no versionado) | Astro + Cloudflare: descarga, precios, soporte, docs, legal, `updates/latest.json` |
+| **v1.0** | STACK nube + auth + updater + release | Push/pull/sync + auth + updater (notificar+descargar) + Microsoft Store (Windows) + backup/export + release estable Linux+Windows |
+| **v1.1** | Pro (Linux+Windows) | Multi-agent paralelo + sandboxes + merge + agentes/flujos custom + planes Trial/$5/$12/$20 |
+| **v1.2** | macOS (condicionado) | Firma Developer ID + notarización + `.dmg` Apple Silicon; se abre con 50–100 PRO de pago |
 
-Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`.
+Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en `WEB.md`.
 
 ## 11. Monetización (v1.1)
 
@@ -269,14 +345,18 @@ Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`.
     (`Leer > Contexto > Editar > Refactorizar > Ejecutar > Auditar`).
 *   Licencias offline `ed25519` en `~/.config/arqhia/license.toml` (600),
     pago vía proveedor externo, sin backend propio ni telemetría de código.
+*   **Alcance de plataforma:** Pro se vende en Linux y Windows (v1.1). macOS
+    (v1.2) solo se abre con **50–100 usuarios PRO de pago** como base.
 
 ## 12. Convenciones
 
 *   **Idioma:** Español para docs de producto, inglés para código y commits.
-*   **Target OS:** Linux prioritario.
-*   **Versionado:** SemVer `v0.x` → `v1.0`.
+*   **Target OS:** Linux y Windows prioritarios; macOS condicionado.
+*   **Versionado:** SemVer `v0.x` → `v1.2`.
 *   **Iced:** 0.13, `Theme::Dark` por defecto.
+*   **Distribución:** `.deb`/`.tar.gz` + updater (Linux); Microsoft Store (Windows).
+*   **Web:** dependencia aparte (`CONTEXT/WEB.md`), Astro + Cloudflare, previa a v1.0.
 
 ## 13. Próximo Paso
 
-Implementar v0.1 en `ARQHIA_P/`: shell Iced + `config.rs` + `llm/` nativo + chat con streaming. Ver `HECHO.md` en raíz para estado actual.
+**v0.7.2 — Git nativo + puerta de calidad** y **v0.7.3 — Bucle de estabilidad** implementadas (ver `CONTEXT/VERSIONS/v0.7.2.md` y `v0.7.3.md`): `GitConfig` + `git.rs`, política git por comando, pestaña Git, rama `ARQHIA`, auto-commit condicionado a `cargo check`+`test`+`clippy`; analista dedicado (`CONTEXT/ANALYSIS.md`), loop `auditor → fix` sin tope (salvo `Limits.max_fix_cycles`) y commit solo al cerrar verde. Siguiente: **v0.7.4 — Chat UX + modelos con nombre** (perfiles de modelo con nombre visible, título por IA, undo, copiar/bifurcar chat, fecha/hora, reintento con icono, citar fuentes); después **v0.8 — Cuestionario genérico + por nivel + IA, estructura, onboarding y sesiones** (genéricas + por nivel + IA opcional → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md`; onboarding de API; `session_id` estable por chat). Luego v0.9 (STACK local + `.deb` + CI), WEB (dependencia) y v1.0. Ver `HECHO.md` en raíz para estado actual.

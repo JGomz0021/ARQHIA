@@ -111,7 +111,8 @@ pub(crate) fn worker_seed(
 }
 
 /// ¿Una llamada concreta necesita aprobación? (v0.7 Track B: Install y
-/// Net con dominios se deciden por args, no solo por nombre).
+/// Net con dominios se deciden por args, no solo por nombre; v0.7.2: git
+/// según autonomía/push).
 pub(crate) fn call_needs_approval(state: &App, call: &agent::PendingCall) -> bool {
     let perms = &state.config.permissions;
     match agent::tools::category_of_call(&call.name, &call.args) {
@@ -127,15 +128,39 @@ pub(crate) fn call_needs_approval(state: &App, call: &agent::PendingCall) -> boo
             let url = call.args.get("url").and_then(|v| v.as_str()).unwrap_or("");
             !agent::tools::url_domain_listed(url, &perms.net_domains)
         }
+        agent::tools::ToolCat::Git => match agent::tools::git_call_kind(&call.args) {
+            Some(agent::tools::GitKind::Read) => !perms.auto_read,
+            Some(agent::tools::GitKind::Write) => {
+                state.config.git.autonomy < crate::config::GitAutonomy::CommitLocal
+            }
+            // Bloqueado (lo rechaza el executor): siempre al panel.
+            _ => true,
+        },
+        agent::tools::ToolCat::GitPush => !state.config.git.auto_push(),
     }
 }
 
 /// Coloca la respuesta final del agente como último mensaje + DB + markdown.
 /// Registra uso estimado de tokens (input/output/coste) para ese mensaje.
 pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
+    // v0.7.4: si hay fuentes fetch_url, se anexan como bloque clicable.
+    // Además se rescatan URLs citadas en el texto (fallback extract_urls).
+    for u in agent::extract_urls(&answer) {
+        if !state.chat_sources.iter().any(|x| x == &u) && state.chat_sources.len() < 10 {
+            state.chat_sources.push(u);
+        }
+    }
+    let mut final_answer = answer.clone();
+    if !state.chat_sources.is_empty() {
+        let mut block = String::from("\n\nFuentes:");
+        for (i, u) in state.chat_sources.iter().enumerate() {
+            block.push_str(&format!("\n[{}] {u}", i + 1));
+        }
+        final_answer.push_str(&block);
+    }
     if let Some(last) = state.messages.last_mut()
         && last.role == Role::Assistant {
-            last.content = answer.clone();
+            last.content = final_answer.clone();
         }
     state.reparse_last_md();
     // Uso estimado del turno de agente (sin `usage` real: es no-streaming).
@@ -177,6 +202,7 @@ pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
         && let Some(last) = state.messages.last()
             && !last.content.trim().is_empty() {
                 let _ = db::save_msg(chat_id, "assistant", &last.content);
+                state.resync_msg_meta(chat_id);
             }
 }
 
@@ -186,9 +212,7 @@ pub(crate) fn abort_agent_placeholder(state: &mut App) {
     if let Some(last) = state.messages.last()
         && last.role == Role::Assistant
         && (last.content == "orquestando..." || last.content == "planificando...") {
-            state.messages.pop();
-            state.md.pop();
-            state.msg_usage.pop();
+            state.pop_last_message();
         }
 }
 
@@ -282,6 +306,7 @@ pub(crate) fn spawn_exec_calls(
         limits.max_read_kb as usize * 1024,
         &perms.net_domains,
         &ignores,
+        &state.config.git,
     );
     // Los calls viajan de vuelta DENTRO del futuro (el mapper es Fn y no
     // puede mover capturas): así AgentExecDone puede poblar la caché.
@@ -312,8 +337,9 @@ pub(crate) fn continue_after_worker(state: &mut App) -> Task<Message> {
                 }
             };
             let turn = state.agent_gen;
+            let cycle = state.fix_cycle;
             Task::perform(
-                async move { agent::audit_workspace(provider, &cfg, &ws).await },
+                async move { agent::audit_workspace(provider, &cfg, &ws, cycle).await },
                 move |res| Message::AgentAudit(turn, res),
             )
         }
@@ -404,7 +430,81 @@ pub(crate) fn finish_orchestrator(state: &mut App, extra: String) -> Task<Messag
     state.driver = None;
     state.pending_calls.clear();
     state.status.clear();
+    close_git_turn(state)
+}
+
+/// Prepara git al arrancar un turno Work (v0.7.2): asegura la rama de
+/// trabajo y recuerda si el árbol venía limpio (guarda anti-sucio).
+pub(crate) fn prepare_git_turn(state: &mut App) {
+    state.git_verify_ok = false;
+    state.git_turn_interrupted = false;
+    state.git_clean_before = true;
+    let git = state.config.git.clone();
+    let Some(ws) = state.o_ws.clone() else { return; };
+    if !git.enabled {
+        return;
+    }
+    match crate::git::ensure_work_branch(&ws, &git) {
+        Ok(()) => {
+            let branch = crate::git::current_branch(&ws).unwrap_or_else(|| git.work_branch.clone());
+            state.git_clean_before = crate::git::is_clean(&ws);
+            state.push_log(format!("🌿 git: rama {branch}"));
+        }
+        Err(e) => state.push_log(format!("⚠️ git: {e}")),
+    }
+}
+
+/// Cierra el turno con git (v0.7.2): auto-commit solo si la verificación
+/// pasó y el árbol venía limpio; push solo si `CommitAndPush + push_enabled`.
+fn close_git_turn(state: &mut App) -> Task<Message> {
+    let git = state.config.git.clone();
+    if !git.enabled || matches!(git.autonomy, crate::config::GitAutonomy::ReadOnly) {
+        return Task::none();
+    }
+    let Some(ws) = state.o_ws.clone() else { return Task::none(); };
+    if !crate::git::is_repo(&ws) {
+        return Task::none();
+    }
+    if state.git_turn_interrupted {
+        state.push_log("⏹ sin commit: el turno se cortó (presupuesto/parada)".to_string());
+        return Task::none();
+    }
+    if !state.git_verify_ok {
+        state.push_log("⏹ sin commit: la verificación (check/test/clippy) no pasó".to_string());
+        return Task::none();
+    }
+    if !state.git_clean_before {
+        state.push_log("⏹ sin commit: el árbol ya venía sucio antes del turno".to_string());
+        return Task::none();
+    }
+    let msg = format!("ARQHIA: {}", last_user_summary(state));
+    match crate::git::commit_all(&ws, &msg, git.author(), state.git_clean_before) {
+        Ok(Some(sha)) => state.push_log(format!("🌿 commit {sha}: {msg}")),
+        Ok(None) => {}
+        Err(e) => state.push_log(format!("⚠️ commit falló: {e}")),
+    }
+    if git.auto_push() {
+        let remote = git.remote.clone();
+        let branch = git.push_target().to_string();
+        state.push_log(format!("⬆ push {remote}/{branch}…"));
+        return Task::perform(
+            async move { crate::git::push(&ws, &remote, &branch).await },
+            Message::GitPushDone,
+        );
+    }
     Task::none()
+}
+
+/// Resumen corto del último pedido del usuario para el mensaje de commit.
+fn last_user_summary(state: &App) -> String {
+    let text = state
+        .o_history
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::User)
+        .map(|m| m.content.clone())
+        .unwrap_or_else(|| "turno de trabajo".to_string());
+    crate::ui::design::trunc_end(&text.replace('\n', " "), 60)
 }
 
 #[cfg(test)]
@@ -480,5 +580,59 @@ mod tests {
             d.token_budget = 1;
         }
         assert!(account_tokens(&mut app));
+    }
+
+    fn commit_count(ws: &std::path::Path) -> usize {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(ws)
+            .args(["rev-list", "--count", "HEAD"])
+            .output()
+            .expect("git rev-list");
+        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    }
+
+    /// v0.7.3: el auto-commit del cierre solo ocurre con el turno verde.
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn commit_only_when_turn_is_green() {
+        let ws = std::env::temp_dir().join("arqhia-orch-commit-test");
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(&ws).unwrap();
+        let git = crate::config::GitConfig {
+            author_name: "Test".to_string(),
+            author_email: "t@test.dev".to_string(),
+            ..crate::config::GitConfig::default()
+        };
+        crate::git::ensure_work_branch(&ws, &git).unwrap();
+        std::fs::write(ws.join("a.txt"), "1").unwrap();
+        crate::git::commit_all(&ws, "init", git.author(), true).unwrap();
+        let before = commit_count(&ws);
+
+        // Turno ROJO: hay cambios pero la verificación no pasó -> sin commit.
+        let mut red = App::default();
+        red.active_chat = None;
+        red.config.git = git.clone();
+        red.o_ws = Some(ws.clone());
+        red.o_history = vec![ChatMsg { role: Role::User, content: "haz algo".to_string() }];
+        red.worker_answers = vec!["listo".to_string()];
+        red.git_clean_before = true;
+        red.git_verify_ok = false;
+        std::fs::write(ws.join("a.txt"), "cambio").unwrap();
+        let _ = finish_orchestrator(&mut red, String::new());
+        assert_eq!(commit_count(&ws), before, "en rojo no debe commitear");
+
+        // Turno VERDE: mismo cambio pendiente -> commit.
+        let mut green = App::default();
+        green.active_chat = None;
+        green.config.git = git.clone();
+        green.o_ws = Some(ws.clone());
+        green.o_history = vec![ChatMsg { role: Role::User, content: "haz algo".to_string() }];
+        green.worker_answers = vec!["listo".to_string()];
+        green.git_clean_before = true;
+        green.git_verify_ok = true;
+        let _ = finish_orchestrator(&mut green, String::new());
+        assert_eq!(commit_count(&ws), before + 1, "en verde debe commitear");
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

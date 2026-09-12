@@ -64,6 +64,7 @@ mod live_tests {
             "crea el archivo a.txt con AAA y el archivo b.txt con BBB",
             "Workspace: /tmp/arqhia-orch-ws\nArchivos: (vacío)",
             None,
+            None,
             &cfg,
             "Work",
         )
@@ -99,12 +100,13 @@ mod live_tests {
         assert!(ws.join("b.txt").exists(), "b.txt no creado");
 
         // 3) Auditor + TEMP.md
-        let (temp, logs) = super::audit_workspace(provider, &cfg, &ws)
+        let (temp, logs, verify_ok) = super::audit_workspace(provider, &cfg, &ws, 0)
             .await
             .expect("auditor falló");
         for l in &logs {
             eprintln!("AUDIT LOG: {l}");
         }
+        eprintln!("VERIFY_OK: {verify_ok}");
         eprintln!("TEMP:\n{temp}");
         assert!(temp.contains("## Auditoría"), "TEMP.md sin formato");
         let _ = std::fs::remove_dir_all(&ws);
@@ -124,7 +126,7 @@ fn system_prompt(workspace: &std::path::Path) -> String {
         - Flujo de lectura EFICIENTE (en este orden): `get_file_outline` para decidir QUÉ leer -> `search_files` para localizar (máx 20 bloques con contexto) -> `read_file` POR PÁGINAS (200 líneas; pide más con offset). Nunca pidas archivos enteros de golpe.\n\
         - Usa las tools para leer/crear/editar/borrar archivos y ejecutar comandos. Rutas RELATIVAS al workspace (ej. src/main.rs).\n\
         - Antes de editar, lee la página exacta. `edit_file` exige que `old` aparezca EXACTAMENTE 1 vez.\n\
-        - `bash` solo permite: ls, cat, echo, pwd, cargo --version, rustc --version, cargo check, cargo build, cargo test, cargo run (+instaladores solo con permiso Install).\n- `fetch_url` descarga http(s) como texto; dominios no autorizados piden permiso.\n\
+        - `bash` solo permite: ls, cat, echo, pwd, cargo --version, rustc --version, cargo check, cargo build, cargo test, cargo run, cargo clippy, cargo fmt, `git` (status/diff/log/add/commit/stash; push con permiso; destructivos bloqueados) (+instaladores solo con permiso Install).\n- `fetch_url` descarga http(s) como texto; dominios no autorizados piden permiso.\n\
         - Cuando termines los cambios, resume en 1-3 líneas qué hiciste. Si no necesitas tools, responde directo.",
         crate::workspace::context_block(workspace)
     )
@@ -147,8 +149,9 @@ pub fn worker_system(workspace: &Path, task: &WTask) -> String {
     )
 }
 
-/// Bloque de contexto del worker (v0.7.1): AGENTS.md + ESPEC.md truncados,
-/// para enviar UNA vez como mensaje de contexto al abrir el worker.
+/// Bloque de contexto del worker (v0.7.1 + v0.7.3): AGENTS.md + ESPEC.md +
+/// brief del analista (ANALYSIS.md) truncados, para enviar UNA vez como
+/// mensaje de contexto al abrir el worker.
 pub fn worker_context_block(workspace: &Path, agents_md: Option<&str>) -> Option<String> {
     let mut parts = Vec::new();
     if let Some(md) = agents_md {
@@ -157,6 +160,9 @@ pub fn worker_context_block(workspace: &Path, agents_md: Option<&str>) -> Option
     }
     if let Some(espec) = read_espec_md(workspace) {
         parts.push(format!("Especificación del proyecto (ESPEC.md):\n{espec}"));
+    }
+    if let Some(brief) = read_analysis_md(workspace) {
+        parts.push(format!("Brief del analista (CONTEXT/ANALYSIS.md):\n{brief}"));
     }
     if parts.is_empty() {
         None
@@ -172,12 +178,119 @@ pub fn read_espec_md(workspace: &Path) -> Option<String> {
         .map(|s| s.chars().take(2000).collect())
 }
 
-fn short(s: &str, max: usize) -> String {
-    let s = s.replace('\n', " ");
-    if s.len() <= max {
-        s
+/// Lee `CONTEXT/ANALYSIS.md` (brief del analista, v0.7.3) truncado o None.
+pub fn read_analysis_md(workspace: &Path) -> Option<String> {
+    std::fs::read_to_string(workspace.join("CONTEXT").join("ANALYSIS.md"))
+        .ok()
+        .map(|s| s.chars().take(2000).collect())
+}
+
+/// Lee los docs reales de `CONTEXT/*.md` (v0.7.3) con tope por archivo.
+/// Genérico: sirve para ESPEC.md (v0.5-v0.7) y PROJECT/SPECS/CONTEXT.md (v0.8).
+/// `skip_analysis` evita realimentar el propio brief.
+pub fn read_context_docs(workspace: &Path) -> String {
+    const NAMES: [&str; 8] = [
+        "PROJECT.md",
+        "SPECS.md",
+        "ESPEC.md",
+        "CONTEXT.md",
+        "VERSIONS.md",
+        "ROADMAP.md",
+        "PLAN.md",
+        "TEMP.md",
+    ];
+    let dir = workspace.join("CONTEXT");
+    let mut out = String::new();
+    for name in NAMES {
+        let Ok(raw) = std::fs::read_to_string(dir.join(name)) else {
+            continue;
+        };
+        let cut: String = raw.trim().chars().take(1500).collect();
+        if cut.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n### {name}\n{cut}\n"));
+    }
+    if out.is_empty() {
+        "(sin docs en CONTEXT/)".to_string()
     } else {
-        format!("{}…", &s[..max])
+        out
+    }
+}
+
+/// Outlines (solo firmas) de las fuentes principales del workspace (v0.7.3).
+/// Máx 12 archivos y 60 firmas por archivo vía `tools::outline_of`.
+pub fn code_outlines(workspace: &Path) -> String {
+    const EXTS: [&str; 7] = [".rs", ".py", ".ts", ".js", ".go", ".java", ".c"];
+    let mut out = String::new();
+    let mut n = 0;
+    let walker = walkdir::WalkDir::new(workspace)
+        .max_depth(6)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.file_type().is_dir() {
+                let name = e.file_name().to_string_lossy();
+                !matches!(name.as_ref(), "target" | ".git" | "node_modules")
+            } else {
+                true
+            }
+        })
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file());
+    for entry in walker {
+        let path = entry.path();
+        let rel = path
+            .strip_prefix(workspace)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !EXTS.iter().any(|x| rel.ends_with(x)) || tools::is_ignored(&rel, &[]) {
+            continue;
+        }
+        let sigs = tools::outline_of(path);
+        if sigs.is_empty() {
+            continue;
+        }
+        out.push_str(&format!("\n### {rel}\n{sigs}\n"));
+        n += 1;
+        if n >= 12 {
+            break;
+        }
+    }
+    if out.is_empty() {
+        "(sin fuentes con firmas)".to_string()
+    } else {
+        out
+    }
+}
+
+/// Analista dedicado (v0.7.3): UNA llamada sin tools que produce un brief
+/// (estado, restricciones, archivos, riesgos) a partir de CONTEXT/, outlines
+/// y el pedido. El llamador decide el fallback si falla.
+pub async fn analyze_workspace(
+    provider: Provider,
+    cfg: &ProviderConfig,
+    workspace: &Path,
+    pedido: &str,
+) -> Result<String, String> {
+    let system = "Eres el analista de ARQHIA. Antes de planificar, produce un brief BREVE en Markdown (máx 200 palabras) con estas secciones: Estado actual, Restricciones, Archivos que toca, Riesgos. No ejecutes herramientas; solo analiza el material dado.";
+    let user = format!(
+        "Pedido del usuario:\n{pedido}\n\n## Árbol del workspace\n{}\n\n## Docs de CONTEXT/\n{}\n\n## Firmas del código\n{}",
+        crate::workspace::context_block(workspace),
+        read_context_docs(workspace),
+        code_outlines(workspace),
+    );
+    simple_chat(provider, system, &user, cfg).await
+}
+
+/// Recorta a `max` chars con … (seguro en UTF-8: nunca corta a mitad de
+/// carácter como haría un slice por bytes).
+fn short(s: &str, max: usize) -> String {
+    let one: String = s.replace('\n', " ").chars().take(max + 1).collect();
+    if one.chars().count() > max {
+        format!("{}…", one.chars().take(max).collect::<String>())
+    } else {
+        one
     }
 }
 
@@ -188,8 +301,9 @@ fn short(s: &str, max: usize) -> String {
 /// Estimador de tokens (v0.7.1): `chars/4`, aproximado ±30% según tokenizer.
 /// Documentado como aproximado: el código denso subestima. Nunca promete
 /// exactitud; sirve para el badge del Log y el presupuesto configurable.
+/// Fuente única en `llm::estimate_tokens_text` (aquí en u64 para el presupuesto).
 pub fn estimate_tokens(text: &str) -> u64 {
-    (text.chars().count() as u64).div_ceil(4)
+    crate::llm::estimate_tokens_text(text) as u64
 }
 
 /// Suma estimada de un historial crudo (los `Value` se serializan).
@@ -695,6 +809,7 @@ pub async fn plan_tasks(
     user_text: &str,
     context: &str,
     espec: Option<&str>,
+    brief: Option<&str>,
     cfg: &ProviderConfig,
     mode_label: &str,
 ) -> Result<Vec<WTask>, String> {
@@ -702,6 +817,10 @@ pub async fn plan_tasks(
         "Eres el planificador de ARQHIA. Divide el pedido del usuario en 2 o 3 subtareas de código DISJUNTAS (archivos distintos, sin solaparse). Responde SOLO con un array JSON, sin markdown ni texto extra, con este formato exacto: [{{\"desc\": \"...\", \"files\": [\"src/a.rs\"]}}]. Si el pedido es trivial, responde con 1 sola tarea. Modo actual: {mode_label} (solo planificas: nunca ejecutas herramientas)."
     );
     let mut user = format!("Contexto del workspace:\n{context}\n\nPedido del usuario:\n{user_text}");
+    if let Some(b) = brief {
+        let cut: String = b.chars().take(2000).collect();
+        user.push_str(&format!("\n\nBrief del analista (v0.7.3):\n{cut}"));
+    }
     if let Some(e) = espec {
         let cut: String = e.chars().take(2000).collect();
         user.push_str(&format!("\n\nEspecificación del proyecto (ESPEC.md):\n{cut}"));
@@ -852,43 +971,144 @@ async fn simple_chat_with_body(
     }
 }
 
-/// Auditor (solo lectura): revisa con el LLM + `cargo check` si hay Cargo.toml.
-/// Devuelve (contenido TEMP.md, logs). Vacío de issues ⇒ "SIN ISSUES".
+/// Título corto por IA (v0.7.4): 1 llamada sin tools, 3–5 palabras.
+/// Si falla o viene vacío, el llamador cae a `titles::title_for`.
+pub async fn ai_title(
+    provider: Provider,
+    cfg: &ProviderConfig,
+    first_msg: &str,
+) -> Result<String, String> {
+    let out = simple_chat(
+        provider,
+        "Eres el titulador de chats de ARQHIA. Devuelve SOLO un título de 3 a 5 palabras, sin comillas ni punto final, que resuma el mensaje del usuario.",
+        first_msg,
+        cfg,
+    )
+    .await?;
+    Ok(crate::titles::sanitize_ai_title(&out, first_msg))
+}
+
+/// Extrae URLs http(s) de un texto (v0.7.4 Fuentes): para citar fuentes tras fetch_url.
+pub fn extract_urls(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for tok in text.split_whitespace() {
+        let t = tok.trim_matches(|c: char| "<>()[]{}\"'.,;:!?".contains(c));
+        if (t.starts_with("http://") || t.starts_with("https://")) && t.len() > 10 && !out.contains(&t.to_string()) {
+            out.push(t.to_string());
+        }
+        if out.len() >= 10 {
+            break;
+        }
+    }
+    out
+}
+
+/// Auditor (solo lectura): revisa con el LLM + puerta de calidad
+/// (`cargo check` + `cargo test` + `cargo clippy --all-targets`) si hay
+/// Cargo.toml. Devuelve (contenido TEMP.md, logs, clean).
+/// `clean == true` solo si la reseña quedó limpia Y la verificación pasó
+/// (v0.7.3): el auto-commit queda bloqueado si no. Si el LLM no está
+/// disponible, la reseña no bloquea (solo manda la puerta de calidad).
+/// `cycle` es el contador `auditor → fix` que se refleja en TEMP.md.
 pub async fn audit_workspace(
     provider: Provider,
     cfg: &ProviderConfig,
     workspace: &Path,
-) -> Result<(String, Vec<String>), String> {
-    let mut logs = vec!["🕵️ auditor revisando…".to_string()];
+    cycle: usize,
+) -> Result<(String, Vec<String>, bool), String> {
+    let mut logs = vec![format!("🕵️ auditor revisando… (ciclo {cycle})")];
     let files = crate::workspace::list_top(workspace, 30).join("\n");
-    let review = simple_chat(
+    let review_raw = simple_chat(
         provider,
         "Eres el auditor de ARQHIA. SOLO lees: lista problemas concretos (errores, supuestos rotos, archivos que no cuadran). Si todo está bien responde exactamente: SIN ISSUES.",
         &format!("Archivos del workspace:\n{files}\n\nÚltimos cambios: revisa coherencia general."),
         cfg,
     )
-    .await
-    .unwrap_or_else(|e| format!("(auditor LLM no disponible: {e})"));
+    .await;
+    // LLM caído o timeout: no bloquea el commit por sí solo (mandan los checks).
+    let review_available = review_raw.is_ok();
+    let review = review_raw.unwrap_or_else(|e| {
+        format!("(auditor LLM no disponible: {e}; se aplica solo la puerta de calidad)")
+    });
+    let review_clean = review.contains("SIN ISSUES") || !review_available;
 
-    let mut check_block = "(sin Cargo.toml, no se verificó compilación)".to_string();
+    let mut verify_ok = true;
+    let mut check_block = String::new();
     if workspace.join("Cargo.toml").exists() {
-        match tools::bash(workspace, &[], "cargo check", &tools::ExecPolicy::default()).await {
-            Ok(out) => {
-                logs.push("🔧 cargo check ejecutado".to_string());
-                let tail: String = out.chars().rev().take(1500).collect::<String>().chars().rev().collect();
-                check_block = format!("```\n{tail}\n```");
-            }
-            Err(e) => {
-                check_block = format!("(cargo check no ejecutable: {e})");
+        // Timeout ampliado: test/clippy pueden tardar más que un comando normal.
+        let policy = tools::ExecPolicy {
+            timeout_s: 600,
+            ..tools::ExecPolicy::default()
+        };
+        for (label, cmd) in [
+            ("cargo check", "cargo check"),
+            ("cargo test", "cargo test"),
+            ("cargo clippy --all-targets", "cargo clippy --all-targets"),
+        ] {
+            match tools::bash(workspace, &[], cmd, &policy).await {
+                Ok(out) => {
+                    let failed = out.contains("[exit ");
+                    let tail = tail_chars(&out, 1500);
+                    if failed {
+                        verify_ok = false;
+                        logs.push(format!("❌ {label} falló"));
+                    } else {
+                        logs.push(format!("🔧 {label} OK"));
+                    }
+                    check_block.push_str(&format!("### {label}\n```\n{tail}\n```\n"));
+                }
+                Err(e) => {
+                    verify_ok = false;
+                    logs.push(format!("❌ {label}: {e}"));
+                    check_block.push_str(&format!("### {label} no ejecutable\n```\n{e}\n```\n"));
+                }
             }
         }
+    } else {
+        check_block = "(sin Cargo.toml, no se verificó compilación)\n".to_string();
     }
-    let temp = format!("## Auditoría ARQHIA\n\n{review}\n\n## cargo check\n\n{check_block}\n");
-    Ok((temp, logs))
+
+    // Si la verificación falla, la reseña del LLM no puede ocultarlo.
+    let review_final = if verify_ok {
+        review
+    } else if review.contains("SIN ISSUES") {
+        "(la verificación automática falló; revisa la sección Verificación)".to_string()
+    } else {
+        review
+    };
+    let clean = verify_ok && review_clean;
+    let diff = crate::git::diff_stat(workspace);
+    let diff_block = if diff.is_empty() {
+        "(sin cambios detectados)".to_string()
+    } else {
+        format!("```\n{diff}\n```")
+    };
+    let verdict = if clean { "VERDICT: CLEAN" } else { "VERDICT: ISSUES" };
+    let verify_line = if verify_ok { "VERIFY: OK" } else { "VERIFY: FAIL" };
+    let temp = format!(
+        "## Auditoría ARQHIA\n\n{review_final}\n\n## Verificación\n\n{check_block}\n## git diff --stat\n\n{diff_block}\n\n## Ciclo y estado\n\n- Ciclo: {cycle}\n- {verify_line}\n- {verdict}\n"
+    );
+    Ok((temp, logs, clean))
 }
 
-/// true si el TEMP.md contiene issues reales.
+/// Últimos `max` chars de un texto (respetando UTF-8).
+fn tail_chars(s: &str, max: usize) -> String {
+    let n = s.chars().count();
+    if n <= max {
+        s.to_string()
+    } else {
+        s.chars().skip(n - max).collect()
+    }
+}
+
+/// true si el TEMP.md contiene issues reales (v0.7.3: marcador VERDICT).
 pub fn temp_has_issues(temp: &str) -> bool {
+    if temp.contains("VERDICT: CLEAN") {
+        return false;
+    }
+    if temp.contains("VERDICT: ISSUES") {
+        return true;
+    }
     !(temp.contains("SIN ISSUES") || temp.trim().len() < 60)
 }
 
@@ -900,13 +1120,14 @@ pub const AGENTS_TEMPLATE: &str = r#"# AGENTS.md — reglas del orquestador ARQH
 - auditor: solo lee y reporta a CONTEXT/TEMP.md. Nunca escribe código.
 
 ## Tools permitidas
-read_file (paginado: offset/limit), get_file_outline, write_file, edit_file, delete_file, list_dir, search_files (bloques con contexto), bash (allowlist), fetch_url (dominios).
+read_file (paginado: offset/limit), get_file_outline, write_file, edit_file, delete_file, list_dir, search_files (bloques con contexto), bash (allowlist + git con política por subcomando), fetch_url (dominios).
 
 ## Reglas
 - Rutas relativas al workspace. Nunca escribir fuera (guard estricto).
 - `edit_file` exige 1 coincidencia exacta de `old`.
 - Pasos LLM->tools y tareas del plan según Límites de config; installs y red piden permiso (Install/Net).
-- Tras workers, el auditor revisa y escribe CONTEXT/TEMP.md; si hay issues, 1 pasada de fixes.
+- Git (v0.7.2): se trabaja en la rama `ARQHIA`; `main`/`master` protegidas. Push con aprobación; destructivos bloqueados.
+- Tras workers, el auditor revisa (código + `cargo check`/`test`/`clippy`) y escribe CONTEXT/TEMP.md; el bucle `auditor -> fix` repite hasta quedar verde (tope `Limits.max_fix_cycles`, 0 = ilimitado). El auto-commit solo con el turno verde.
 "#;
 
 /// Crea AGENTS.md en el workspace si no existe. Devuelve línea de log o None.
@@ -963,6 +1184,31 @@ mod tests {
     fn temp_issue_detection() {
         assert!(!temp_has_issues("## Auditoría\n\nSIN ISSUES\n"));
         assert!(temp_has_issues("## Auditoría\n\n- src/main.rs línea 3: falta punto y coma, el binario no compila por el módulo roto"));
+        // v0.7.3: marcador explícito manda sobre el texto.
+        assert!(!temp_has_issues("## Auditoría\n\nrevisión\n\nVERDICT: CLEAN\n"));
+        assert!(temp_has_issues("## Auditoría\n\nrevisión\n\nVERDICT: ISSUES\n"));
+    }
+
+    #[test]
+    fn analyst_context_docs_and_outlines_compose() {
+        let dir = std::env::temp_dir().join("arqhia-analyst-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("CONTEXT")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("CONTEXT").join("PROJECT.md"), "# MiApp\nVisión X").unwrap();
+        std::fs::write(dir.join("src").join("main.rs"), "pub fn arranque() {}\nstruct Motor {}\n").unwrap();
+        let docs = read_context_docs(&dir);
+        assert!(docs.contains("PROJECT.md"), "{docs}");
+        assert!(docs.contains("MiApp"), "{docs}");
+        let outs = code_outlines(&dir);
+        assert!(outs.contains("src/main.rs"), "{outs}");
+        assert!(outs.contains("fn arranque"), "{outs}");
+        // El brief del analista viaja UNA vez en el contexto del worker.
+        std::fs::write(dir.join("CONTEXT").join("ANALYSIS.md"), "Estado: inicial").unwrap();
+        let ctx = worker_context_block(&dir, None).expect("contexto");
+        assert!(ctx.contains("Brief del analista"), "{ctx}");
+        assert!(ctx.contains("Estado: inicial"), "{ctx}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1049,6 +1295,15 @@ mod tests {
         assert_eq!(calls_signature(&a), calls_signature(&b));
         let c = vec![PendingCall { id: "1".to_string(), name: "read_file".to_string(), args: json!({"path": "b.rs"}) }];
         assert_ne!(calls_signature(&a), calls_signature(&c));
+    }
+
+    #[test]
+    fn extract_urls_finds_http_links_once() {
+        let t = "Mira https://example.com/a y (https://docs.rs/crate,) más http://x.test/q.";
+        let urls = extract_urls(t);
+        assert_eq!(urls, vec!["https://example.com/a", "https://docs.rs/crate", "http://x.test/q"]);
+        assert!(extract_urls("sin enlaces").is_empty());
+        assert!(extract_urls("https://a.test https://a.test").len() == 1);
     }
 
     #[test]
