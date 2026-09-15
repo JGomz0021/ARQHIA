@@ -321,7 +321,7 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         container(
             row![
                 components::badge(app_theme.clone(), Tone::Warn, format!("{pct}%")),
-                text("Contexto casi lleno: a partir de ahora empezaré a olvidar los mensajes más antiguos para seguir.")
+                text("Contexto al 90%: se descartará lo antiguo.")
                     .size(design::fs(ts, 12))
                     .color(design::tone(&app_theme, Tone::Warn)),
             ]
@@ -347,12 +347,12 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
             column![
                 iced::widget::vertical_space().height(150),
                 column![
-                    text("¿Qué vamos a hacer hoy?").size(design::fs(ts, 24)),
+                    text("Chat vacío").size(design::fs(ts, 24)),
                     text(
                         if ws.is_some() {
-                            "El agente tiene tu workspace: pide cambios, archivos o comandos."
+                            "Workspace asignado."
                         } else {
-                            "Pregunta lo que sea, o asigna un workspace para activar el agente."
+                            "Sin workspace."
                         }
                     )
                     .size(design::fs(ts, 14))
@@ -616,11 +616,7 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     .style(|t: &Theme, s| design::accent_pick(t, s))
     .into();
     let input_box = text_input(
-        if ws.is_some() {
-            "Pide al agente..."
-        } else {
-            "Escribe y pulsa Enter..."
-        },
+        "Mensaje... (/ para skills)",
         &state.input,
     )
     .size(design::fs(ts, 16))
@@ -629,6 +625,51 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     .on_input(Message::InputChanged)
     .on_submit(Message::SendPressed)
     .width(iced::Fill);
+    // Ventana flotante de `/skill`: tarjeta centrada en pantalla con la
+    // lista (nombre + badge + descripción) y scroll vertical si hay muchas.
+    // Se dibuja SOBRE los mensajes (overlay) para no expandir el composer.
+    // Un clic completa el input (`/skill nombre `); Enter lo envía.
+    let skill_card: Element<'_, Message> = if state.input.trim_start().starts_with('/')
+        && !state.skill_suggest.is_empty()
+    {
+        let mut col = column![].spacing(4);
+        for s in state.skill_suggest.iter().take(12) {
+            let completion = format!("/skill {} ", s.name);
+            let badge = s.origin.badge();
+            col = col.push(
+                iced::widget::button(
+                    row![
+                        text(format!("/{} ", s.name)).size(design::fs(ts, 14)),
+                        text(format!("[{badge}]")).size(design::fs(ts, 12)).color(dim),
+                        text(s.description.clone())
+                            .size(design::fs(ts, 13))
+                            .color(dim)
+                            .width(iced::Fill),
+                    ]
+                    .align_y(iced::Alignment::Center)
+                    .spacing(8),
+                )
+                .width(iced::Fill)
+                .padding([6, 12])
+                .style(|t: &Theme, st| design::nav(t, st, false))
+                .on_press(Message::InputChanged(completion)),
+            );
+        }
+        container(
+            column![
+                components::section_label(app_theme.clone(), "Skills"),
+                scrollable(col).height(iced::Length::Shrink),
+            ]
+            .spacing(6),
+        )
+        .padding(12)
+        .width(560)
+        .max_height(280)
+        .style(|t: &Theme| design::card(t))
+        .into()
+    } else {
+        iced::widget::vertical_space().height(0).into()
+    };
     let composer = container(
         column![
             row![input_box, action_btn]
@@ -798,23 +839,32 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     // Caja de mensajes centrada y con ancho según densidad:
     // cómoda ~1020px, compacta ~860px (un 20% menos que a todo el ancho).
     // Con aire inferior para que el último mensaje nunca quede tapado por
-    // el dock del composer (fix solape v0.7.4).
+    // el dock del composer (fix solape v0.7.4). La ventana de `/skill`
+    // flota abajo del todo (overlay) sin mover el layout.
     let chat_w: f32 = if cx { 860.0 } else { 1020.0 };
     let messages_area = container(
         container(
-            scrollable(
-                container(msgs)
+            iced::widget::stack![
+                scrollable(
+                    container(msgs)
+                        .width(iced::Fill)
+                        // Aire entre el texto y la barra de deslizamiento + cola
+                        // inferior para que el scroll final no muera bajo el dock.
+                        .padding(iced::Padding {
+                            top: 0.0,
+                            right: 28.0,
+                            bottom: 24.0,
+                            left: 0.0,
+                        }),
+                )
+                .id(iced::widget::scrollable::Id::new("chat-msgs"))
+                .height(iced::Fill),
+                container(skill_card)
                     .width(iced::Fill)
-                    // Aire entre el texto y la barra de deslizamiento + cola
-                    // inferior para que el scroll final no muera bajo el dock.
-                    .padding(iced::Padding {
-                        top: 0.0,
-                        right: 28.0,
-                        bottom: 24.0,
-                        left: 0.0,
-                    }),
-            )
-            .height(iced::Fill),
+                    .height(iced::Fill)
+                    .center_x(iced::Fill)
+                    .center_y(iced::Fill),
+            ],
         )
         .max_width(chat_w)
         .height(iced::Fill),

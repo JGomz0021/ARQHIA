@@ -64,6 +64,35 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::SubmitCreateProjectSkip => {
+            let name = state.create_name.trim().to_string();
+            if name.is_empty() {
+                state.status = "Pon un nombre al proyecto.".to_string();
+                return Task::none();
+            }
+            match db::project_name_exists(&name) {
+                Ok(true) => {
+                    state.status = format!("Ya existe un proyecto llamado '{name}'.");
+                    return Task::none();
+                }
+                Err(e) => {
+                    state.status = format!("No se pudo verificar el nombre: {e}");
+                    return Task::none();
+                }
+                Ok(false) => {}
+            }
+            let dir = resolve_project_dir(&name, &state.create_path.clone());
+            match create_project_with_dir(state, &name, dir) {
+                Ok((pid, path_str)) => {
+                    state.creating = false;
+                    state.create_name.clear();
+                    state.create_path.clear();
+                    crate::app::projects::enter_without_questionnaire(state, pid, &name, &path_str);
+                }
+                Err(e) => state.status = e,
+            }
+            Task::none()
+        }
         Message::OpenProject => {
             // rfd bloquea: va en hilo aparte, nunca en el update directo
             state.status = "Elige una carpeta…".to_string();            Task::perform(
@@ -154,11 +183,34 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.push_log(format!("📁 abierto {shown} -> {path_str}"));
             state.status.clear();
             if is_new {
-                // Proyecto nuevo -> cuestionario inmediato (wizard v0.8).
-                let answers = Answers {
+                // Proyecto nuevo -> cuestionario. Si la carpeta ya trae código,
+                // modo Import: banner + prefill, solo pasos gap (merge sin borrar).
+                let has_code = workspace::is_nonempty_dir(&canon) && workspace::scan_import(&canon);
+                let mut answers = Answers {
                     nombre: shown.clone(),
+                    // Ya se ingresó (crear) o es la carpeta (abrir): no se pregunta.
+                    nombre_locked: !shown.trim().is_empty(),
                     ..Default::default()
                 };
+                state.q_source = if has_code {
+                    crate::questionnaire::QSource::Import
+                } else {
+                    crate::questionnaire::QSource::New
+                };
+                if has_code {
+                    let scan = crate::questionnaire::import::scan(&canon);
+                    crate::questionnaire::import::prefill_answers(&mut answers, &shown, &scan);
+                    state.q_import_note = crate::questionnaire::import::import_banner(&shown, &scan);
+                    // Preguntas de huecos precargadas (fallback sin provider).
+                    let gaps = crate::questionnaire::import::gap_fallback(&scan);
+                    state.q_ai_questions = gaps;
+                    state.q_ai_answers = vec![String::new(); state.q_ai_questions.len()];
+                    state.push_log(format!("📥 import: {} (merge sin borrar)", state.q_import_note));
+                } else {
+                    state.q_import_note.clear();
+                    state.q_ai_questions.clear();
+                    state.q_ai_answers.clear();
+                }
                 state.q_answers = answers;
                 state.q_step = 0;
                 state.q_error.clear();
@@ -166,8 +218,6 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 state.q_owns_project = true;
                 state.q_level = crate::questionnaire::Level::Principiante;
                 state.q_pending_level = None;
-                state.q_ai_questions.clear();
-                state.q_ai_answers.clear();
                 state.q_ai_loading = false;
                 state.q_ai_error.clear();
                 state.view = View::Questionnaire;
@@ -215,6 +265,36 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CreateProjectSkip => {
+            let name = state.new_project_name.trim().to_string();
+            if name.is_empty() {
+                state.status = "Pon un nombre al proyecto.".to_string();
+                return Task::none();
+            }
+            match db::project_name_exists(&name) {
+                Ok(true) => {
+                    state.status = format!("Ya existe un proyecto llamado '{name}'.");
+                    return Task::none();
+                }
+                Err(e) => {
+                    state.status = format!("No se pudo verificar el nombre: {e}");
+                    return Task::none();
+                }
+                Ok(false) => {}
+            }
+            let dir = resolve_project_dir(&name, &state.new_project_path.clone());
+            match create_project_with_dir(state, &name, dir) {
+                Ok((pid, path_str)) => {
+                    state.new_project_name.clear();
+                    state.new_project_path.clear();
+                    state.show_project_form = false;
+                    state.status.clear();
+                    crate::app::projects::enter_without_questionnaire(state, pid, &name, &path_str);
+                }
+                Err(e) => state.status = e,
+            }
+            Task::none()
+        }
         Message::ToggleProjectForm => {
             state.show_project_form = !state.show_project_form;
             state.new_project_name.clear();
@@ -225,6 +305,14 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             if !state.collapsed.remove(&id) {
                 state.collapsed.insert(id);
             }
+            Task::none()
+        }
+        Message::ToggleProjectsSection => {
+            state.show_projects = !state.show_projects;
+            Task::none()
+        }
+        Message::ToggleLooseChats => {
+            state.show_all_loose = !state.show_all_loose;
             Task::none()
         }
         Message::ToggleProjectMenu(pid) => {
@@ -254,7 +342,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let expanded = if let Some(rest) = raw.strip_prefix("~/") {
                 format!(
                     "{}/{rest}",
-                    std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+                    std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string())
                 )
             } else {
                 raw.clone()
@@ -379,7 +467,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     let expanded = if let Some(rest) = raw.strip_prefix("~/") {
                         format!(
                             "{}/{rest}",
-                            std::env::var("HOME").unwrap_or_else(|_| ".".to_string())
+                            std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string())
                         )
                     } else {
                         raw
@@ -489,5 +577,9 @@ pub(crate) fn navigate_project(state: &mut App, pid: Option<i64>) -> Task<Messag
         }
     }
     state.view = View::Chat;
+    // Entra al chat desde el final (si hay mensajes que mostrar).
+    if state.active_chat.is_some() {
+        return super::chat::scroll_chat_to_end();
+    }
     Task::none()
 }

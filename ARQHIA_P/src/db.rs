@@ -2,8 +2,16 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::fs;
 use std::path::PathBuf;
 
+#[allow(clippy::collapsible_if)]
 pub fn db_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    if let Ok(over) = std::env::var("ARQHIA_DB") {
+        if !over.trim().is_empty() {
+            return PathBuf::from(over);
+        }
+    }
+    let home = std::env::var("ARQHIA_HOME")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".local")
         .join("share")
@@ -11,7 +19,7 @@ pub fn db_path() -> PathBuf {
         .join("arqhia.db")
 }
 
-fn connect() -> Result<Connection, String> {
+pub(crate) fn connect() -> Result<Connection, String> {
     let path = db_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -93,6 +101,10 @@ pub fn init() -> Result<(), String> {
         conn.execute_batch("ALTER TABLE chats ADD COLUMN session_id TEXT DEFAULT NULL;")
             .map_err(|e| e.to_string())?;
     }
+    // Migración v0.9: STACK local de código (items + metadatos + FTS5)
+    // y contadores de uso por proyecto (turnos, tool calls, 429s).
+    // Incluye las columnas legales (author/license/source, Track B).
+    migrate_stack(&conn)?;
     // Mensajes huérfanos (v0.1) van a un chat "General", pero SOLO si existen:
     // ya no se crea ningún chat automáticamente al entrar.
     let orphans: i64 = conn
@@ -128,6 +140,197 @@ fn ensure_general_chat(conn: &Connection) -> Result<i64, String> {
     conn.execute("INSERT INTO chats (title) VALUES ('General')", [])
         .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
+}
+
+// ---- STACK local (v0.9 Track A) + contadores de uso (Track B) ----
+
+/// Crea las tablas del STACK si faltan (idempotente, dentro de `init()`).
+/// Esquema: items con columnas legales (author/license/source) + metadatos
+/// clave-valor + índice FTS5 sincronizado a mano en `stack.rs`.
+pub(crate) fn migrate_stack(conn: &Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS stack_items(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            code TEXT NOT NULL,
+            tags TEXT NOT NULL DEFAULT '',
+            lang TEXT NOT NULL DEFAULT '',
+            rating REAL NOT NULL DEFAULT 0,
+            ratings INTEGER NOT NULL DEFAULT 0,
+            executions INTEGER NOT NULL DEFAULT 0,
+            ok_runs INTEGER NOT NULL DEFAULT 0,
+            author TEXT NOT NULL DEFAULT '',
+            license TEXT NOT NULL DEFAULT 'Uso interno',
+            source TEXT NOT NULL DEFAULT 'local',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE TABLE IF NOT EXISTS stack_meta(
+            item_id INTEGER NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS stack_fts USING fts5(title, code, tags);
+        CREATE TABLE IF NOT EXISTS usage_stats(
+            project TEXT PRIMARY KEY,
+            turns INTEGER NOT NULL DEFAULT 0,
+            tool_calls INTEGER NOT NULL DEFAULT 0,
+            err429 INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS usage_tools(
+            project TEXT NOT NULL,
+            category TEXT NOT NULL,
+            n INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (project, category)
+        );",
+    )
+    .map_err(|e| e.to_string())?;
+    // DBs que ya tenían stack_items sin columnas legales (no debería pasar
+    // en v0.9, pero la migración es barata e idempotente).
+    for (col, ddl) in [
+        ("author", "ALTER TABLE stack_items ADD COLUMN author TEXT NOT NULL DEFAULT ''"),
+        ("license", "ALTER TABLE stack_items ADD COLUMN license TEXT NOT NULL DEFAULT 'Uso interno'"),
+        ("source", "ALTER TABLE stack_items ADD COLUMN source TEXT NOT NULL DEFAULT 'local'"),
+        ("ratings", "ALTER TABLE stack_items ADD COLUMN ratings INTEGER NOT NULL DEFAULT 0"),
+        ("ok_runs", "ALTER TABLE stack_items ADD COLUMN ok_runs INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        if !column_exists(conn, "stack_items", col) {
+            conn.execute_batch(ddl).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Contadores de uso local por proyecto (Track B): solo conteos, sin contenido.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageStats {
+    pub project: String,
+    pub turns: i64,
+    pub tool_calls: i64,
+    pub err429: i64,
+}
+
+fn usage_bump(project: &str, col: &str, by: i64) -> Result<(), String> {
+    let conn = connect()?;
+    let key = if project.trim().is_empty() {
+        "sin-proyecto"
+    } else {
+        project.trim()
+    };
+    conn.execute(
+        "INSERT INTO usage_stats (project, turns, tool_calls, err429) VALUES (?1, 0, 0, 0)
+         ON CONFLICT(project) DO NOTHING",
+        params![key],
+    )
+    .map_err(|e| e.to_string())?;
+    let sql = format!("UPDATE usage_stats SET {col} = {col} + ?1 WHERE project = ?2");
+    conn.execute(&sql, params![by, key]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Un turno de chat/agente completado en ese proyecto.
+pub fn record_turn(project: &str) -> Result<(), String> {
+    usage_bump(project, "turns", 1)
+}
+
+/// N llamadas a tools ejecutadas en ese proyecto.
+pub fn record_tool_calls(project: &str, n: usize) -> Result<(), String> {
+    if n == 0 {
+        return Ok(());
+    }
+    usage_bump(project, "tool_calls", n as i64)
+}
+
+/// Una llamada de una categoría concreta (`read/write/bash/net/install/git…`).
+/// Alimenta el desglose por categoría del panel de uso.
+pub fn record_tool_call_cat(project: &str, category: &str) -> Result<(), String> {
+    let conn = connect()?;
+    let key = if project.trim().is_empty() {
+        "sin-proyecto"
+    } else {
+        project.trim()
+    };
+    let cat = if category.trim().is_empty() {
+        "otras"
+    } else {
+        category.trim()
+    };
+    conn.execute(
+        "INSERT INTO usage_tools (project, category, n) VALUES (?1, ?2, 1)
+         ON CONFLICT(project, category) DO UPDATE SET n = n + 1",
+        params![key, cat],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Desglose por categoría de un proyecto, ordenado de mayor a menor.
+pub fn list_usage_tools(project: &str) -> Result<Vec<(String, i64)>, String> {
+    let conn = connect()?;
+    let key = if project.trim().is_empty() {
+        "sin-proyecto"
+    } else {
+        project.trim()
+    };
+    let mut stmt = conn
+        .prepare("SELECT category, n FROM usage_tools WHERE project = ?1 ORDER BY n DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![key], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// Un error 429 (rate limit) visto en ese proyecto.
+pub fn record_429(project: &str) -> Result<(), String> {
+    usage_bump(project, "err429", 1)
+}
+
+pub fn get_usage(project: &str) -> Result<UsageStats, String> {
+    let conn = connect()?;
+    let key = if project.trim().is_empty() {
+        "sin-proyecto"
+    } else {
+        project.trim()
+    };
+    let row: Option<(i64, i64, i64)> = conn
+        .query_row(
+            "SELECT turns, tool_calls, err429 FROM usage_stats WHERE project = ?1",
+            params![key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    match row {
+        Some((turns, tool_calls, err429)) => Ok(UsageStats {
+            project: key.to_string(),
+            turns,
+            tool_calls,
+            err429,
+        }),
+        None => Ok(UsageStats {
+            project: key.to_string(),
+            ..Default::default()
+        }),
+    }
+}
+
+pub fn list_usage() -> Result<Vec<UsageStats>, String> {
+    let conn = connect()?;
+    let mut stmt = conn
+        .prepare("SELECT project, turns, tool_calls, err429 FROM usage_stats ORDER BY turns DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(UsageStats {
+                project: r.get(0)?,
+                turns: r.get(1)?,
+                tool_calls: r.get(2)?,
+                err429: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 // ---- Chats ----
@@ -478,7 +681,11 @@ pub fn load_chat_history_full(chat_id: i64, limit: usize) -> Result<Vec<ChatMess
 #[allow(dead_code)]
 pub fn copy_chat(src_id: i64) -> Result<i64, String> {
     let mut conn = connect()?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // IMMEDIATE: reserva el lock de escritura al abrir (los tests corren en
+    // paralelo y dos DEFERRED con SELECT+INSERT se bloquean al promover).
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let (title, project_id, mode, session): (String, Option<i64>, Option<String>, Option<String>) = tx
         .query_row(
             "SELECT title, project_id, mode, session_id FROM chats WHERE id = ?1",
@@ -521,7 +728,10 @@ pub fn copy_chat(src_id: i64) -> Result<i64, String> {
 /// mensaje N inclusive (por id de fila). Transaccional.
 pub fn branch_chat(src_id: i64, upto_msg_id: i64) -> Result<i64, String> {
     let mut conn = connect()?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    // IMMEDIATE como en copy_chat (misma razón: tests en paralelo).
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let (title, project_id, mode): (String, Option<i64>, Option<String>) = tx
         .query_row(
             "SELECT title, project_id, mode FROM chats WHERE id = ?1",
@@ -716,5 +926,39 @@ mod tests {
         delete_chat(id).unwrap();
         delete_chat(cp).unwrap();
         delete_chat(br).unwrap();
+    }
+
+    #[test]
+    fn usage_counts_turns_tools_and_429s() {
+        assert!(init().is_ok());
+        // Proyecto desconocido: ceros, sin filas previas.
+        let fresh = get_usage("v09-uso-tmp-xyz").unwrap();
+        assert_eq!((fresh.turns, fresh.tool_calls, fresh.err429), (0, 0, 0));
+        record_turn("v09-uso-tmp-xyz").unwrap();
+        record_turn("v09-uso-tmp-xyz").unwrap();
+        record_tool_calls("v09-uso-tmp-xyz", 5).unwrap();
+        record_tool_calls("v09-uso-tmp-xyz", 0).unwrap();
+        record_429("v09-uso-tmp-xyz").unwrap();
+        let got = get_usage("v09-uso-tmp-xyz").unwrap();
+        assert_eq!((got.turns, got.tool_calls, got.err429), (2, 5, 1));
+        // Clave vacía cae a "sin-proyecto" sin romper.
+        record_turn("").unwrap();
+        assert!(get_usage("").unwrap().turns >= 1);
+        // list_usage incluye la fila temporal.
+        let all = list_usage().unwrap();
+        assert!(all.iter().any(|u| u.project == "v09-uso-tmp-xyz" && u.turns == 2));
+        // Desglose por categoría.
+        record_tool_call_cat("v09-uso-tmp-xyz", "bash").unwrap();
+        record_tool_call_cat("v09-uso-tmp-xyz", "bash").unwrap();
+        record_tool_call_cat("v09-uso-tmp-xyz", "read").unwrap();
+        let cats = list_usage_tools("v09-uso-tmp-xyz").unwrap();
+        assert_eq!(cats, vec![("bash".to_string(), 2), ("read".to_string(), 1)]);
+        assert!(list_usage_tools("v09-inexistente-xyz").unwrap().is_empty());
+        // Limpieza para no ensuciar el panel del dev.
+        let conn = connect().unwrap();
+        conn.execute("DELETE FROM usage_stats WHERE project = 'v09-uso-tmp-xyz'", [])
+            .unwrap();
+        conn.execute("DELETE FROM usage_tools WHERE project = 'v09-uso-tmp-xyz'", [])
+            .unwrap();
     }
 }

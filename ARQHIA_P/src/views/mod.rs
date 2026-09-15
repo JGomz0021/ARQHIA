@@ -5,6 +5,7 @@ pub mod config_view;
 pub mod home;
 pub mod questionnaire;
 pub mod sidebar;
+pub mod stack;
 
 /// Theme Iced correspondiente a la config. También se pasa a `application`.
 /// Siempre custom (v0.7 Track B): la paleta base Dark/Light con el acento
@@ -79,6 +80,41 @@ mod tests {
         });
         app.view = View::Questionnaire;
         let _ = questionnaire::view_questionnaire(&app);
+        // v0.8.2: pantalla de carga MVP sin chat.
+        app.view = View::Generating;
+        app.gen_phase = "Generando…".to_string();
+        app.gen_progress = 0.5;
+        let _ = questionnaire::view_generating(&app);
+        let _ = crate::view(&app);
+        // v0.9: panel STACK vacío y con selección (preview + guardar).
+        app.view = View::Stack;
+        let _ = crate::view(&app);
+        app.stack_results = vec![crate::stack::ScoredItem {
+            id: 1,
+            title: "demo".to_string(),
+            tags: "rust, demo".to_string(),
+            lang: "rust".to_string(),
+            rating: 4.5,
+            score: 9.0,
+            snippet: "fn demo() {}".to_string(),
+        }];
+        app.stack_selected = Some(crate::stack::FullItem {
+            id: 1,
+            title: "demo".to_string(),
+            code: (0..30).map(|i| format!("línea {i}")).collect::<Vec<_>>().join("\n"),
+            tags: "rust, demo".to_string(),
+            lang: "rust".to_string(),
+            rating: 4.5,
+            ratings: 2,
+            executions: 3,
+            ok_runs: 2,
+            author: "test".to_string(),
+            license: "MIT".to_string(),
+            source: "local".to_string(),
+            meta: vec![("version".to_string(), "1.0".to_string())],
+        });
+        app.stack_searched = true;
+        let _ = crate::view(&app);
         let _ = crate::view(&app);
     }
 
@@ -158,6 +194,25 @@ mod tests {
         assert!(!app.git_status.is_repo);
         let _ = config_view::view_config(&app);
         let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn slash_suggest_renders_in_composer() {
+        // Escribir `/code` muestra la ventana flotante con nombre + badge.
+        let mut app = App::default();
+        app.view = View::Chat;
+        app.input = "/code".to_string();
+        app.skill_suggest = crate::skills::suggest("/code");
+        assert!(app.skill_suggest.iter().any(|s| s.name == "code-review"));
+        let _ = crate::view(&app);
+        // Sin `/` no hay caja aunque queden restos en estado.
+        app.input = "hola".to_string();
+        let _ = crate::view(&app);
+        // Caja con varias sugerencias tampoco panica.
+        app.input = "/".to_string();
+        app.skill_suggest = crate::skills::suggest("/");
+        let _ = crate::view(&app);
     }
 
     #[test]

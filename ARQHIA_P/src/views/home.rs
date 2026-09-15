@@ -88,8 +88,8 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
         center = center.push(
             container(
                 column![
-                    components::section_label(app_theme.clone(), "Bienvenido a ARQHIA"),
-                    text("Para chatear y usar el agente necesitas una API: elige provider, pega tu key y modelo.")
+                    components::section_label(app_theme.clone(), "Configurar API"),
+                    text("Añade provider, key y modelo en Config.")
                         .size(design::fs(ts, 14)),
                     row![
                         components::primary_btn("Configurar API".to_string(), 14)
@@ -125,6 +125,8 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
                     row![
                         components::primary_btn("Crear".to_string(), 14)
                             .on_press(Message::SubmitCreateProject),
+                        components::quiet_btn("Sin cuestionario".to_string())
+                            .on_press(Message::SubmitCreateProjectSkip),
                         components::head_btn("Cancelar".to_string())
                             .on_press(Message::HideCreateModal),
                     ]
@@ -161,8 +163,7 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
                 column![
                     text("Sin proyectos todavía").size(design::fs(ts, 19)),
                     text(
-                        "Crea el primero: el cuestionario guiado define PROJECT.md + SPECS.md\n\
-                          y el agente empieza a construir sobre tu workspace."
+                        "Define PROJECT.md + SPECS.md; el agente genera estructura."
                     )
                     .size(design::fs(ts, 14))
                     .color(dim),

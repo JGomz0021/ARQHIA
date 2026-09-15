@@ -78,4 +78,4 @@ La app consulta este JSON al arrancar y compara con su versión (semver):
 
 *   Precede a **v1.0** (release estable). Sin web no hay publicación en
     Microsoft Store ni updater.
-*   Depende de que existan binarios/paquetes de v0.9 (`.deb` + CI).
+*   Depende de que existan binarios/paquetes de v0.9.6 (`.deb` + CI + icono).

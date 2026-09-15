@@ -47,6 +47,105 @@ pub(crate) struct OrchTask {
     pub(crate) active: bool,
 }
 
+/// Planner en espera de permiso Net (v0.9.1): guarda todo lo necesario para
+/// reanudar `plan_tasks` cuando el usuario apruebe o deniegue la red.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingPlanner {
+    pub(crate) provider: Provider,
+    pub(crate) cfg: config::ProviderConfig,
+    pub(crate) pedido: String,
+    pub(crate) context: String,
+    pub(crate) espec: Option<String>,
+    pub(crate) brief: String,
+    pub(crate) label: String,
+    pub(crate) mode: db::Mode,
+    /// Contexto Read ya resuelto (rutas extra); la red se aporta al reanudar.
+    pub(crate) extra_read: Option<String>,
+    /// URLs a consultar (las cubiertas por permiso o las aprobadas en panel).
+    pub(crate) urls: Vec<String>,
+    /// Dominios listados para el fetch (el gate ya se decidió antes).
+    pub(crate) net_domains: Vec<String>,
+}
+
+/// Fase visible del orquestador BETA (v0.9.1): `orquestador: fase X/N — nombre`.
+pub(crate) fn orch_phase(state: &mut App, phase: usize, total: usize, name: &str) {
+    let who = agent::roles::Role::Orquestador.label().to_lowercase();
+    state.push_log(format!("{who}: fase {phase}/{total} — {name}"));
+}
+
+/// Checklist compacta del plan en el Log (v0.9.1): una línea
+/// `checklist: ☑ hecha · ▶ activa · ☐ pendiente`.
+pub(crate) fn log_checklist(state: &mut App) {
+    let rows: Vec<(String, bool, bool)> = state
+        .orch_tasks
+        .iter()
+        .map(|t| (t.desc.clone(), t.done, t.active))
+        .collect();
+    if !rows.is_empty() {
+        state.push_log(agent::roles::checklist_line(&rows));
+    }
+}
+
+/// Ejecuta el planner completo (v0.9.1): fetch Net de `urls` (tope 8 KB por
+/// URL) + `plan_tasks` con brief y contexto extra. `net_approved` viene del
+/// panel de permisos; sin él solo salen dominios listados (el gate ya filtró).
+async fn run_planner(
+    pp: PendingPlanner,
+    net_approved: bool,
+) -> (db::Mode, Result<Vec<agent::WTask>, String>) {
+    let policy = agent::tools::ExecPolicy {
+        net_domains: pp.net_domains.clone(),
+        net_approved,
+        ..agent::tools::ExecPolicy::default()
+    };
+    let net = if pp.urls.is_empty() {
+        None
+    } else {
+        agent::fetch_planner_net_block(&pp.urls, &policy).await
+    };
+    let mut extra = pp.extra_read.clone().unwrap_or_default();
+    if let Some(n) = net {
+        if !extra.is_empty() {
+            extra.push_str("\n\n");
+        }
+        extra.push_str(&n);
+    }
+    let res = agent::plan_tasks(
+        pp.provider,
+        &pp.pedido,
+        &pp.context,
+        pp.espec.as_deref(),
+        Some(&pp.brief),
+        &pp.cfg,
+        &pp.label,
+        if extra.is_empty() { None } else { Some(extra.as_str()) },
+    )
+    .await;
+    (pp.mode, res)
+}
+
+/// Lanza `plan_tasks` con el contexto ya resuelto (v0.9.1: brief + Net+Read).
+/// El mensaje de vuelta respeta el modo (Plan → PlanDone, Work → AgentPlan).
+pub(crate) fn spawn_planner(state: &mut App, pp: PendingPlanner, net_approved: bool) -> Task<Message> {
+    let turn = state.agent_gen;
+    Task::perform(
+        async move { run_planner(pp, net_approved).await },
+        move |(mode, res)| match mode {
+            db::Mode::Plan => Message::PlanDone(turn, res),
+            _ => Message::AgentPlan(turn, res),
+        },
+    )
+}
+
+/// Reanuda un planner pendiente tras aprobar la red (v0.9.1): descarga las
+/// URLs con el lote aprobado y luego planifica.
+pub(crate) fn resume_planner_with_net(state: &mut App) -> Task<Message> {
+    let Some(pp) = state.pending_planner.take() else {
+        return Task::none();
+    };
+    spawn_planner(state, pp, true)
+}
+
 /// Semilla del worker (v0.6 + v0.7.1): historial base con ventana +
 /// SPECS/AGENTS UNA vez como mensaje de contexto (no en cada step).
 pub(crate) fn worker_seed(
@@ -114,6 +213,15 @@ pub(crate) fn worker_seed(
 /// Net con dominios se deciden por args, no solo por nombre; v0.7.2: git
 /// según autonomía/push).
 pub(crate) fn call_needs_approval(state: &App, call: &agent::PendingCall) -> bool {
+    // MCP v0.9.3: decide por servidor (Install/Read/Net) primero
+    if crate::mcp::is_mcp_tool(&call.name) {
+        let cat = agent::tools::category_of_mcp_call(&call.name, &state.config.mcp.servers);
+        return match cat {
+            agent::tools::ToolCat::Read => false,
+            agent::tools::ToolCat::Install => !state.config.permissions.auto_install,
+            _ => true,
+        };
+    }
     let perms = &state.config.permissions;
     match agent::tools::category_of_call(&call.name, &call.args) {
         agent::tools::ToolCat::Read => !perms.auto_read,
@@ -229,6 +337,7 @@ pub(crate) fn start_worker(state: &mut App, idx: usize) -> Task<Message> {
         agent::WTask {
             desc,
             files,
+            accept: String::new(),
         },
     )
 }
@@ -244,8 +353,10 @@ pub(crate) fn start_worker_with_task(state: &mut App, idx: usize, task: agent::W
     let limits = state.config.limits.clamped();
     let (system_base, raw) = worker_seed(provider, &state.o_history, &task, &ws, limits.history_limit);
     // El system declara modo y capacidades (v0.7.1 visibilidad obligatoria).
+    // v0.9 Track B: sin `share_local`, el agente nunca propone guardar.
+    let share_note = share_note(state.config.stack_consent.share_local);
     let system = format!(
-        "{system_base}\n\nModo actual: Work (orquestador con permisos y límites; system adelgazado: el contexto del proyecto ya viajó como mensaje)."
+        "{system_base}\n\nModo actual: Work (orquestador con permisos y límites; system adelgazado: el contexto del proyecto ya viajó como mensaje).{share_note}"
     );
     state.push_log(format!("🔨 worker{}: {}", idx + 1, short_task(&task.desc)));
     let max_steps = limits.max_iters;
@@ -299,7 +410,7 @@ pub(crate) fn spawn_exec_calls(
     let perms = &state.config.permissions;
     let extra = perms.extra_paths.clone();
     let ignores = state.config.effective_ignores();
-    let policy = agent::tools::policy_for(
+    let policy = agent::tools::policy_for_with_mcp(
         perms.auto_install,
         batch_approved,
         limits.bash_timeout_s,
@@ -307,13 +418,14 @@ pub(crate) fn spawn_exec_calls(
         &perms.net_domains,
         &ignores,
         &state.config.git,
+        &state.config.mcp.servers,
     );
     // Los calls viajan de vuelta DENTRO del futuro (el mapper es Fn y no
     // puede mover capturas): así AgentExecDone puede poblar la caché.
     Task::perform(
         async move {
             let (append, logs) =
-                agent::exec_calls(provider, &ws, &extra, step, &calls, &policy).await;
+                agent::exec_calls(provider, &ws, &extra, step, &calls, &policy, agent::roles::Role::Worker).await;
             (calls, append, logs)
         },
         move |(calls, append, logs)| Message::AgentExecDone(turn, calls, append, logs),
@@ -336,6 +448,7 @@ pub(crate) fn continue_after_worker(state: &mut App) -> Task<Message> {
                     return finish_orchestrator(state, " (sin auditor: faltan datos)".to_string());
                 }
             };
+            orch_phase(state, 4, 5, "auditor");
             let turn = state.agent_gen;
             let cycle = state.fix_cycle;
             Task::perform(
@@ -409,6 +522,32 @@ pub(crate) fn refresh_token_badge(state: &mut App) {
     }
 }
 
+/// true si el pedido nombra el STACK: es consentimiento puntual para ese
+/// turno aunque `use_stack` esté desactivado (el usuario lo pide a mano).
+pub(crate) fn mentions_stack(pedido: &str) -> bool {
+    pedido.to_lowercase().contains("stack")
+}
+
+/// Consulta del planner al STACK (v0.9 Track A): `None` sin consentimiento
+/// `use_stack` o sin coincidencias (el turno sigue igual, sin Log de hits).
+/// Con hits devuelve el bloque a inyectar al prompt del planner.
+pub(crate) fn stack_consult_block(use_stack: bool, pedido: &str) -> Option<String> {
+    if !use_stack {
+        return None;
+    }
+    crate::stack::consult(pedido)
+}
+
+/// Nota de consentimiento del worker (v0.9 Track B): sin `share_local`,
+/// el agente nunca propone guardar snippets.
+pub(crate) fn share_note(share_local: bool) -> &'static str {
+    if share_local {
+        ""
+    } else {
+        "\nNota de consentimiento: el usuario NO permite guardar en el STACK local; no propongas guardar snippets."
+    }
+}
+
 /// Respuesta final del turno: resumen de workers + veredicto.
 pub(crate) fn finish_orchestrator(state: &mut App, extra: String) -> Task<Message> {
     let mut answer = if state.worker_answers.is_empty() {
@@ -427,9 +566,18 @@ pub(crate) fn finish_orchestrator(state: &mut App, extra: String) -> Task<Messag
     answer.push_str(&extra);
     finish_agent_answer(state, answer);
     state.agent_running = false;
+    orch_phase(state, 5, 5, "cierre");
     state.driver = None;
     state.pending_calls.clear();
     state.status.clear();
+    // v0.9 Track B: contador de uso local (turno de agente completado).
+    let key = state
+        .active_chat_meta()
+        .and_then(|c| c.project_id)
+        .and_then(|pid| state.projects.iter().find(|p| p.id == pid))
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "sin-proyecto".to_string());
+    let _ = db::record_turn(&key);
     close_git_turn(state)
 }
 
@@ -520,7 +668,7 @@ mod tests {
     }
 
     fn task(desc: &str) -> agent::WTask {
-        agent::WTask { desc: desc.to_string(), files: Vec::new() }
+        agent::WTask { desc: desc.to_string(), files: Vec::new(), accept: String::new() }
     }
 
     fn history(n: usize) -> Vec<ChatMsg> {
@@ -590,6 +738,23 @@ mod tests {
             .output()
             .expect("git rev-list");
         String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+    }
+
+    /// v0.9: consentimiento del STACK (Track A consulta, Track B niega).
+    #[test]
+    fn stack_consent_gates_consult_and_save_note() {
+        // Sin `use_stack`: ni consulta ni Log de hits (None siempre).
+        assert!(stack_consult_block(false, "auth con jwt y tokens").is_none());
+        assert!(stack_consult_block(false, "").is_none());
+        // Con permiso pero sin nada que matchee: None (el turno sigue igual).
+        assert!(stack_consult_block(true, "zzz-sin-match-qqq").is_none());
+        // Sin `share_local`: el worker lleva la nota de no proponer guardar.
+        assert!(share_note(false).contains("NO permite guardar"));
+        assert_eq!(share_note(true), "");
+        // Nombrar el STACK en el pedido vale como consentimiento puntual.
+        assert!(mentions_stack("usa el STACK para el health endpoint"));
+        assert!(mentions_stack("Stack local, por favor"));
+        assert!(!mentions_stack("crea un endpoint de salud"));
     }
 
     /// v0.7.3: el auto-commit del cierre solo ocurre con el turno verde.

@@ -92,6 +92,12 @@ pub struct Permissions {
     /// Dominios permitidos para fetch_url (vacío = todos piden permiso).
     #[serde(default)]
     pub net_domains: Vec<String>,
+    /// El planner puede consultar docs externos (fetch_url) y leer rutas
+    /// extra al diseñar el plan (v0.9.1, BETA agentes). OFF por defecto:
+    /// con OFF, el planner pide permiso Net la 1ª vez que el pedido
+    /// mencione una URL. Sin Write/Bash por rol en cualquier caso.
+    #[serde(default)]
+    pub planner_net: bool,
 }
 
 impl Default for Permissions {
@@ -104,6 +110,7 @@ impl Default for Permissions {
             auto_install: false,
             extra_paths: Vec::new(),
             net_domains: Vec::new(),
+            planner_net: false,
         }
     }
 }
@@ -457,6 +464,140 @@ impl GitConfig {
     }
 }
 
+/// Consentimiento del STACK (v0.9 Track B, POLICIES.md §4).
+/// Tres interruptores independientes, TODOS OFF por defecto:
+/// sin consentimiento explícito no hay uso ni subida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct StackConsent {
+    /// Usar código del STACK en mis tareas (el planner lo consulta).
+    pub use_stack: bool,
+    /// Guardar mi código en el STACK local.
+    pub share_local: bool,
+    /// Subir mi código a la nube (exige sesión v1.0; si no, avisa).
+    pub share_cloud: bool,
+}
+
+/// Identidad local (v0.9 Track B): solo firma el `author` de metadatos.
+/// Sin contraseñas, sin servidor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Identity {
+    pub name: String,
+    pub email: String,
+}
+
+impl Identity {
+    /// Valida lo mínimo: nombre no vacío y email con `@` y dominio.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.name.trim().is_empty() {
+            return Err("Pon tu nombre para firmar los snippets.".to_string());
+        }
+        let mail = self.email.trim();
+        let mut parts = mail.split('@');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some(user), Some(domain), None) if !user.is_empty() && domain.contains('.') => Ok(()),
+            _ => Err("Email no válido (falta @ o dominio).".to_string()),
+        }
+    }
+
+    /// Firma `author` ("Nombre <email>") o cadena vacía si no es válida.
+    pub fn author_line(&self) -> String {
+        if self.validate().is_ok() {
+            format!("{} <{}>", self.name.trim(), self.email.trim())
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// Transporte MCP (v0.9.3): stdio o HTTP.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum McpTransport {
+    #[default]
+    Stdio,
+    Http,
+}
+
+impl fmt::Display for McpTransport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            McpTransport::Stdio => write!(f, "stdio"),
+            McpTransport::Http => write!(f, "http"),
+        }
+    }
+}
+
+/// Config de un servidor MCP (v0.9.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct McpServerConfig {
+    /// stdio | http
+    pub transport: McpTransport,
+    /// Binario (stdio). Resuelto por PATH.
+    pub command: String,
+    pub args: Vec<String>,
+    /// URL (http)
+    pub url: String,
+    /// Sin pedir permiso por llamada (Read). Default false.
+    pub auto: bool,
+    pub timeout_s: u64,
+}
+
+impl Default for McpServerConfig {
+    fn default() -> Self {
+        Self {
+            transport: McpTransport::Stdio,
+            command: String::new(),
+            args: Vec::new(),
+            url: String::new(),
+            auto: false,
+            timeout_s: 30,
+        }
+    }
+}
+
+impl McpServerConfig {
+    pub fn validated(self) -> Self {
+        Self {
+            timeout_s: self.timeout_s.clamp(5, 120),
+            ..self
+        }
+    }
+
+    /// true si el command es un instalador (npx/uvx/npm/pip/curl) → categoría Install.
+    pub fn is_install(&self) -> bool {
+        is_mcp_install_command(&self.command)
+    }
+}
+
+/// true si el comando MCP pide instalación (npx/uvx/npm/pip/curl).
+pub fn is_mcp_install_command(cmd: &str) -> bool {
+    let c = cmd.trim().to_lowercase();
+    let base = c.split_whitespace().next().unwrap_or("");
+    // base sin path: /usr/bin/npx -> npx
+    let base = base.rsplit('/').next().unwrap_or(base);
+    matches!(base, "npx" | "uvx" | "npm" | "pip" | "pip3" | "curl" | "npx.cmd" | "npm.cmd")
+}
+
+/// Config MCP (v0.9.3): mapa de servidores por nombre.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct McpConfig {
+    #[serde(default)]
+    pub servers: std::collections::HashMap<String, McpServerConfig>,
+}
+
+impl McpConfig {
+    pub fn validated(mut self) -> Self {
+        for v in self.servers.values_mut() {
+            *v = std::mem::take(v).validated();
+        }
+        self
+    }
+}
+
 impl fmt::Display for ThemeMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -552,6 +693,12 @@ pub struct AppConfig {
     /// Configuración de Git (v0.7.2).
     #[serde(default)]
     pub git: GitConfig,
+    /// Consentimiento del STACK (v0.9 Track B). Todo OFF por defecto.
+    #[serde(default)]
+    pub stack_consent: StackConsent,
+    /// Identidad local para firmar metadatos (v0.9 Track B).
+    #[serde(default)]
+    pub identity: Identity,
     /// Aviso de privacidad del workspace ya mostrado (v0.7 Track B).
     #[serde(default)]
     pub privacy_notice_shown: bool,
@@ -563,6 +710,9 @@ pub struct AppConfig {
     /// Ausente en configs viejas -> al cargar se fuerzan a false una vez.
     #[serde(default)]
     pub perms_migrated: bool,
+    /// Servidores MCP (v0.9.3).
+    #[serde(default)]
+    pub mcp: McpConfig,
 }
 
 impl Default for AppConfig {
@@ -580,9 +730,12 @@ impl Default for AppConfig {
             limits: Limits::default(),
             appearance: Appearance::default(),
             git: GitConfig::default(),
+            stack_consent: StackConsent::default(),
+            identity: Identity::default(),
             privacy_notice_shown: false,
             search_ignores: Vec::new(),
             perms_migrated: true,
+            mcp: McpConfig::default(),
         }
     }
 }
@@ -675,6 +828,7 @@ impl AppConfig {
         }
         cfg.limits = cfg.limits.clamped();
         cfg.git = cfg.git.validated();
+        cfg.mcp = cfg.mcp.validated();
         cfg
     }
 
@@ -721,8 +875,16 @@ fn default_local_cfg() -> ProviderConfig {
     ProviderConfig::new(Provider::Local)
 }
 
+#[allow(clippy::collapsible_if)]
 pub fn config_path() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    if let Ok(over) = std::env::var("ARQHIA_CONFIG") {
+        if !over.trim().is_empty() {
+            return PathBuf::from(over);
+        }
+    }
+    let home = std::env::var("ARQHIA_HOME")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join(".config")
         .join("arqhia")
@@ -1023,6 +1185,47 @@ model = "y"
     }
 
     #[test]
+    fn stack_consent_off_by_default_and_identity_validates() {
+        // Instalación limpia: los 3 OFF (POLICIES.md §4).
+        let cfg = AppConfig::default();
+        assert!(!cfg.stack_consent.use_stack);
+        assert!(!cfg.stack_consent.share_local);
+        assert!(!cfg.stack_consent.share_cloud);
+        // Config vieja sin las claves: serde defaults las rellenan en OFF.
+        let old = r#"
+active = "OpenAI"
+[openai]
+api_key = ""
+base_url = "https://api.openai.com"
+model = "gpt-4o-mini"
+[anthropic]
+api_key = ""
+base_url = "https://api.anthropic.com"
+model = "x"
+[openrouter]
+api_key = ""
+base_url = "https://openrouter.ai"
+model = "y"
+"#;
+        let back: AppConfig = toml::from_str(old).unwrap();
+        assert!(!back.stack_consent.use_stack && !back.stack_consent.share_local);
+        // Activarlos persiste (roundtrip).
+        let mut cfg2 = AppConfig::default();
+        cfg2.stack_consent.use_stack = true;
+        cfg2.identity.name = "Ana".to_string();
+        cfg2.identity.email = "ana@x.dev".to_string();
+        let s = toml::to_string_pretty(&cfg2).unwrap();
+        let again: AppConfig = toml::from_str(&s).unwrap();
+        assert!(again.stack_consent.use_stack);
+        assert_eq!(again.identity.author_line(), "Ana <ana@x.dev>");
+        // Identidad: nombre vacío o email sin @ no valen.
+        assert!(Identity::default().validate().is_err());
+        assert!(Identity { name: "A".to_string(), email: "sin-arroba".to_string() }.validate().is_err());
+        assert!(Identity { name: "A".to_string(), email: "a@b".to_string() }.validate().is_err());
+        assert!(Identity { name: "A".to_string(), email: "a@b.dev".to_string() }.validate().is_ok());
+    }
+
+    #[test]
     fn switching_profiles_restores_full_connection() {
         // El perfil es la unidad completa: provider+api+base+modelo+nivel.
         let mut cfg = AppConfig::default();
@@ -1055,5 +1258,70 @@ model = "y"
         assert_eq!(cfg.active_config().api_key, "sk-rapido");
         assert_eq!(cfg.active_config().base_url, "https://api.openai.com");
         assert_eq!(cfg.active_config().model, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn mcp_config_defaults_and_roundtrip() {
+        let cfg = AppConfig::default();
+        assert!(cfg.mcp.servers.is_empty());
+        let old = r#"
+active = "OpenAI"
+[openai]
+api_key = ""
+base_url = "https://api.openai.com"
+model = "gpt-4o-mini"
+[anthropic]
+api_key = ""
+base_url = "https://api.anthropic.com"
+model = "x"
+[openrouter]
+api_key = ""
+base_url = "https://openrouter.ai"
+model = "y"
+"#;
+        let back: AppConfig = toml::from_str(old).unwrap();
+        assert!(back.mcp.servers.is_empty());
+        let mut cfg2 = AppConfig::default();
+        cfg2.mcp.servers.insert(
+            "mi-docs".to_string(),
+            McpServerConfig {
+                transport: McpTransport::Stdio,
+                command: "mi-docs-mcp".to_string(),
+                args: vec!["--port".to_string(), "8080".to_string()],
+                url: String::new(),
+                auto: false,
+                timeout_s: 30,
+            },
+        );
+        cfg2.mcp.servers.insert(
+            "web".to_string(),
+            McpServerConfig {
+                transport: McpTransport::Http,
+                command: String::new(),
+                args: Vec::new(),
+                url: "http://localhost:8000/mcp".to_string(),
+                auto: true,
+                timeout_s: 15,
+            },
+        );
+        let s = toml::to_string_pretty(&cfg2).unwrap();
+        let again: AppConfig = toml::from_str(&s).unwrap();
+        assert_eq!(again.mcp.servers.len(), 2);
+        assert_eq!(again.mcp.servers["mi-docs"].command, "mi-docs-mcp");
+        assert_eq!(again.mcp.servers["web"].transport, McpTransport::Http);
+        assert!(again.mcp.servers["web"].auto);
+        // npx is install
+        assert!(is_mcp_install_command("npx"));
+        assert!(is_mcp_install_command("npx -y algo"));
+        assert!(is_mcp_install_command("/usr/bin/npx"));
+        assert!(is_mcp_install_command("uvx foo"));
+        assert!(!is_mcp_install_command("mi-docs-mcp"));
+        assert!(McpServerConfig { command: "npx".to_string(), ..McpServerConfig::default() }.is_install());
+        assert!(!McpServerConfig { command: "my-server".to_string(), ..McpServerConfig::default() }.is_install());
+        // validated clamps
+        let clamped = McpServerConfig { timeout_s: 999, ..McpServerConfig::default() }.validated();
+        assert_eq!(clamped.timeout_s, 120);
+        let low = McpServerConfig { timeout_s: 1, ..McpServerConfig::default() }.validated();
+        assert_eq!(low.timeout_s, 5);
     }
 }

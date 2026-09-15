@@ -66,7 +66,7 @@ pub(crate) fn resolve_project_dir(name: &str, raw_path: &str) -> std::path::Path
     } else {
         let raw = raw_path.trim();
         if let Some(rest) = raw.strip_prefix("~/") {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+            std::path::PathBuf::from(std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()))
                 .join(rest)
         } else {
             std::path::PathBuf::from(raw)
@@ -81,6 +81,8 @@ pub(crate) fn enter_questionnaire(state: &mut App, pid: i64, name: &str, path_st
     state.pending_project = Some(pid);
     let answers = Answers {
         nombre: name.to_string(),
+        // Ya se ingresó en la pantalla de inicio: no se vuelve a preguntar.
+        nombre_locked: !name.trim().is_empty(),
         ..Default::default()
     };
     state.q_answers = answers;
@@ -90,22 +92,44 @@ pub(crate) fn enter_questionnaire(state: &mut App, pid: i64, name: &str, path_st
     // El proyecto nació en este cuestionario: si se cancela sin terminar,
     // se deshace la creación (sin proyectos fantasma).
     state.q_owns_project = true;
-    // Wizard v0.8: arranca en Principiante sin preguntas IA.
+    // Wizard v0.8.1: arranca en Principiante sin preguntas IA.
     state.q_level = crate::questionnaire::Level::Principiante;
     state.q_pending_level = None;
     state.q_ai_questions.clear();
     state.q_ai_answers.clear();
     state.q_ai_loading = false;
     state.q_ai_error.clear();
+    state.q_source = crate::questionnaire::QSource::New;
+    state.q_import_note.clear();
     state.push_log(format!("📁 proyecto {name} -> {path_str}"));
     state.view = View::Questionnaire;
+}
+
+/// Proyecto sin cuestionario: layout mínimo + chat directo.
+pub(crate) fn enter_without_questionnaire(state: &mut App, pid: i64, name: &str, path_str: &str) {
+    // Layout mínimo sin docs del cuestionario (no borra Project/).
+    let ws = std::path::PathBuf::from(path_str);
+    let _ = crate::workspace::ensure_project_layout(&ws);
+    state.active_chat = None;
+    state.messages.clear();
+    state.md.clear();
+    state.msg_times.clear();
+    state.msg_ids.clear();
+    state.msg_usage.clear();
+    crate::app::state::clear_turn_state(state);
+    state.pending_project = Some(pid);
+    state.q_owns_project = false;
+    state.q_project = None;
+    state.view = View::Chat;
+    state.status.clear();
+    state.push_log(format!("📁 proyecto {name} -> {path_str} (sin cuestionario)"));
 }
 
 /// Mueve una carpeta a la papelera de ARQHIA en vez de borrarla.
 /// Devuelve la ubicación destino. Con fallback copiar+borrar si rename
 /// cruza filesystems.
 pub(crate) fn trash_dir(dir: &str) -> Result<String, String> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string());
     let trash = std::path::PathBuf::from(home)
         .join(".local")
         .join("share")

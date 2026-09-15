@@ -10,8 +10,9 @@ use crate::app::state::App;
 use crate::app::Message;
 use crate::app::orchestrator::{
     abort_agent_placeholder, account_tokens, continue_after_worker, finish_orchestrator,
-    call_needs_approval, finish_agent_answer, request_next_llm_step, spawn_exec_calls, start_worker,
-    start_worker_with_task, OrchTask,
+    call_needs_approval, finish_agent_answer, log_checklist, orch_phase, request_next_llm_step,
+    spawn_exec_calls, spawn_planner, resume_planner_with_net, start_worker,
+    start_worker_with_task, OrchTask, PendingPlanner,
 };
 use crate::agent;
 use crate::db;
@@ -51,31 +52,94 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(dir.join("ANALYSIS.md"), &brief);
             state.push_log(format!("🧠 brief listo ({} chars)", brief.chars().count()));
+            orch_phase(state, 2, 5, "planner");
             let mode = state.o_mode;
             let context = crate::workspace::context_block(&ws);
             let espec = agent::read_espec_md(&ws);
+            // v0.9: el planner consulta el STACK antes de diseñar tareas.
+            // Con `use_stack` siempre; si el pedido lo nombra a mano, esa
+            // mención vale como consentimiento puntual del turno.
+            let explicit = crate::app::orchestrator::mentions_stack(&pedido);
+            let allow =
+                state.config.stack_consent.use_stack || explicit;
+            let mut context = context;
+            if allow {
+                match crate::app::orchestrator::stack_consult_block(allow, &pedido) {
+                    Some(block) => {
+                        let n = block.lines().next().unwrap_or("STACK local").to_string();
+                        state.push_log(format!(
+                            "📚 {n}{}",
+                            if explicit && !state.config.stack_consent.use_stack {
+                                " (pedido explícito)"
+                            } else {
+                                ""
+                            }
+                        ));
+                        context.push_str(&format!("\n\n{block}"));
+                        context.push_str(
+                            "\nSi algún snippet sirve, úsalo como base y cítalo en el plan.",
+                        );
+                    }
+                    None => state.push_log("📚 STACK: sin coincidencias".to_string()),
+                }
+            }
             let label = match mode {
                 db::Mode::Plan => "Plan",
                 _ => "Work",
+            }
+            .to_string();
+            // v0.9.1: planner Net+Read. Las URLs del pedido necesitan permiso
+            // si `planner_net` está OFF o Net no las cubre; las rutas extra
+            // se leen con el permiso Read. Sin Write/Bash por rol.
+            let perms = state.config.permissions.clone();
+            let need = agent::roles::planner_urls_needing_permission(
+                &pedido,
+                perms.planner_net,
+                perms.auto_net,
+                &perms.net_domains,
+                false,
+            );
+            let extra_read = if perms.auto_read {
+                agent::roles::extra_paths_block(&perms.extra_paths)
+            } else {
+                None
             };
-            Task::perform(
-                async move {
-                    agent::plan_tasks(
-                        provider,
-                        &pedido,
-                        &context,
-                        espec.as_deref(),
-                        Some(&brief),
-                        &cfg,
-                        label,
-                    )
-                    .await
-                },
-                move |r| match mode {
-                    db::Mode::Plan => Message::PlanDone(turn, r),
-                    _ => Message::AgentPlan(turn, r),
-                },
-            )
+            let pp = PendingPlanner {
+                provider,
+                cfg,
+                pedido: pedido.clone(),
+                context,
+                espec,
+                brief,
+                label,
+                mode,
+                extra_read,
+                urls: need.clone(),
+                net_domains: perms.net_domains.clone(),
+            };
+            if !need.is_empty() {
+                // El planner pide permiso Net antes de salir a la red: el
+                // lote va al panel habitual (Aprobar = consulta y planifica).
+                state.pending_planner = Some(pp);
+                state.pending_calls = need
+                    .iter()
+                    .enumerate()
+                    .map(|(i, u)| agent::PendingCall {
+                        id: format!("planner-net-{i}"),
+                        name: "fetch_url".to_string(),
+                        args: serde_json::json!({"url": u}),
+                    })
+                    .collect();
+                state.push_log("el planner pide permiso de Red (ver panel)".to_string());
+                return Task::none();
+            }
+            // URLs cubiertas por permiso: se consultan directo (con aviso).
+            let mut pp = pp;
+            pp.urls = agent::extract_urls(&pedido);
+            if !pp.urls.is_empty() {
+                state.push_log(format!("planner: consultando {} doc(s) externo(s)…", pp.urls.len()));
+            }
+            spawn_planner(state, pp, false)
         }
         Message::AgentPlan(turn, res) => {
             if turn != state.agent_gen {
@@ -108,6 +172,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                         })
                         .collect();
                     state.push_log(format!("🧭 plan: {} tareas", state.orch_tasks.len()));
+                    log_checklist(state);
+                    orch_phase(state, 3, 5, "workers");
                     return start_worker(state, 0);
                 }
             }
@@ -121,6 +187,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             match res {
                 Err(e) => {
+                    // v0.9 Track D: un auto-plan fallido no deja contexto colgado.
+                    state.plan_auto = None;
                     abort_agent_placeholder(state);
                     state.agent_running = false;
                     state.driver = None;
@@ -128,6 +196,55 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     state.push_log(format!("❌ plan: {e}"));
                 }
                 Ok(tasks) => {
+                    // v0.9 Track D: turno automático del post-cuestionario.
+                    // Escribe ROADMAP + VERSIONS + v0.1 + ToDo (pre-autorizado
+                    // en este turno) y resume en el chat. Sin panel de plan.
+                    if let Some(ctx) = state.plan_auto.take() {
+                        let mut descs: Vec<String> =
+                            tasks.iter().map(|t| t.desc.clone()).collect();
+                        let max = state.config.limits.clamped().max_tasks;
+                        if descs.len() > max {
+                            descs.truncate(max);
+                        }
+                        match crate::questionnaire::planning::write_auto_docs(&ctx, &descs) {
+                            Ok(report) => {
+                                for f in &report.files {
+                                    state.push_log(format!("📋 {f}"));
+                                }
+                                for w in &report.v01_warnings {
+                                    state.push_log(format!("⚠️ {w}"));
+                                }
+                                if !report.v01_valid {
+                                    state.push_log(
+                                        "⚠️ v0.1 sin plantilla: revísalo a mano.".to_string(),
+                                    );
+                                }
+                                let gaps_md = if report.gaps.is_empty() {
+                                    "Sin gaps pendientes.".to_string()
+                                } else {
+                                    format!("Gaps: {}.", report.gaps.join(", "))
+                                };
+                                finish_agent_answer(
+                                    state,
+                                    format!(
+                                        "Contexto generado: {} (+ ToDo.md con {} tareas). {}",
+                                        report.files.join(", "),
+                                        descs.len(),
+                                        gaps_md
+                                    ),
+                                );
+                            }
+                            Err(e) => {
+                                abort_agent_placeholder(state);
+                                state.status = format!("No se pudo escribir el contexto: {e}");
+                                state.push_log(format!("❌ contexto auto: {e}"));
+                            }
+                        }
+                        state.agent_running = false;
+                        state.driver = None;
+                        let _ = db::record_turn(&super::chat::project_key(state));
+                        return Task::none();
+                    }
                     let max_tasks = state.config.limits.clamped().max_tasks;
                     let mut tasks = tasks;
                     if tasks.len() > max_tasks {
@@ -157,6 +274,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                                 .collect();
                             let n = state.orch_tasks.len();
                             state.push_log(format!("📋 PLAN.md con {n} tareas ({path})"));
+                            log_checklist(state);
                             finish_agent_answer(
                                 state,
                                 format!(
@@ -228,6 +346,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             // v0.7.2: rama de trabajo + árbol limpio antes de tocar nada.
             crate::app::orchestrator::prepare_git_turn(state);
             state.push_log(format!("▶ ejecutando plan ({} tareas)", state.orch_tasks.len()));
+            log_checklist(state);
+            orch_phase(state, 3, 5, "workers");
             start_worker(state, 0)
         }
         Message::DismissPlan => {
@@ -249,6 +369,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     state.agent_running = false;
                     state.status = format!("Error del agente: {}", crate::llm::friendly_error(&e));
                     state.push_log(format!("❌ {e}"));
+                    // v0.9 Track B: los 429 alimentan el panel de uso.
+                    if crate::llm::is_rate_limit_error(&e) {
+                        let _ = db::record_429(&super::chat::project_key(state));
+                    }
                     return Task::none();
                 }
                 Ok(agent::StepOutcome::Final(answer)) => {
@@ -396,6 +520,22 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             drv.raw.extend(append);
             state.driver = Some(drv);
+            // v0.9 Track B: tool calls al contador de uso del proyecto
+            // (total + desglose por categoría).
+            let ukey = super::chat::project_key(state);
+            let _ = db::record_tool_calls(&ukey, calls.len());
+            for c in calls.iter() {
+                let label = match agent::tools::category_of_call(&c.name, &c.args) {
+                    agent::tools::ToolCat::Read => "read",
+                    agent::tools::ToolCat::Write => "write",
+                    agent::tools::ToolCat::Bash => "bash",
+                    agent::tools::ToolCat::Install => "install",
+                    agent::tools::ToolCat::Net => "net",
+                    agent::tools::ToolCat::Git => "git",
+                    agent::tools::ToolCat::GitPush => "git-push",
+                };
+                let _ = db::record_tool_call_cat(&ukey, label);
+            }
             // Presupuesto v0.7.1: los outputs pueden ser KBs; contabiliza
             // al recibirlos y para con mensaje si se agotó.
             if account_tokens(state) {
@@ -408,6 +548,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             request_next_llm_step(state)
         }
         Message::ApproveTools => {
+            // v0.9.1: el planner también pide Red por este panel.
+            if state.pending_planner.is_some() {
+                let n = state.pending_calls.len();
+                state.pending_calls.clear();
+                state.push_log(format!("planner: red aprobada ({n} doc(s))"));
+                return resume_planner_with_net(state);
+            }
             let calls = std::mem::take(&mut state.pending_calls);
             if calls.is_empty() || state.driver.is_none() {
                 return Task::none();
@@ -416,6 +563,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             spawn_exec_calls(state, calls, true)
         }
         Message::DenyTools => {
+            // v0.9.1: planner sin docs externos (planifica igual, sin red).
+            if let Some(mut pp) = state.pending_planner.take() {
+                state.pending_calls.clear();
+                state.push_log("planner: red denegada, planifico sin docs externos".to_string());
+                pp.urls.clear();
+                return spawn_planner(state, pp, false);
+            }
             let calls = std::mem::take(&mut state.pending_calls);
             if calls.is_empty() {
                 return Task::none();
@@ -430,6 +584,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             request_next_llm_step(state)
         }
         Message::DenyToolsRemember => {
+            // v0.9.1: como Deny para el planner (el "recordar" es de workers).
+            if let Some(mut pp) = state.pending_planner.take() {
+                state.pending_calls.clear();
+                state.push_log("planner: red denegada, planifico sin docs externos".to_string());
+                pp.urls.clear();
+                return spawn_planner(state, pp, false);
+            }
             let calls = std::mem::take(&mut state.pending_calls);
             if calls.is_empty() {
                 return Task::none();
@@ -452,6 +613,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             if !state.agent_running && !state.streaming {
                 return Task::none();
             }
+            // v0.9 Track D: un plan automático interrumpido no escribe docs.
+            state.plan_auto = None;
+            // v0.9.1: un planner/re-análisis pendiente tampoco continúa.
+            state.pending_planner = None;
+            state.pending_fix = None;
             // Invalida todo lo que siga en vuelo de este turno (agente) y los
             // chunks del stream de chat plano.
             state.agent_gen += 1;
@@ -528,28 +694,107 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             .collect::<Vec<_>>()
                             .join(" / ");
                         state.push_log(format!("📝 TEMP.md con issues: {}", preview));
-                        let fix_desc = format!(
-                            "Corrige estos issues del auditor (ciclo {}, sin cambiar nada más):\n{}",
-                            state.fix_cycle,
-                            temp.chars().take(1200).collect::<String>()
-                        );
-                        state.orch_tasks.push(OrchTask {
-                            desc: format!("Fixes del auditor (ciclo {})", state.fix_cycle),
-                            files: Vec::new(),
-                            done: false,
-                            active: false,
-                        });
-                        let idx = state.orch_tasks.len() - 1;
-                        let task = agent::WTask {
-                            desc: fix_desc,
-                            files: Vec::new(),
+                        // v0.9.2: el auditor sugiere skill de dominio (sin
+                        // auto-ejecutar): QA si falló la puerta, review si no.
+                        let skill = agent::roles::suggest_skill_for_issues(&temp);
+                        state.push_log(format!(
+                            "Prueba /skill {skill} (sugerencia; tú decides si ejecutarla)"
+                        ));
+                        // v0.9.1: re-análisis — el analista revisa el TEMP del
+                        // auditor antes de lanzar el worker de fixes.
+                        let (provider, cfg, ws2) = match (
+                            state.o_provider,
+                            state.o_cfg.clone(),
+                            state.o_ws.clone(),
+                        ) {
+                            (Some(p), Some(c), Some(w)) => (p, c, w),
+                            _ => return finish_orchestrator(state, String::new()),
                         };
-                        return start_worker_with_task(state, idx, task);
+                        state.pending_fix = Some(temp.clone());
+                        orch_phase(
+                            state,
+                            2,
+                            5,
+                            &format!("re-análisis (ciclo {})", state.fix_cycle),
+                        );
+                        state.push_log("analista revisando TEMP…".to_string());
+                        let pedido_orig = state
+                            .o_history
+                            .iter()
+                            .rev()
+                            .find(|m| m.role == Role::User)
+                            .map(|m| m.content.clone())
+                            .unwrap_or_default();
+                        let cycle = state.fix_cycle;
+                        let re_pedido = format!(
+                            "Re-analiza antes de arreglar (ciclo {cycle}). Pedido original: {pedido_orig}\n\n## TEMP del auditor:\n{}",
+                            temp.chars().take(1500).collect::<String>()
+                        );
+                        let turn = state.agent_gen;
+                        return Task::perform(
+                            async move {
+                                agent::analyze_workspace(provider, &cfg, &ws2, &re_pedido).await
+                            },
+                            move |res| Message::AgentReanalyze(turn, res),
+                        );
                     }
                     state.push_log(format!("✅ estable tras {} ciclos", state.fix_cycle));
                     finish_orchestrator(state, String::new())
                 }
             }
+        }
+        Message::AgentReanalyze(turn, res) => {
+            // v0.9.1: el analista revisó el TEMP; se actualiza ANALYSIS.md y
+            // se lanza el worker de fixes con el brief revisado.
+            if turn != state.agent_gen {
+                return Task::none(); // turno cancelado, resultado tardío
+            }
+            let ws = match state.o_ws.clone() {
+                Some(w) => w,
+                None => {
+                    abort_agent_placeholder(state);
+                    state.agent_running = false;
+                    return Task::none();
+                }
+            };
+            let Some(temp) = state.pending_fix.take() else {
+                return Task::none(); // re-análisis tardío, ya se resolvió
+            };
+            let brief = match res {
+                Ok(b) if !b.trim().is_empty() => b,
+                _ => {
+                    state.push_log("⚠️ re-análisis no disponible: uso TEMP crudo".to_string());
+                    temp.clone()
+                }
+            };
+            let dir = ws.join("CONTEXT");
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("ANALYSIS.md"), &brief);
+            state.push_log(format!(
+                "re-análisis listo ({} chars, ciclo {})",
+                brief.chars().count(),
+                state.fix_cycle
+            ));
+            orch_phase(state, 3, 5, "workers");
+            let fix_desc = format!(
+                "Corrige estos issues del auditor (ciclo {}, sin cambiar nada más):\n{}",
+                state.fix_cycle,
+                temp.chars().take(1200).collect::<String>()
+            );
+            state.orch_tasks.push(OrchTask {
+                desc: format!("Fixes del auditor (ciclo {})", state.fix_cycle),
+                files: Vec::new(),
+                done: false,
+                active: false,
+            });
+            log_checklist(state);
+            let idx = state.orch_tasks.len() - 1;
+            let task = agent::WTask {
+                desc: fix_desc,
+                files: Vec::new(),
+                accept: "el auditor queda en VERDICT: CLEAN".to_string(),
+            };
+            start_worker_with_task(state, idx, task)
         }
         // Inalcanzable si el dispatch exterior está al día (es total).
         _ => Task::none(),
@@ -594,7 +839,8 @@ fn tool_output_text(msg: &serde_json::Value) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-/// PLAN.md aprobable del modo Plan (v0.7.1): checklist, sin ejecutar nada.
+/// PLAN.md aprobable del modo Plan (v0.7.1 + criterios v0.9.1): checklist
+/// con criterio de aceptación por tarea, sin ejecutar nada.
 fn render_plan_md(tasks: &[agent::WTask], user_text: &str) -> String {
     let pedido: String = user_text.replace('\n', " ").chars().take(200).collect();
     let mut out = format!("# PLAN\n\nPedido: {pedido}\n\n");
@@ -605,6 +851,9 @@ fn render_plan_md(tasks: &[agent::WTask], user_text: &str) -> String {
             format!(" (archivos: {})", t.files.join(", "))
         };
         out.push_str(&format!("- [ ] {}. {}{}\n", i + 1, t.desc, files));
+        if !t.accept.trim().is_empty() {
+            out.push_str(&format!("  - Aceptación: {}\n", t.accept.trim()));
+        }
     }
     out.push_str("\n> Generado por ARQHIA en modo Plan (analista + 1 llamada; solo escribe CONTEXT/). Pulsa «Ejecutar plan» en el chat para pasarlo a Work.\n");
     out
@@ -622,28 +871,9 @@ fn write_plan_md(state: &App, md: &str) -> Result<String, String> {
     std::fs::write(&file, md).map_err(|e| format!("no se pudo escribir: {e}"))?;
     Ok(file.to_string_lossy().to_string())
 }
-/// Decisión del bucle de estabilidad (v0.7.3). Pura para poder testear el
-/// tope de ciclos sin red ni UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FixDecision {
-    /// Auditor limpio: se cierra el turno (commit si git está verde).
-    Clean,
-    /// Hay issues: correr un worker de fixes y re-auditar.
-    Fix,
-    /// Tope de ciclos alcanzado con issues: cerrar sin commit.
-    CapReached,
-}
-
-/// `max == 0` ⇒ ilimitado. Con issues y ciclo ya en el tope ⇒ `CapReached`.
-pub(crate) fn fix_decision(has_issues: bool, cycle: usize, max: usize) -> FixDecision {
-    if !has_issues {
-        FixDecision::Clean
-    } else if max != 0 && cycle >= max {
-        FixDecision::CapReached
-    } else {
-        FixDecision::Fix
-    }
-}
+/// Decisión del bucle de estabilidad (v0.7.3, vive en `agent::roles`
+/// desde v0.9.1). Re-export para compatibilidad con tests existentes.
+pub(crate) use crate::agent::roles::{FixDecision, fix_decision};
 
 #[cfg(test)]
 mod tests {

@@ -120,32 +120,27 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
     let mut list = column![].spacing(design::gap(cx, 8));
     let ts = state.config.appearance.text_size.scale();
 
-    // Loose chats (no project).
+    // Chats sueltos (sin proyecto): se renderizan tras Proyectos.
     let loose: Vec<&ChatMeta> = state
         .chats
         .iter()
         .filter(|c| c.project_id.is_none() && !c.archived)
         .collect();
-    if !loose.is_empty() {
-        list = list.push(components::section_label(super::app_theme(state), "Conversaciones"));
-        for chat in loose {
-            list = list.push(chat_row(state, chat));
-        }
-        // Separador claro entre chats sueltos y proyectos.
-        list = list.push(
-            iced::widget::horizontal_rule(1).style(|t: &Theme| design::hairline_rule(t)),
-        );
-    }
-    // Projects.
+    // Projects (arriba, colapsables por sección y por proyecto).
+    let show_projects = state.show_projects;
     list = list.push(
         row![
+            components::icon_btn(if show_projects { "v" } else { ">" }.to_string())
+                .on_press(Message::ToggleProjectsSection),
             components::section_label(super::app_theme(state), "Proyectos"),
+            text(format!("{}", state.projects.len())).size(design::fs(ts, 12)),
             iced::widget::horizontal_space(),
             components::head_btn("+ Nuevo".to_string()).on_press(Message::ToggleProjectForm),
         ]
         .spacing(4)
         .align_y(iced::Alignment::Center),
     );
+    if show_projects {
     if state.show_project_form {
         list = list.push(
             container(
@@ -164,6 +159,7 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
                         .width(iced::Fill),
                     row![
                         components::primary_btn("Crear".to_string(), 12).on_press(Message::CreateProject),
+                        components::quiet_btn("Sin cuestionario".to_string()).on_press(Message::CreateProjectSkip),
                         components::icon_btn("Cancelar".to_string()).on_press(Message::ToggleProjectForm),
                     ]
                     .spacing(6),
@@ -326,17 +322,53 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
         if project_chats.is_empty() {
             pcol = pcol.push(text("Sin chats todavía.").size(design::fs(ts, 12)));
         }
-        for chat in project_chats {
+        let total_pc = project_chats.len();
+        let vis_pc = if state.show_all_loose || total_pc <= 8 { total_pc } else { 8 };
+        for chat in project_chats.iter().copied().take(vis_pc) {
             pcol = pcol.push(container(chat_row(state, chat)).padding(iced::Padding {
                 left: 14.0,
                 ..iced::Padding::ZERO
             }));
+        }
+        if total_pc > 8 {
+            let more_pc: iced::Element<'_, Message> = iced::widget::row![
+                components::quiet_btn(if state.show_all_loose {
+                    format!("Mostrar menos ({total_pc})")
+                } else {
+                    format!("... {}/{}  ver más", vis_pc, total_pc)
+                }).on_press(Message::ToggleLooseChats),
+            ].into();
+            pcol = pcol.push(more_pc);
         }
         list = list.push(
             container(pcol)
                 .padding(design::pad(cx, 6))
                 .style(|t: &Theme| design::card(t)),
         );
+    }
+    } // show_projects
+    // Separador proyectos / conversaciones.
+    list = list.push(
+        iced::widget::horizontal_rule(1).style(|t: &Theme| design::hairline_rule(t)),
+    );
+    if !loose.is_empty() {
+        list = list.push(components::section_label(super::app_theme(state), "Conversaciones"));
+        let total = loose.len();
+        let show_all = state.show_all_loose;
+        let visible = if show_all || total <= 8 { total } else { 8 };
+        for chat in loose.iter().copied().take(visible) {
+            list = list.push(chat_row(state, chat));
+        }
+        if total > 8 {
+            let more: iced::Element<'_, Message> = iced::widget::row![
+                components::quiet_btn(if show_all {
+                    format!("Mostrar menos ({total})")
+                } else {
+                    format!("... {}/{}  ver más", visible, total)
+                }).on_press(Message::ToggleLooseChats),
+            ].into();
+            list = list.push(more);
+        }
     }
     if state.chats.is_empty() {
         list = list.push(text("Aún no hay chats.").size(design::fs(ts, 12)));
@@ -389,6 +421,7 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
             row![
                 components::head_btn("Inicio".to_string()).on_press(Message::GoHome),
                 components::head_btn("Ajustes".to_string()).on_press(Message::OpenConfig),
+                components::head_btn("STACK".to_string()).on_press(Message::OpenStack),
                 iced::widget::horizontal_space(),
                 components::danger_outline_btn("Salir".to_string()).on_press(Message::ExitApp),
             ]

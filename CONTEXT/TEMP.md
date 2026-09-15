@@ -23,5 +23,18 @@ SIN ISSUES
 ## cargo check / test / clippy
 
 - `cargo check`: OK (sin warnings).
-- `cargo test`: 70/70 OK (3 ignorados; uno valida el api.json real de models.dev).
+- `cargo test`: 142/142 OK (3 ignorados).
 - `cargo clippy --all-targets`: 0 warnings.
+
+## Sugerencias `/skill` + STACK con llamada (verde)
+
+- `/` en el composer sugiere skills (nombre + descripción + preview, filtra por prefijo); Enter completa prefijos únicos, ambiguo/vacío avisa sin turno.
+- 14 seeds (siembra por título, idempotente); `Pedir al agente` pre-rellena el pedido nombrando el STACK; la mención explícita autoriza la consulta puntual (`mentions_stack` + log).
+
+## v0.9 — STACK + legal + skills + contexto auto (verde)
+
+- Track A: `stack_items` (+author/license/source) + `stack_meta` + `stack_fts` (FTS5 OK en `bundled`); `save/search/get/rate/record_execution/report_bug`; scoring `tag_match*2.0 + fts + rating*0.5`; 10 seeds; panel STACK (buscar/tags/preview/guardar/valorar/bugs/copiar); planner consulta con `use_stack` + log `STACK: N hits`.
+- Track B: consentimiento triple OFF + identidad + `Uso interno` rechazado; contadores turnos/tools por categoría/429s con panel en Config → STACK.
+- Track C: `skills.rs` + 2 embebidas + `/skill` (inyecta 1 vez, inexistente lista sin turno) + pestaña Skills (badge/origen/recargar/restaurar).
+- Track D: `planning.rs` (prompt casa + `validate_version_md` + `write_auto_docs` 4 archivos) + SPECS con criterios + Finish auto-dispara Plan (fallback precargado sin API) + `Detener` cancela.
+- Docs: `VERSIONS.md` v0.9 🟢, `PROJECT.md` §3/§13, `HECHO.md`.

@@ -34,12 +34,14 @@ pub(crate) fn view_config(state: &App) -> Element<'_, Message> {
         ConfigTab::Git => view_config_git(state),
         ConfigTab::Proyectos => view_config_proyectos(state),
         ConfigTab::Atajos => view_config_atajos(state),
+        ConfigTab::Stack => view_config_stack(state),
+        ConfigTab::Skills => view_config_skills(state),
     };
     column![
         row![
             column![
                 text("Configuración").size(design::fs(ts, type_scale::HEADLINE)),
-                text("Proveedor, apariencia, permisos y proyectos.")
+                text("Proveedor, apariencia, permisos, STACK, skills y más.")
                     .size(design::fs(ts, 12))
                     .color(dim),
             ]
@@ -497,6 +499,11 @@ fn view_config_permisos(state: &App) -> Element<'_, Message> {
                 )
                 .on_toggle(Message::PermNetToggled),
                 checkbox(
+                    "Red del planner (consulta docs externos al planificar)",
+                    state.config.permissions.planner_net
+                )
+                .on_toggle(Message::PermPlannerNetToggled),
+                checkbox(
                     "Instalación automática (cargo/pip/npm/apt…)",
                     state.config.permissions.auto_install
                 )
@@ -905,6 +912,174 @@ fn view_config_atajos(state: &App) -> Element<'_, Message> {
         );
     }
     settings_card(&app_theme, state.config.appearance.compact(), "Atajos", list)
+}
+
+/// Pestaña STACK (v0.9 Track B): consentimiento triple (todo OFF por
+/// defecto), identidad local y contadores de uso por proyecto.
+fn view_config_stack(state: &App) -> Element<'_, Message> {
+    use iced::widget::{checkbox, column, row, text, text_input};
+    use crate::ui::{components, design};
+    let app_theme = super::app_theme(state);
+    let dim = design::ink_2(&app_theme);
+    let ts = state.config.appearance.text_size.scale();
+    let consent = state.config.stack_consent;
+    let consent_card = settings_card(
+        &app_theme,
+        state.config.appearance.compact(),
+        "Consentimiento del STACK",
+        column![
+            text("Los tres nacen desactivados. Sin tu permiso no hay uso ni subida.")
+                .size(design::fs(ts, 12))
+                .color(dim),
+            checkbox(
+                "Usar el STACK en mis tareas (el planner lo consulta)",
+                consent.use_stack
+            )
+            .on_toggle(Message::StackUseToggled),
+            checkbox(
+                "Guardar mi código en el STACK local",
+                consent.share_local
+            )
+            .on_toggle(Message::StackShareLocalToggled),
+            checkbox(
+                "Subir mi código a la nube (requiere sesión v1.0)",
+                consent.share_cloud
+            )
+            .on_toggle(Message::StackShareCloudToggled),
+            text("«Uso interno» nunca sube a la nube, aunque marques la nube.")
+                .size(design::fs(ts, 11))
+                .color(dim),
+        ]
+        .spacing(6),
+    );
+    let identity_card = settings_card(
+        &app_theme,
+        state.config.appearance.compact(),
+        "Identidad local (firma de snippets)",
+        column![
+            text("Solo firma el autor de tus snippets. Sin contraseñas ni servidor.")
+                .size(design::fs(ts, 12))
+                .color(dim),
+            text_input("Nombre...", &state.identity_name)
+                .size(design::fs(ts, 13))
+                .style(|t: &Theme, s| design::field(t, s))
+                .on_input(Message::IdentityNameChanged),
+            text_input("email@ejemplo.dev...", &state.identity_email)
+                .size(design::fs(ts, 13))
+                .style(|t: &Theme, s| design::field(t, s))
+                .on_input(Message::IdentityEmailChanged)
+                .on_submit(Message::IdentitySave),
+            row![
+                components::quiet_btn("Guardar identidad".to_string())
+                    .on_press(Message::IdentitySave),
+                text(&state.status).size(design::fs(ts, 12)).color(dim),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+        ]
+        .spacing(6),
+    );
+    let usage: Vec<crate::db::UsageStats> = crate::db::list_usage().unwrap_or_default();
+    // Fila destacada del proyecto del chat activo (lectura puntual).
+    let here = crate::app::handlers::chat::project_key(state);
+    let here_stats = crate::db::get_usage(&here).unwrap_or_default();
+    let cats = crate::db::list_usage_tools(&here).unwrap_or_default();
+    let cats_md = if cats.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " Top tools: {}.",
+            cats.iter()
+                .take(4)
+                .map(|(c, n)| format!("{c}×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    let mut rows = column![
+        text(format!(
+            "Este proyecto ({}): {} turnos · {} tools · {} 429s.{}",
+            here_stats.project, here_stats.turns, here_stats.tool_calls, here_stats.err429,
+            cats_md
+        ))
+        .size(design::fs(ts, 12)),
+        text("Contadores locales: turnos, tool calls y errores 429 por proyecto.")
+            .size(design::fs(ts, 12))
+            .color(dim),
+    ]
+    .spacing(4);
+    if usage.is_empty() {
+        rows = rows.push(
+            text("Aún sin actividad: los contadores aparecen tras el primer turno.")
+                .size(design::fs(ts, 12))
+                .color(dim),
+        );
+    }
+    for u in usage.iter().take(20) {
+        rows = rows.push(
+            text(format!(
+                "{}: {} turnos · {} tools · {} 429s",
+                u.project, u.turns, u.tool_calls, u.err429
+            ))
+            .size(design::fs(ts, 12)),
+        );
+    }
+    let usage_card =
+        settings_card(&app_theme, state.config.appearance.compact(), "Uso", rows);
+    column![consent_card, identity_card, usage_card].spacing(10).into()
+}
+
+/// Pestaña Skills (v0.9 Track C): lista con origen, recarga y borrado.
+/// Las embebidas no se borran de verdad: se restauran desde el binario.
+fn view_config_skills(state: &App) -> Element<'_, Message> {
+    use iced::widget::{column, row, scrollable, text};
+    use crate::ui::{components, design};
+    let app_theme = super::app_theme(state);
+    let dim = design::ink_2(&app_theme);
+    let ts = state.config.appearance.text_size.scale();
+    let skills = crate::skills::list();
+    let mut list = column![
+        text("Skills instalables con /skill nombre en el chat.")
+            .size(design::fs(ts, 12))
+            .color(dim),
+        text("Sin permisos propios: sus scripts usan el permiso Bash existente.")
+            .size(design::fs(ts, 11))
+            .color(dim),
+    ]
+    .spacing(4);
+    for sk in &skills {
+        let name = sk.name.clone();
+        let badge = sk.origin.badge();
+        list = list.push(
+            row![
+                text(format!("{} ({}) — {}", sk.name, sk.version, sk.description))
+                    .size(design::fs(ts, 13))
+                    .width(iced::Fill),
+                text(format!("[{badge}]")).size(design::fs(ts, 11)).color(dim),
+                components::icon_btn("Borrar".to_string()).on_press(Message::SkillsDelete(name)),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+        );
+    }
+    if skills.is_empty() {
+        list = list.push(text("(sin skills)").size(design::fs(ts, 12)).color(dim));
+    }
+    settings_card(
+        &app_theme,
+        state.config.appearance.compact(),
+        "Skills",
+        column![
+            scrollable(list).height(300),
+            row![
+                components::quiet_btn("Recargar".to_string()).on_press(Message::SkillsReload),
+                text(&state.status).size(design::fs(ts, 12)).color(dim),
+            ]
+            .align_y(iced::Alignment::Center)
+            .spacing(8),
+        ]
+        .spacing(6),
+    )
 }
 
 // ---------------------------------------------------------------------------

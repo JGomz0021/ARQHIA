@@ -21,7 +21,14 @@ use crate::titles;
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::InputChanged(v) => {
-            state.input = v;
+            state.input = v.clone();
+            // Al escribir `/` se sugieren skills con su contenido (ver
+            // composer): la lista vive en estado para que la vista sea pura.
+            if v.trim_start().starts_with('/') {
+                state.skill_suggest = crate::skills::suggest(&v);
+            } else {
+                state.skill_suggest.clear();
+            }
             Task::none()
         }
         Message::SendPressed => {
@@ -31,6 +38,54 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let text = state.input.trim().to_string();
             if text.is_empty() {
                 return Task::none();
+            }
+            state.skill_suggest.clear();
+            // `/skill nombre [texto]` (o prefijo único como `/rev`) se
+            // resuelve antes del dispatch por modo. Sin match = error
+            // amable con candidatas, sin turno.
+            let mut skill_ctx: Option<String> = None;
+            if text.starts_with('/') {
+                match crate::skills::resolve_slash(&text) {
+                    Ok((name, rest)) => match crate::skills::load(&name) {
+                        Ok(skill) => {
+                            let origin = skill.origin.badge();
+                            state.push_log(format!("skill {name} ({origin}) inyectada"));
+                            skill_ctx = Some(crate::skills::context_block(&skill, &rest));
+                        }
+                        Err(e) => {
+                            state.status = format!("No se pudo cargar «{name}»: {e}");
+                            return Task::none();
+                        }
+                    },
+                    Err((prefix, cands)) => {
+                        state.status = if prefix.is_empty() {
+                            let names = cands.join(", ");
+                            format!(
+                                "Uso: /skill nombre [texto]. Instaladas: {}.",
+                                if names.is_empty() { "(ninguna)".to_string() } else { names }
+                            )
+                        } else if cands.is_empty() {
+                            let names: Vec<String> = crate::skills::list()
+                                .iter()
+                                .map(|d| d.name.clone())
+                                .collect();
+                            format!(
+                                "Skill «{prefix}» no encontrada. Instaladas: {}.",
+                                if names.is_empty() {
+                                    "(ninguna)".to_string()
+                                } else {
+                                    names.join(", ")
+                                }
+                            )
+                        } else {
+                            format!(
+                                "«{prefix}» coincide con varias: {}. Completa el nombre.",
+                                cands.join(", ")
+                            )
+                        };
+                        return Task::none();
+                    },
+                }
             }
             state.ensure_active_chat();
             let chat_id = match state.active_chat {
@@ -49,6 +104,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     "Configura el modelo local en Configuración antes de chatear.".to_string()
                 };
                 state.view = View::Config;
+                return Task::none();
+            }
+            // Valida el turno ANTES de persistir: un mensaje inválido (Plan
+            // sin workspace) no entra ni en DB ni en contexto. El input se
+            // conserva para que el usuario corrija sin reescribir.
+            if state.active_mode() == db::Mode::Plan && state.active_workspace().is_none() {
+                state.status = "Plan necesita un workspace asignado al proyecto.".to_string();
                 return Task::none();
             }
             // Undo v0.7.4: snapshot de 1 paso antes de enviar (la vista
@@ -95,6 +157,23 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     async move { agent::ai_title(provider, &cfg_title, &first).await.unwrap_or_default() },
                     move |t| Message::ChatTitleFetched(generation, chat_id, t),
                 );
+            }
+            // La skill se inyecta UNA vez como mensaje de contexto ANTES de
+            // arrancar el turno (así viaja al LLM) y el turno continúa
+            // normal (Chat/Plan/Work según el modo).
+            if let Some(ctx) = skill_ctx {
+                let body =
+                    format!("Contexto de skill (solo lectura, no repetir):\n{ctx}");
+                state.messages.push(ChatMsg {
+                    role: Role::User,
+                    content: body.clone(),
+                });
+                state.md.push(Vec::new());
+                state.msg_usage.push(None);
+                state.msg_times.push(String::new());
+                state.msg_ids.push(0);
+                let _ = db::save_msg(chat_id, "user", &body);
+                state.resync_msg_meta(chat_id);
             }
             let turn = start_turn(state, provider, cfg, chat_id, text);
             Task::batch(vec![title_task, turn])
@@ -195,6 +274,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     let _ = db::save_msg(chat_id, "assistant", &last.content);
                     state.resync_msg_meta(chat_id);
                 }
+            // v0.9 Track B: contador de uso local (turno de chat).
+            let _ = db::record_turn(&project_key(state));
             Task::none()
         }
         Message::StreamError(sgen, e) => {
@@ -221,6 +302,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             state.push_log(format!("Error del proveedor: {e}"));
             state.status = format!("Error: {}", crate::llm::friendly_error(&e));
+            // v0.9 Track B: los 429 alimentan el panel de uso.
+            if crate::llm::is_rate_limit_error(&e) {
+                let _ = db::record_429(&project_key(state));
+            }
             Task::none()
         }
         Message::ToggleLogExpand => {
@@ -250,7 +335,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.status.clear();
             state.pending_delete = None;
             state.pending_project = None;
-            Task::none()
+            // Entrar al chat desde el final (últimos mensajes visibles).
+            scroll_chat_to_end()
         }
         Message::DeleteChat(id) => {
             state.pending_delete = Some(id);
@@ -545,6 +631,12 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 state.status.clear();
                 return Task::none();
             }
+            // v0.9: en el panel STACK, Esc vuelve a la vista origen.
+            if state.view == View::Stack {
+                state.view = state.stack_from.clone();
+                state.status.clear();
+                return Task::none();
+            }
             state.chat_menu = None;
             state.move_for = None;
             state.project_menu = None;
@@ -784,6 +876,17 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     }
 }
 
+/// Clave del contador de uso (v0.9 Track B): nombre del proyecto del chat
+/// activo o "sin-proyecto". Solo conteos, sin contenido.
+pub(crate) fn project_key(state: &App) -> String {
+    state
+        .active_chat_meta()
+        .and_then(|c| c.project_id)
+        .and_then(|pid| state.projects.iter().find(|p| p.id == pid))
+        .map(|p| p.name.clone())
+        .unwrap_or_else(|| "sin-proyecto".to_string())
+}
+
 /// Crea un chat vacío y lo activa (dentro de un proyecto o suelto).
 /// Extraído de `NewChat`/`NewChatInProject` (idénticos salvo el destino).
 fn spawn_chat(state: &mut App, project: Option<i64>) {
@@ -814,6 +917,14 @@ fn spawn_chat(state: &mut App, project: Option<i64>) {
         }
         Err(e) => state.status = format!("No se pudo crear el chat: {e}"),
     }
+}
+
+/// Salta el scroll de mensajes al final (entrar al chat desde abajo).
+pub(crate) fn scroll_chat_to_end() -> Task<Message> {
+    iced::widget::scrollable::snap_to(
+        iced::widget::scrollable::Id::new("chat-msgs"),
+        iced::widget::scrollable::RelativeOffset { x: 0.0, y: 1.0 },
+    )
 }
 
 /// Despacha un turno ya aceptado (el mensaje de usuario ya está en
@@ -933,6 +1044,8 @@ fn begin_analysis_turn(
     }
     state.push_log(log_line);
     // v0.7.3: el analista produce el brief antes de planificar.
+    // v0.9.1: fase visible del orquestador BETA (1/5 analista).
+    crate::app::orchestrator::orch_phase(state, 1, 5, "analista");
     state.push_log("🔎 analizando contexto…".to_string());
     let ws2 = ws.clone();
     let pedido = text.clone();

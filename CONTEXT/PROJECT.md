@@ -89,11 +89,12 @@ ARQHIA_P/
     ├── workspace.rs       # guards + uploads + context_block + snapshot (v1.1)
     ├── git.rs             # repo/rama/commit/push por workspace (v0.7.2)
     ├── updates.rs         # updater embebido (v1.0): latest.json + semver + banner
-    ├── stack/{mod.rs, seed.rs, cloud.rs, mock_cloud.rs}   # STACK local/nube (v0.9/v1.0)
-    ├── mcp.rs             # cliente MCPstdio/HTTP + tools `mcp__*` (v1.0.1, resources/prompts en v1.1)
+    ├── stack/{mod.rs, seed.rs}   # STACK local: FTS5 + seed + legal (v0.9; cloud.rs/mock_cloud.rs en v1.0)
+    ├── skills.rs + skills/embebidas/  # skills locales: SKILL.md + /skill + pestaña Config (v0.9 Track C)
+    ├── mcp.rs             # cliente MCP stdio/HTTP + tools `mcp__*` (mínimo v0.9.3, resources/prompts en v1.0.1)
     ├── license.rs         # licencias ed25519 + planes (v1.1)
     ├── custom.rs          # agentes y flujos custom (v1.1)
-    ├── questionnaire/{mod.rs, levels.rs, ai.rs, templates.rs}  # PROJECT.md + SPECS.md
+    ├── questionnaire/{mod.rs, levels.rs, ai.rs, templates.rs, planning.rs}  # PROJECT.md + SPECS.md + contexto auto (planning.rs v0.9 Track D)
     ├── llm/{mod.rs, openai.rs, anthropic.rs, openrouter.rs, local.rs}
     ├── pricing.rs         # catálogo de modelos/precios (models.dev) + cache
     └── agent/{mod.rs, tools.rs, merge.rs}   # merge.rs en v1.1
@@ -165,6 +166,7 @@ Pendiente de implementar en cualquiera de las versiones v0.8–v1.0:
 
 *   Más opciones de personalización en Configuración (Apariencia, Permisos, Límites).
 *   Coste: desglose por proyecto/chat/modelo y presupuestos.
+*   **Límites de API por tiempo/gasto:** topes configurables por periodo (día/semana/mes) y por gasto acumulado (USD), por provider y globales; aviso al 80%, bloqueo opcional al 100%. Conteo local, sin telemetría.
 *   Opciones de propiedad del código para el STACK (licencia/consentimiento).
 *   Control de datos: archivos, proyectos, caché y contexto (ver/exportar/limpiar).
 *   Especificaciones claras en cada límite (no solo historial del modelo), con **tooltip flotante** al pasar el cursor (ya iniciado en Límites).
@@ -195,20 +197,20 @@ TEMP → loop fix hasta verde → commit (rama ARQHIA) → push (opcional)`.
 Wizard de preguntas fijas que generaba un único `.md` de especificaciones
 (`CONTEXT/ESPEC.md`). Queda como base; el diseño vigente es el de v0.8.
 
-### 7.2 v0.8 — Genérico + por nivel + IA (profundizado en v0.8.1)
+### 7.2 v0.8 — Genérico + por nivel + IA (base 🟢 Done; universal en v0.8.1, reorden + MVP en v0.8.2)
 
 **Paso 0 — Nivel:** `Principiante | Intermedio | Avanzado`.
 
 **Genéricas (siempre):** nombre, descripción, objetivo, características/funcionalidades.
 
-**Por nivel (v0.8.1, reemplaza las listas de v0.8):**
+**Por nivel (v0.8 base) + taxonomía universal (v0.8.1, reemplaza `TipoProyecto` por `Categoria → SysType` con 6 categorías/~24 tipos y preguntas por familia; ver `VERSIONS/v0.8.1.md`):**
 
 *   **Principiante (diseño y decisiones, no código):** estilo visual con
     lista `{minimalista, gamer, corporativo, infantil, retro, oscuro,
     otro}` + referencia libre, plataforma **múltiple** `{web, escritorio,
     móvil iOS, móvil Android, servidor/nube, embebido/IoT,
     multiplataforma}`, facturación `{suscripciones, pago único, api, uso
-    personal, publicidad, freemium}`.
+    personal, publicidad, freemium, código abierto}`.
 *   **Intermedio:** UI/UX, tipo de proyecto `{app web, API/backend,
     framework/librería, escritorio, móvil, CLI, juego, bot/agente, otro}`,
     plataforma múltiple, stack **múltiple** `{Rust, Python, JS/TS, Go,
@@ -224,10 +226,19 @@ adicionales adaptadas a lo respondido. Sin provider, el paso se deshabilita y
 el flujo continúa.
 
 **Salida:** `PROJECT.md` (visión/objetivo/alcance/usuario), `SPECS.md`
-(funcionalidades + UI/UX + plataforma + stack + arquitectura + facturación
-según nivel) y `CONTEXT.md` (índice + estado vivo). Se crea la estructura
-`Project/`, `ToDo.md`, `CONTEXT/`. `ROADMAP.md`/`VERSIONS.md`/`VERSIONS/v0.1.md`
-se generan en el primer **Plan**. `ESPEC.md` se retira (migración con nota
+(funcionalidades + secciones por familia según v0.8.1 + plataforma + stack +
+arquitectura + facturación o licencia según familia) y `CONTEXT.md`
+(índice + estado vivo + origen desde-cero/import). Se crea la estructura
+`Project/`, `ToDo.md`, `CONTEXT/`. Hasta v0.8.1, `ROADMAP.md`/`VERSIONS.md`/
+`VERSIONS/v0.1.md` se generaban en el primer **Plan** manual (chat "Plan
+inicial" con prompt precargado + Enviar); en v0.9 Track D esa
+generación pasó a automática (el Finish disparaba solo el turno Plan con el
+system de convenciones de la casa, sin Enviar manual). **Desde v0.8.2 el
+Finish abre una pantalla de carga (`View::Generating`) que genera sin pasar
+por el chat la serie MVP (`ROADMAP + VERSIONS + v0.1→v0.2→v0.3→v1.0 + ToDo`)
+con el system especial `mvp_prompt` y marcadores `---FILE---`; sin API usa el
+fallback determinista offline.** Al **Abrir** carpeta con código, el modo
+Import pre-rellena y solo pregunta gaps (v0.8.1 §D). `ESPEC.md` se retira (migración con nota
 legacy).
 
 ## 8. Chat & Agente
@@ -298,10 +309,31 @@ legacy).
 *   Se envía al provider que lo soporta: **OpenRouter** `session_id`, **OpenAI/Groq** `prompt_cache_key` (fallback `user`), **Anthropic** header `x-session-id` (trazabilidad); **Local** sin efecto. Helper `llm::session_body_fields`.
 *   Acción `Reiniciar sesión` en el menú `⋯` del chat regenera el id. Mejora caché/coste y trazabilidad; sin provider con soporte no cambia nada.
 
+### 8.11 BETA agentes (v0.9.1)
+
 ### 8.10 Chat UX + modelos con nombre (v0.7.4)
 
 *   **Perfiles de modelo** con **nombre visible** (provider + `base_url` + API key + model + nivel): el nombre es lo que sale en el selector de Config y del composer. CRUD y migración desde el modelo activo.
 *   **Utilidades de chat:** título por IA (fallback al primer mensaje), undo (`Ctrl+Z`, 1 paso), copiar chat, nuevo chat desde un mensaje (bifurcar), fecha/hora por mensaje (`messages.created_at`), reintento con icono `↻` y **citar fuentes** (`Fuentes` clicables) cuando el agente usa `fetch_url`.
+
+### 8.11 BETA agentes (v0.9.1)
+
+*   **5 roles explícitos** (`agent/roles.rs`): Orquestador, Analista, Planner,
+    Worker y Auditor, cada uno con system prompt y tools permitidas propias.
+    El Planner solo Net+Read (sin Write/Bash por construcción del body y por
+    gate de rol en `exec_calls`); el Worker es el único con Write/Bash/Install;
+    el Auditor y el Analista no ejecutan nada.
+*   **Planner Net+Read:** flag `planner_net` en `Permissions` (OFF por defecto,
+    con checkbox en Config → Permisos). Si el pedido menciona URLs sin cubrir,
+    el planner pide permiso Net por el panel habitual antes de salir a la red
+    (Aprobar = consulta con tope 8 KB por fetch y planifica; Denegar =
+    planifica sin docs). Las rutas extra se leen con el permiso Read.
+*   **Loop con re-análisis:** ante `VERDICT: ISSUES`, el analista revisa el
+    TEMP.md (`AgentReanalyze` → `ANALYSIS.md` actualizada) antes del worker de
+    fixes; luego se re-audita hasta verde o tope.
+*   **Visibilidad:** Log `orquestador: fase X/5 — nombre` (analista, planner,
+    workers, auditor, cierre) + línea `checklist: ☑/▶/☐` tras plan, workers y
+    re-análisis; `PLAN.md` con criterio de aceptación por tarea.
 
 ## 9. STACK
 
@@ -320,7 +352,8 @@ legacy).
 
 ### 9.3 Skills (v0.9 locales, v1.0 nube)
 
-*   Carpeta por skill con `SKILL.md` (frontmatter + instrucciones) + recursos/scripts, en `~/.local/share/arqhia/skills/`; ARQHIA trae embebidas (`commit-msg`, `revisar-codigo`).
+*   Carpeta por skill con `SKILL.md` (frontmatter + instrucciones) + recursos/scripts, en `~/.local/share/arqhia/skills/`; ARQHIA trae embebidas (`commit-msg`, `ui-ux`, `code-review`, `test-qa`).
+*   **Dominio (v0.9.2):** `ui-ux` → `CONTEXT/UI-REVIEW.md`, `code-review` → `CONTEXT/CODE-REVIEW.md`, `test-qa` → `CONTEXT/QA-REPORT.md`. El analista las incluye en el contexto del siguiente turno; el auditor sugiere `/skill test-qa` o `/skill code-review` tras ISSUES (sin auto-ejecutar).
 *   Se invocan con `/skill nombre` en el chat (inyecta como contexto, el turno sigue normal) y se administran en Config → Skills.
 *   En la nube son items del STACK con etiqueta `SKILL` (instalar/publicar con el mismo consentimiento que el código; `Uso interno` no sale de local).
 *   Sin permisos propios: sus scripts pasan por el permiso Bash existente.
@@ -341,12 +374,19 @@ legacy).
 | **v0.7.3** | Bucle de estabilidad | Analista dedicado (CONTEXT/specs/outlines) + loop `auditor → fix` hasta verde + commit al cerrar verde + push opcional |
 | **v0.7.4** | Chat UX + modelos con nombre | Perfiles de modelo con nombre visible + título IA + undo + copiar/bifurcar chat + fecha/hora + reintento con icono + citar fuentes |
 | **v0.8** | Cuestionario genérico + nivel + IA, estructura, onboarding y sesiones | Genéricas + por nivel + IA opcional → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md`; onboarding de API; `session_id` estable por chat |
-| **v0.8.1** | Cuestionario profundo (tipo, multi-opción, presets) | `TipoProyecto` (Inter/Avanz) + plataforma/stack múltiples + presets estilo/arq + facturación ×6 → `SPECS.md` con listas |
-| **v0.9** | STACK local + legal + instalador + skills locales | Tags + FTS5 + author/license/consent + identidad local + .deb + CI mínimo + skills (`SKILL.md`, `/skill`, pestaña Config) |
+| **v0.8.1** | Cuestionario universal + import | `Categoria` ×6 + `SysType` ~24 + preguntas por familia + `Licencia`; import auto al Abrir (scan IA + gaps + prefill, merge sin borrar) |
+| **v0.8.2** | Cuestionario reordenado + MVP | Cat→Tipo primero + genéricas contextualizadas + subtipos (lenguaje/OS/plugin/motor) + rama OSS + pantalla de carga con serie v0.1→v1.0 sin chat |
+| **v0.9** | STACK local + legal + identidad + infra skills + contexto auto | Tags + FTS5 + author/license/consent + identidad local + skills infra (`SKILL.md`, `/skill`, pestaña Config) + Track D (post-cuestionario automático con plantilla de la casa) — instalador en v0.9.6 |
+| **v0.9.1** | BETA agentes (5 roles + loop con re-análisis) | `agent/roles.rs` + Planner Net+Read (`planner_net` OFF) + re-análisis del TEMP + fases y checklist en Log + criterios en PLAN.md |
+| **v0.9.2** | Skills de dominio (UI/UX, CodeReview, Test/QA) | 3 embebidas → `CONTEXT/UI-REVIEW.md`, `CODE-REVIEW.md`, `QA-REPORT.md`; manual + sugerida |
+| **v0.9.3** | MCP mínimo (stdio + HTTP) | `mcp.rs` + `[mcp]` + enrutado `mcp__srv__tool` + aprobación Net/auto |
+| **v0.9.4** | Hardening crítico (auditoría) | Anti-symlink + FKs/índices + tests en temp + `directories` + config 600 + anti-SSRF |
+| **v0.9.5** | Calidad estructural (auditoría) | `ChatHistory` + git async + split handlers/views + README/docs/ADRs + `tracing` |
+| **v0.9.6** | Revisión + icono + instalador (puerta de v1.0) | Higiene con backup + refactor + optimización (<30MB, <2s) + tests por rol + `assets/icon.svg/png` + `.deb/.tar.gz` + CI mínimo |
 | **WEB** | Sitio del producto (dependencia, no versionado) | Astro + Cloudflare: descarga, precios, soporte, docs, legal, `updates/latest.json` |
-| **v1.0** | STACK nube + auth + updater + release + skills nube | Push/pull/sync + auth + updater (notificar+descargar) + Microsoft Store (Windows) + backup/export + skills etiqueta `SKILL` + release estable Linux+Windows |
-| **v1.0.1** | MCP mínimo (stdio + HTTP) | `mcp.rs` + `[mcp]` en config + `mcp__srv__tool` con aprobación Net/auto |
-| **v1.1** | Pro (Linux+Windows) | Multi-agent paralelo + sandboxes + merge + agentes/flujos custom + MCP avanzado (pestaña, resources/prompts, item `MCP`) + planes Trial/$5/$12/$20 |
+| **v1.0** | STACK nube + auth + updater + workers async + release + skills nube | Push/pull/sync + auth + updater (notificar+descargar) + **workers async 2–3 (§F)** + Microsoft Store (Windows) + backup/export + skills etiqueta `SKILL` + icono v0.9.6 + MCP mínimo v0.9.3 + release estable Linux+Windows |
+| **v1.0.1** | MCP avanzado | Pestaña MCP + resources/prompts + item STACK `MCP` + auth HTTP |
+| **v1.1** | Pro (Linux+Windows) | Sandboxes + merge sobre el paralelo v1.0 + agentes/flujos custom + planes Trial/$5/$12/$20 (MCP ya en v0.9.3/v1.0.1) |
 | **v1.2** | macOS (condicionado) | Firma Developer ID + notarización + `.dmg` Apple Silicon; se abre con 50–100 PRO de pago |
 
 Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en `WEB.md`.
@@ -363,6 +403,8 @@ Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en
     hay conflicto), multi-workspace por tarea, agentes custom
     (`nombre/descripción/tools/flujo`) y flujos visuales en cadena
     (`Leer > Contexto > Editar > Refactorizar > Ejecutar > Auditar`).
+    Base async (2–3 workers sobre `Project/`, sin sandbox) ya en v1.0 §F;
+    v1.1 la aísla y escala.
 *   Licencias offline `ed25519` en `~/.config/arqhia/license.toml` (600),
     pago vía proveedor externo, sin backend propio ni telemetría de código.
 *   **Alcance de plataforma:** Pro se vende en Linux y Windows (v1.1). macOS
@@ -379,4 +421,4 @@ Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en
 
 ## 13. Próximo Paso
 
-**v0.7.2 — Git nativo + puerta de calidad**, **v0.7.3 — Bucle de estabilidad** y **v0.7.4 — Chat UX + modelos con nombre** implementadas (ver `CONTEXT/VERSIONS/v0.7.2.md`, `v0.7.3.md` y `v0.7.4.md`). **v0.8 — Cuestionario genérico + por nivel + IA, estructura, onboarding y sesiones** y **v0.8.1 — Cuestionario profundo** implementadas y pendientes de prueba en GUI (ver `CONTEXT/VERSIONS/v0.8.md` y `v0.8.1.md`): wizard dinámico por nivel (9/11/12 pasos + IA opcional) → `PROJECT.md` + `SPECS.md` + `CONTEXT.md`; layout `Project/`/`CONTEXT/`/`ToDo.md` (+ `CONTEXT/VERSIONS/`); onboarding de API en Home; `session_id` estable por chat; tipo de proyecto, plataforma/stack múltiples y presets de estilo/arquitectura. Siguiente: v0.9 (STACK local + skills + `.deb` + CI), WEB (dependencia) y v1.0. Ver `HECHO.md` en raíz para estado actual.
+**v0.9.1 y v0.9.2 🟢 Done** (ver `CONTEXT/VERSIONS/`). Siguiente, en orden: **v0.9.3** (MCP mínimo) → **v0.9.4** (hardening crítico, auditoría) → **v0.9.5** (calidad estructural, auditoría) → **v0.9.6** (revisión + icono + instalador, puerta de v1.0) → WEB → **v1.0** (incluye **workers async §F**) → **v1.0.1** (MCP avanzado) → v1.1 (sandboxes + merge sobre el paralelo v1.0) → v1.2. Ver `HECHO.md` para estado actual.

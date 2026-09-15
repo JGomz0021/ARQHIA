@@ -53,6 +53,10 @@ pub struct App {
     pub(crate) perm_extra: String,
     pub(crate) collapsed: std::collections::HashSet<i64>,
     pub(crate) show_project_form: bool,
+    /// Sidebar: sección Proyectos visible (arriba, colapsable).
+    pub(crate) show_projects: bool,
+    /// Sidebar: mostrar todos los chats sueltos tras "..."
+    pub(crate) show_all_loose: bool,
     // v0.3
     pub(crate) agent_running: bool,
     pub(crate) tool_logs: Vec<String>,
@@ -118,9 +122,14 @@ pub struct App {
     pub(crate) q_ai_answers: Vec<String>,
     pub(crate) q_ai_loading: bool,
     pub(crate) q_ai_error: String,
+    /// Índice de la respuesta IA con foco (Tab/Shift+Tab ciclan).
+    pub(crate) q_ai_focus: usize,
     /// El proyecto se creó en este cuestionario y aún no terminó: si se
     /// cancela, se deshace la creación (v0.8.1, sin proyectos fantasma).
     pub(crate) q_owns_project: bool,
+    /// Origen del cuestionario (nuevo o import) + nota del escaneo.
+    pub(crate) q_source: crate::questionnaire::QSource,
+    pub(crate) q_import_note: String,
     // Origen para el Volver de Config (Home o Chat)
     pub(crate) config_from: View,
     // v0.7
@@ -175,6 +184,43 @@ pub struct App {
     pub(crate) chat_sources: Vec<String>,
     /// Generación del título IA (invalida resultados tardíos).
     pub(crate) title_gen: u64,
+    // v0.9 — STACK local (Track A)
+    /// Vista origen para el Volver del panel STACK.
+    pub(crate) stack_from: View,
+    pub(crate) stack_query: String,
+    pub(crate) stack_tags: String,
+    pub(crate) stack_results: Vec<crate::stack::ScoredItem>,
+    pub(crate) stack_selected: Option<crate::stack::FullItem>,
+    pub(crate) stack_status: String,
+    pub(crate) stack_searched: bool,
+    pub(crate) save_title: String,
+    pub(crate) save_tags: String,
+    pub(crate) save_lang: String,
+    pub(crate) save_license: String,
+    pub(crate) save_code: String,
+    pub(crate) stack_opinion: String,
+    pub(crate) stack_bug: String,
+    // v0.9 Track B — staging de identidad (se guarda con IdentitySave).
+    pub(crate) identity_name: String,
+    pub(crate) identity_email: String,
+    // v0.9 Track D — contexto del plan automático post-cuestionario.
+    pub(crate) plan_auto: Option<crate::questionnaire::planning::AutoPlanCtx>,
+    // v0.8.2 — pantalla de carga MVP (generación sin pasar por el chat).
+    pub(crate) gen_active: bool,
+    pub(crate) gen_phase: String,
+    pub(crate) gen_progress: f32,
+    pub(crate) gen_error: String,
+    /// Generación en curso (invalida resultados tardíos tras cancelar).
+    pub(crate) gen_run: u64,
+    /// Planner a la espera de permiso Net (v0.9.1): el pedido menciona URLs
+    /// y el flag `planner_net` no las cubre; al aprobar/denegar se reanuda.
+    pub(crate) pending_planner: Option<super::orchestrator::PendingPlanner>,
+    /// TEMP.md pendiente de re-análisis en el ciclo de fix (v0.9.1):
+    /// el analista lo revisa antes del worker de fixes.
+    pub(crate) pending_fix: Option<String>,
+    /// Sugerencias de `/skill` para lo que hay escrito en el composer
+    /// (nombre + descripción + preview; se recalcula en cada InputChanged).
+    pub(crate) skill_suggest: Vec<crate::skills::SkillSuggestion>,
 }
 
 /// Snapshot de 1 paso para Undo v0.7.4 (en memoria, alcance acotado).
@@ -220,6 +266,9 @@ impl Default for App {
             Provider::OpenRouter => config.openrouter.clone(),
             Provider::Local => config.local.clone(),
         };
+        // v0.9 Track B: staging de identidad (vive en state hasta Guardar).
+        let identity_name = config.identity.name.clone();
+        let identity_email = config.identity.email.clone();
         let mut app = Self {
             input: String::new(),
             messages,
@@ -266,6 +315,8 @@ impl Default for App {
             perm_extra: String::new(),
             collapsed: std::collections::HashSet::new(),
             show_project_form: false,
+            show_projects: true,
+            show_all_loose: false,
             agent_running: false,
             tool_logs: Vec::new(),
             workspace_inputs: HashMap::new(),
@@ -312,7 +363,10 @@ impl Default for App {
             q_ai_answers: Vec::new(),
             q_ai_loading: false,
             q_ai_error: String::new(),
+            q_ai_focus: 0,
             q_owns_project: false,
+            q_source: crate::questionnaire::QSource::default(),
+            q_import_note: String::new(),
             config_from: View::Home,
             config_tab: ConfigTab::Api,
             config_pending_delete: None,
@@ -331,8 +385,43 @@ impl Default for App {
             onboarding_dismissed: false,
             mode_anim: None,
             mode_anim_gen: 0,
+            stack_from: View::Home,
+            stack_query: String::new(),
+            stack_tags: String::new(),
+            stack_results: Vec::new(),
+            stack_selected: None,
+            stack_status: String::new(),
+            stack_searched: false,
+            save_title: String::new(),
+            save_tags: String::new(),
+            save_lang: "rust".to_string(),
+            save_license: "Uso interno".to_string(),
+            save_code: String::new(),
+            stack_opinion: String::new(),
+            stack_bug: String::new(),
+            identity_name,
+            identity_email,
+            plan_auto: None,
+            gen_active: false,
+            gen_phase: String::new(),
+            gen_progress: 0.0,
+            gen_error: String::new(),
+            gen_run: 0,
+            pending_planner: None,
+            pending_fix: None,
+            skill_suggest: Vec::new(),
         };
         app.sync_git_staging();
+        // v0.9: seeds del STACK + skills embebidas (una sola vez, idempotente).
+        match crate::stack::seed::seed_missing() {
+            Ok(0) => {}
+            Ok(n) => app.push_log(format!(
+                "STACK local: {n} snippet(s) nuevos ({} en catálogo).",
+                crate::stack::seed::SEED_COUNT
+            )),
+            Err(e) => app.push_log(format!("STACK: no se pudo sembrar ({e})")),
+        }
+        let _ = crate::skills::ensure_embedded();
         app.reparse_md();
         app
     }
@@ -442,7 +531,7 @@ impl App {
             return None;
         }
         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-            format!("{}/{rest}", std::env::var("HOME").unwrap_or_else(|_| ".".to_string()))
+            format!("{}/{rest}", std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()))
         } else {
             raw.to_string()
         };
@@ -517,6 +606,8 @@ pub(crate) fn clear_turn_state(state: &mut App) {
     state.worker_answers.clear();
     state.pending_calls.clear();
     state.denied_tools.clear();
+    state.pending_planner = None;
+    state.pending_fix = None;
     state.show_plan = false;
     state.plan_md.clear();
     state.chat_menu = None;

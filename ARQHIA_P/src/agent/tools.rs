@@ -26,6 +26,8 @@ pub struct ExecPolicy {
     pub git_approved: bool,
     /// Ramas intocables (main/master por defecto).
     pub git_protected: Vec<String>,
+    /// Servidores MCP por nombre (v0.9.3): para enrutar mcp__* y decidir Install/Net.
+    pub mcp_servers: std::collections::HashMap<String, crate::config::McpServerConfig>,
 }
 
 impl Default for ExecPolicy {
@@ -41,6 +43,7 @@ impl Default for ExecPolicy {
             git_push_enabled: false,
             git_approved: false,
             git_protected: vec!["main".to_string(), "master".to_string()],
+            mcp_servers: std::collections::HashMap::new(),
         }
     }
 }
@@ -114,7 +117,33 @@ pub fn policy_for(
         git_push_enabled: git.push_enabled,
         git_approved: batch_approved,
         git_protected: git.protected.clone(),
+        mcp_servers: std::collections::HashMap::new(),
     }
+}
+
+/// Política efectiva con servidores MCP (v0.9.3).
+#[allow(clippy::too_many_arguments)]
+pub fn policy_for_with_mcp(
+    auto_install: bool,
+    batch_approved: bool,
+    timeout_s: u64,
+    max_read_chars: usize,
+    net_domains: &[String],
+    ignores: &[String],
+    git: &GitConfig,
+    mcp_servers: &std::collections::HashMap<String, crate::config::McpServerConfig>,
+) -> ExecPolicy {
+    let mut p = policy_for(
+        auto_install,
+        batch_approved,
+        timeout_s,
+        max_read_chars,
+        net_domains,
+        ignores,
+        git,
+    );
+    p.mcp_servers = mcp_servers.clone();
+    p
 }
 
 /// Resuelve `target` (relativo al workspace o absoluto) y verifica que quede
@@ -623,6 +652,10 @@ pub fn category(name: &str) -> ToolCat {
 
 /// Categoría real de una llamada (bash puede ser Install o git según args).
 pub fn category_of_call(name: &str, args: &serde_json::Value) -> ToolCat {
+    // MCP v0.9.3: mcp__srv__tool -> Net salvo auto=true (Read) o Install si command es npx.
+    if crate::mcp::is_mcp_tool(name) {
+        return ToolCat::Net;
+    }
     if name == "bash" {
         let cmd = args.get("cmd").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(kind) = classify_git(cmd) {
@@ -637,6 +670,26 @@ pub fn category_of_call(name: &str, args: &serde_json::Value) -> ToolCat {
         return ToolCat::Bash;
     }
     category(name)
+}
+
+/// Categoría de una llamada MCP conociendo la config del servidor (v0.9.3).
+/// `auto=true` -> Read (automático), `command=npx` -> Install, resto -> Net.
+pub fn category_of_mcp_call(
+    name: &str,
+    servers: &std::collections::HashMap<String, crate::config::McpServerConfig>,
+) -> ToolCat {
+    let Some((srv, _)) = crate::mcp::parse_mcp_tool(name) else {
+        return ToolCat::Net;
+    };
+    if let Some(cfg) = servers.get(&srv) {
+        if cfg.is_install() {
+            return ToolCat::Install;
+        }
+        if cfg.auto {
+            return ToolCat::Read;
+        }
+    }
+    ToolCat::Net
 }
 
 /// Bloque de coincidencia con contexto (v0.7.1): 3 líneas antes/después,
@@ -971,12 +1024,78 @@ pub async fn execute(
             let u = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
             fetch_url(u, policy).await
         }
+        other if crate::mcp::is_mcp_tool(other) => {
+            execute_mcp(other, args, policy).await
+        }
         other => Err(format!("Tool desconocida: {other}")),
     };
     match res {
         Ok(ok) => ok,
         Err(e) => format!("❌ {e}"),
     }
+}
+
+async fn execute_mcp(name: &str, args: &serde_json::Value, policy: &ExecPolicy) -> Result<String, String> {
+    let Some((srv, tool)) = crate::mcp::parse_mcp_tool(name) else {
+        return Err(format!("MCP tool inválida: {name}"));
+    };
+    let cfg = policy
+        .mcp_servers
+        .get(&srv)
+        .ok_or_else(|| format!("Servidor MCP no configurado: {srv}"))?;
+    // npx etc requiere Install
+    if cfg.is_install() && !policy.allow_install {
+        return Err("⛔ MCP con npx/uvx requiere permiso Install.".to_string());
+    }
+    // auto=false ya cubierto por categoría, pero aquí respetamos timeout
+    // args es el input del tool (ya viene como objeto JSON)
+    let input = if args.is_object() { args.clone() } else { serde_json::json!({}) };
+    // Si el método es resources/* o prompts/* -> error hasta v1.0.1
+    if tool.starts_with("resources/") || tool.starts_with("prompts/") {
+        return Err("resources/prompts hasta v1.0.1".to_string());
+    }
+    match cfg.transport {
+        crate::config::McpTransport::Stdio => crate::mcp::call_tool_stdio(cfg, &tool, input).await,
+        crate::config::McpTransport::Http => crate::mcp::call_tool_http(cfg, &tool, input).await,
+    }
+}
+
+/// Helpers para anexar schemas MCP a los nativos (v0.9.3).
+pub fn mcp_openai_schemas(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+    let mut out = Vec::new();
+    for (srv, tools) in collected {
+        for t in tools {
+            out.push(crate::mcp::tool_to_openai_schema(srv, t));
+        }
+    }
+    serde_json::Value::Array(out)
+}
+pub fn mcp_anthropic_schemas(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+    let mut out = Vec::new();
+    for (srv, tools) in collected {
+        for t in tools {
+            out.push(crate::mcp::tool_to_anthropic_schema(srv, t));
+        }
+    }
+    serde_json::Value::Array(out)
+}
+
+/// Combina schemas nativos + MCP (trunca aviso si > 20 tools totales).
+pub fn openai_schemas_with_mcp(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+    let mut base = openai_schemas();
+    let mcp = mcp_openai_schemas(collected);
+    if let (Some(arr), Some(marr)) = (base.as_array_mut(), mcp.as_array()) {
+        arr.extend(marr.clone());
+    }
+    base
+}
+pub fn anthropic_schemas_with_mcp(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+    let mut base = anthropic_schemas();
+    let mcp = mcp_anthropic_schemas(collected);
+    if let (Some(arr), Some(marr)) = (base.as_array_mut(), mcp.as_array()) {
+        arr.extend(marr.clone());
+    }
+    base
 }
 
 /// Schemas OpenAI-compatible para function calling.
@@ -1328,6 +1447,75 @@ mod tests {
         let anth = anthropic_schemas();
         assert!(anth.as_array().unwrap().iter().any(|t| t["name"] == "get_file_outline"));
         assert_eq!(category("get_file_outline"), ToolCat::Read);
+    }
+
+    #[test]
+    fn mcp_category_and_schemas() {
+        use std::collections::HashMap;
+        use crate::config::{McpServerConfig, McpTransport};
+        // auto=false -> Net (pide permiso), auto=true -> Read (auto), npx -> Install
+        let mut servers = HashMap::new();
+        servers.insert("docs".to_string(), McpServerConfig { transport: McpTransport::Stdio, command: "my-server".to_string(), args: vec![], url: "".to_string(), auto: false, timeout_s: 10 });
+        assert_eq!(category_of_mcp_call("mcp__docs__echo", &servers), ToolCat::Net);
+        servers.get_mut("docs").unwrap().auto = true;
+        assert_eq!(category_of_mcp_call("mcp__docs__echo", &servers), ToolCat::Read);
+        servers.get_mut("docs").unwrap().command = "npx".to_string();
+        assert_eq!(category_of_mcp_call("mcp__docs__echo", &servers), ToolCat::Install);
+        // Schemas anexados
+        let tool = crate::mcp::McpTool { name: "echo".to_string(), description: "hi".to_string(), input_schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}}}) };
+        let mut coll = HashMap::new();
+        coll.insert("docs".to_string(), vec![tool]);
+        let open = mcp_openai_schemas(&coll);
+        assert_eq!(open.as_array().unwrap().len(), 1);
+        assert_eq!(open[0]["function"]["name"], "mcp__docs__echo");
+        assert!(open[0]["function"]["description"].as_str().unwrap().contains("[MCP docs]"));
+        let with = openai_schemas_with_mcp(&coll);
+        assert!(with.as_array().unwrap().len() > 9);
+    }
+
+    #[tokio::test]
+    async fn mcp_e2e_via_execute_with_stub() {
+        crate::mcp::clear_cache();
+        let dir = std::env::temp_dir().join("arqhia-mcp-tools-e2e");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("stub.py");
+        std::fs::write(&script, r#"import sys, json
+for line in sys.stdin:
+    line=line.strip()
+    if not line: continue
+    try: req=json.loads(line)
+    except: continue
+    mid=req.get("id")
+    method=req.get("method")
+    if method=="initialize":
+        sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"protocolVersion":"2024-11-05","capabilities":{}}})+"\n"); sys.stdout.flush()
+    elif method=="notifications/initialized": continue
+    elif method=="tools/list":
+        sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"tools":[{"name":"echo","description":"echo","inputSchema":{"type":"object","properties":{"text":{"type":"string"}}}}]}})+"\n"); sys.stdout.flush()
+    elif method=="tools/call":
+        args=req.get("params",{}).get("arguments",{}); txt=args.get("text","")
+        sys.stdout.write(json.dumps({"jsonrpc":"2.0","id":mid,"result":{"content":[{"type":"text","text":f"echo:{txt}"}]}})+"\n"); sys.stdout.flush()
+"#).unwrap();
+        let ws = tmp_ws("mcp-e2e");
+        let mut servers = std::collections::HashMap::new();
+        servers.insert("stub".to_string(), crate::config::McpServerConfig { transport: crate::config::McpTransport::Stdio, command: "python3".to_string(), args: vec![script.to_string_lossy().to_string()], url: "".to_string(), auto: false, timeout_s: 10 });
+        // list via mcp direct
+        let tools = crate::mcp::list_tools_stdio("stub", servers.get("stub").unwrap()).await.unwrap();
+        assert_eq!(tools.len(), 1);
+        // execute via tools::execute with Install gating OFF (should pass because command is python3, not npx)
+        let mut policy = ExecPolicy { mcp_servers: servers.clone(), ..ExecPolicy::default() };
+        policy.allow_install = true; // for stdio we don't need Install, but set true
+        let out = execute(&ws, &[], "mcp__stub__echo", &serde_json::json!({"text":"hola"}), &policy).await;
+        assert!(out.contains("echo:hola"), "{out}");
+        // npx server requires Install -> without allow_install should fail
+        let mut npx_servers = std::collections::HashMap::new();
+        npx_servers.insert("npx-srv".to_string(), crate::config::McpServerConfig { transport: crate::config::McpTransport::Stdio, command: "npx".to_string(), args: vec![], url: "".to_string(), auto: false, timeout_s: 10 });
+        let pol2 = ExecPolicy { mcp_servers: npx_servers, allow_install: false, ..ExecPolicy::default() };
+        let err = execute(&ws, &[], "mcp__npx-srv__echo", &serde_json::json!({}), &pol2).await;
+        assert!(err.contains("Install"), "{err}");
+        crate::mcp::clear_cache();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
 }

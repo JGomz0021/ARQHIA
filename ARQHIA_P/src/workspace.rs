@@ -9,7 +9,7 @@ pub fn validate(raw: &str) -> Result<PathBuf, String> {
     }
     // Expande ~ inicial
     let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let home = std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string());
         format!("{home}/{rest}")
     } else {
         trimmed.to_string()
@@ -86,11 +86,56 @@ pub fn slugify(name: &str) -> String {
 
 /// Carpeta por defecto para un proyecto nuevo: ~/ARQHIA/projects/{slug}.
 pub fn default_project_dir(name: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let home = std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home)
         .join("ARQHIA")
         .join("projects")
         .join(slugify(name))
+}
+
+/// ¿La carpeta tiene contenido (no vacía)? Para el import auto v0.8.1.
+pub fn is_nonempty_dir(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    std::fs::read_dir(dir).map(|mut it| it.next().is_some()).unwrap_or(false)
+}
+
+/// ¿Parece un proyecto con código? Manifiestos o más de 2 archivos
+/// (ignora `target/.git/node_modules/*.lock`).
+pub fn scan_import(dir: &Path) -> bool {
+    if !dir.is_dir() {
+        return false;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut names: Vec<String> = Vec::new();
+    for e in entries.flatten().take(60) {
+        let n = e.file_name().to_string_lossy().to_string();
+        if matches!(n.as_str(), "target" | ".git" | "node_modules") {
+            continue;
+        }
+        if n.ends_with(".lock") {
+            continue;
+        }
+        names.push(n);
+    }
+    if names.is_empty() {
+        return false;
+    }
+    const MANIFESTS: [&str; 6] = [
+        "Cargo.toml",
+        "package.json",
+        "go.mod",
+        "pyproject.toml",
+        "requirements.txt",
+        "Dockerfile",
+    ];
+    if names.iter().any(|n| MANIFESTS.contains(&n.as_str()) || n == ".git") {
+        return true;
+    }
+    names.len() > 2
 }
 
 /// Estructura v0.8 del proyecto generado: `Project/`, `ToDo.md`, `CONTEXT/`.
@@ -294,6 +339,22 @@ pub fn delete_upload(workspace: &Path, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_import_detects_code_and_empty() {
+        let base = std::env::temp_dir().join("arqhia-scan-import");
+        let _ = std::fs::remove_dir_all(&base);
+        let empty = base.join("empty");
+        let code = base.join("code");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::create_dir_all(&code).unwrap();
+        assert!(!is_nonempty_dir(&empty));
+        assert!(!scan_import(&empty));
+        std::fs::write(code.join("Cargo.toml"), "[package]").unwrap();
+        assert!(is_nonempty_dir(&code));
+        assert!(scan_import(&code));
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     #[test]
     fn project_layout_and_espec_migration() {

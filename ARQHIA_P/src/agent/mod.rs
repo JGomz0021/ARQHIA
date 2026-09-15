@@ -1,3 +1,4 @@
+pub mod roles;
 pub mod tools;
 
 use crate::config::{Provider, ProviderConfig};
@@ -67,6 +68,7 @@ mod live_tests {
             None,
             &cfg,
             "Work",
+            None,
         )
         .await
         .expect("planner falló");
@@ -87,7 +89,7 @@ mod live_tests {
                     super::StepOutcome::Calls { calls, assistant_msg } => {
                         raw.push(assistant_msg);
                         let (append, logs) =
-                            super::exec_calls(provider, &ws, &[], step, &calls, &super::tools::ExecPolicy::default()).await;
+                            super::exec_calls(provider, &ws, &[], step, &calls, &super::tools::ExecPolicy::default(), super::roles::Role::Worker).await;
                         for l in &logs {
                             eprintln!("WORKER{i} LOG: {l}");
                         }
@@ -193,7 +195,7 @@ pub fn read_analysis_md(workspace: &Path) -> Option<String> {
 /// Genérico: sirve para ESPEC.md (v0.5-v0.7) y PROJECT/SPECS/CONTEXT.md (v0.8).
 /// `skip_analysis` evita realimentar el propio brief.
 pub fn read_context_docs(workspace: &Path) -> String {
-    const NAMES: [&str; 8] = [
+    const NAMES: [&str; 11] = [
         "PROJECT.md",
         "SPECS.md",
         "ESPEC.md",
@@ -202,6 +204,11 @@ pub fn read_context_docs(workspace: &Path) -> String {
         "ROADMAP.md",
         "PLAN.md",
         "TEMP.md",
+        // v0.9.2: reportes de skills de dominio (los lee el Orquestador
+        // en el siguiente turno).
+        "UI-REVIEW.md",
+        "CODE-REVIEW.md",
+        "QA-REPORT.md",
     ];
     let dir = workspace.join("CONTEXT");
     let mut out = String::new();
@@ -277,7 +284,7 @@ pub async fn analyze_workspace(
     workspace: &Path,
     pedido: &str,
 ) -> Result<String, String> {
-    let system = "Eres el analista de ARQHIA. Antes de planificar, produce un brief BREVE en Markdown (máx 200 palabras) con estas secciones: Estado actual, Restricciones, Archivos que toca, Riesgos. No ejecutes herramientas; solo analiza el material dado.";
+    let system = roles::Role::Analista.system_prompt();
     let user = format!(
         "Pedido del usuario:\n{pedido}\n\n## Árbol del workspace\n{}\n\n## Docs de CONTEXT/\n{}\n\n## Firmas del código\n{}",
         crate::workspace::context_block(workspace),
@@ -501,10 +508,22 @@ async fn llm_step_openai(
     let client = crate::llm::http_client();
     let mut messages = vec![json!({"role": "system", "content": system})];
     messages.extend(raw.iter().cloned());
+    // v0.9.3: anexa tools MCP si hay servidores configurados (cache 5min, no bloquea si cae)
+    let mcp_servers = crate::config::AppConfig::load().mcp.servers;
+    let tools_val = if mcp_servers.is_empty() {
+        tools::openai_schemas()
+    } else {
+        let collected = crate::mcp::collect_mcp_tools(&mcp_servers).await;
+        if collected.is_empty() {
+            tools::openai_schemas()
+        } else {
+            tools::openai_schemas_with_mcp(&collected)
+        }
+    };
     let body = json!({
         "model": cfg.model,
         "messages": messages,
-        "tools": tools::openai_schemas(),
+        "tools": tools_val,
         "tool_choice": "auto",
         "temperature": 0.2,
     });
@@ -613,11 +632,22 @@ async fn llm_step_anthropic(    cfg: &ProviderConfig,
     let base = crate::llm::normalize_base_url(&cfg.base_url);
     let url = format!("{base}/v1/messages");
     let client = crate::llm::http_client();
+    let mcp_servers = crate::config::AppConfig::load().mcp.servers;
+    let tools_val = if mcp_servers.is_empty() {
+        tools::anthropic_schemas()
+    } else {
+        let collected = crate::mcp::collect_mcp_tools(&mcp_servers).await;
+        if collected.is_empty() {
+            tools::anthropic_schemas()
+        } else {
+            tools::anthropic_schemas_with_mcp(&collected)
+        }
+    };
     let body = json!({
         "model": cfg.model,
         "max_tokens": 2048,
         "system": system,
-        "tools": tools::anthropic_schemas(),
+        "tools": tools_val,
         "messages": raw,
     });
     let resp = client
@@ -668,6 +698,8 @@ async fn llm_step_anthropic(    cfg: &ProviderConfig,
 }
 
 /// Ejecuta llamadas ya aprobadas. Devuelve (mensajes a anexar al historial, logs).
+/// `role` es el gate POR ROL (v0.9.1): el Planner nunca escribe aunque el
+/// lote venga aprobado; solo el Worker ejecuta Write/Bash/Install.
 pub async fn exec_calls(
     provider: Provider,
     workspace: &Path,
@@ -675,9 +707,21 @@ pub async fn exec_calls(
     step: usize,
     calls: &[PendingCall],
     policy: &tools::ExecPolicy,
+    role: roles::Role,
 ) -> (Vec<Value>, Vec<String>) {
     let mut append = Vec::new();
     let mut logs = Vec::new();
+    // Gate por rol (v0.9.1): lo que el rol no permite ni se ejecuta.
+    let mut allowed: Vec<&PendingCall> = Vec::new();
+    for call in calls {
+        if role.allows_tool(&call.name, &call.args) {
+            allowed.push(call);
+        } else {
+            logs.push(format!("⛔ {} denegado por rol {}", call.name, role.label()));
+            append.push(role_denial_msg(provider, call, role));
+        }
+    }
+    let calls = allowed;
     match provider {
         Provider::OpenAI | Provider::OpenRouter | Provider::Local => {
             for call in calls {
@@ -715,6 +759,32 @@ pub async fn exec_calls(
         }
     }
     (append, logs)
+}
+
+/// Mensaje de "denegado por rol" para UNA llamada (v0.9.1), en el formato
+/// de cada provider.
+pub fn role_denial_msg(provider: Provider, call: &PendingCall, role: roles::Role) -> Value {
+    let text = format!(
+        "⛔ El rol {} no puede usar `{}`. Continúa sin ella o propón una alternativa.",
+        role.label(),
+        call.name,
+    );
+    match provider {
+        Provider::OpenAI | Provider::OpenRouter | Provider::Local => json!({
+            "role": "tool",
+            "tool_call_id": call.id,
+            "content": text,
+        }),
+        Provider::Anthropic => json!({
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": call.id,
+                "content": text,
+                "is_error": true,
+            }],
+        }),
+    }
 }
 
 /// Mensajes de "denegado por el usuario" con el formato de cada provider.
@@ -770,7 +840,7 @@ pub async fn run_turn(
             StepOutcome::Final(answer) => return Ok(AgentResult { answer, logs }),
             StepOutcome::Calls { calls, assistant_msg } => {
                 raw.push(assistant_msg);
-                let (append, step_logs) = exec_calls(provider, &workspace, &[], step, &calls, &tools::ExecPolicy::default()).await;
+                let (append, step_logs) = exec_calls(provider, &workspace, &[], step, &calls, &tools::ExecPolicy::default(), roles::Role::Worker).await;
                 logs.extend(step_logs);
                 raw.extend(append);
             }
@@ -790,6 +860,10 @@ pub async fn run_turn(
 pub struct WTask {
     pub desc: String,
     pub files: Vec<String>,
+    /// Criterio de aceptación verificable (v0.9.1): qué debe cumplirse
+    /// para dar la tarea por hecha. Vacío = sin criterio explícito.
+    #[allow(dead_code)]
+    pub accept: String,
 }
 
 /// Planner: 1 llamada sin tools que divide el pedido en 2-3 tareas disjuntas.
@@ -808,6 +882,8 @@ pub fn planner_request_body(cfg: &ProviderConfig, system: &str, user: &str) -> V
     })
 }
 
+/// `extra_ctx` (v0.9.1): contexto Net+Read ya autorizado (docs + rutas extra).
+#[allow(clippy::too_many_arguments)]
 pub async fn plan_tasks(
     provider: Provider,
     user_text: &str,
@@ -816,9 +892,11 @@ pub async fn plan_tasks(
     brief: Option<&str>,
     cfg: &ProviderConfig,
     mode_label: &str,
+    extra_ctx: Option<&str>,
 ) -> Result<Vec<WTask>, String> {
     let system = format!(
-        "Eres el planificador de ARQHIA. Divide el pedido del usuario en 2 o 3 subtareas de código DISJUNTAS (archivos distintos, sin solaparse). Responde SOLO con un array JSON, sin markdown ni texto extra, con este formato exacto: [{{\"desc\": \"...\", \"files\": [\"src/a.rs\"]}}]. Si el pedido es trivial, responde con 1 sola tarea. Modo actual: {mode_label} (solo planificas: nunca ejecutas herramientas)."
+        "{}\n\nDivide el pedido del usuario en 2 o 3 subtareas de código DISJUNTAS (archivos distintos, sin solaparse), cada una con 1 criterio de aceptación verificable. Responde SOLO con un array JSON, sin markdown ni texto extra, con este formato exacto: [{{\"desc\": \"...\", \"files\": [\"src/a.rs\"], \"accept\": \"...\"}}]. Si el pedido es trivial, responde con 1 sola tarea. Modo actual: {mode_label} (solo planificas: nunca ejecutas herramientas).",
+        roles::Role::Planner.system_prompt()
     );
     let mut user = format!("Contexto del workspace:\n{context}\n\nPedido del usuario:\n{user_text}");
     if let Some(b) = brief {
@@ -828,6 +906,13 @@ pub async fn plan_tasks(
     if let Some(e) = espec {
         let cut: String = e.chars().take(2000).collect();
         user.push_str(&format!("\n\nEspecificación del proyecto (SPECS.md):\n{cut}"));
+    }
+    // v0.9.1: contexto Net+Read del planner (docs externos + rutas extra).
+    if let Some(x) = extra_ctx {
+        let cut: String = x.chars().take(9000).collect();
+        if !cut.trim().is_empty() {
+            user.push_str(&format!("\n\nContexto extra del planner (Net+Read):\n{cut}"));
+        }
     }
     // El body OpenAI-compat sale del constructor auditado; Anthropic va por
     // simple_chat (body propio también sin tools).
@@ -844,6 +929,7 @@ pub async fn plan_tasks(
     Ok(vec![WTask {
         desc: user_text.to_string(),
         files: Vec::new(),
+        accept: String::new(),
     }])
 }
 
@@ -875,9 +961,18 @@ fn parse_tasks(answer: &str) -> Option<Vec<WTask>> {
                     .collect()
             })
             .unwrap_or_default();
+        // v0.9.1: criterio de aceptación por tarea (opcional en el JSON).
+        let accept = item["accept"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(200)
+            .collect();
         out.push(WTask {
             desc: desc.to_string(),
             files,
+            accept,
         });
     }
     if out.is_empty() {
@@ -992,6 +1087,28 @@ pub async fn ai_title(
     Ok(crate::titles::sanitize_ai_title(&out, first_msg))
 }
 
+/// Descarga las URLs del planner (v0.9.1, Net) con la política ya aprobada
+/// y las recorta a `roles::PLANNER_FETCH_CAP` chars cada una. El llamador
+/// decide el permiso ANTES (ver `roles::planner_urls_needing_permission`):
+/// aquí solo se sale a la red con permiso concedido.
+pub async fn fetch_planner_net_block(urls: &[String], policy: &tools::ExecPolicy) -> Option<String> {
+    let mut parts = Vec::new();
+    for u in urls.iter().take(3) {
+        match tools::fetch_url(u, policy).await {
+            Ok(text) => {
+                let cut: String = text.chars().take(roles::PLANNER_FETCH_CAP).collect();
+                parts.push(format!("### Doc externa: {u}\n{cut}"));
+            }
+            Err(e) => parts.push(format!("### Doc externa: {u}\n(no se pudo descargar: {e})")),
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
 /// Extrae URLs http(s) de un texto (v0.7.4 Fuentes): para citar fuentes tras fetch_url.
 pub fn extract_urls(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -1024,7 +1141,7 @@ pub async fn audit_workspace(
     let files = crate::workspace::list_top(workspace, 30).join("\n");
     let review_raw = simple_chat(
         provider,
-        "Eres el auditor de ARQHIA. SOLO lees: lista problemas concretos (errores, supuestos rotos, archivos que no cuadran). Si todo está bien responde exactamente: SIN ISSUES.",
+        roles::Role::Auditor.system_prompt(),
         &format!("Archivos del workspace:\n{files}\n\nÚltimos cambios: revisa coherencia general."),
         cfg,
     )
@@ -1118,20 +1235,25 @@ pub fn temp_has_issues(temp: &str) -> bool {
 
 pub const AGENTS_TEMPLATE: &str = r#"# AGENTS.md — reglas del orquestador ARQHIA
 
-## Roles
-- planner: divide el pedido en subtareas disjuntas (archivos distintos).
-- worker (generador): ejecuta UNA subtarea con read/write/edit/delete/list/bash/search/fetch_url.
-- auditor: solo lee y reporta a CONTEXT/TEMP.md. Nunca escribe código.
+## Roles (v0.9.1: 5 roles explícitos)
+- orquestador: recibe el objetivo, decide plan directo vs work, lanza fases, escribe checklist y cierra (commit solo en verde). No ejecuta tools.
+- analista: 1 llamada sin tools → `CONTEXT/ANALYSIS.md` (Estado, Restricciones, Archivos, Riesgos; ≤200 palabras). En cada ciclo de fix RE-ANALIZA `TEMP.md` antes del arreglo.
+- planner: divide el pedido en 2–3 subtareas disjuntas (archivos distintos) con criterio de aceptación → `CONTEXT/PLAN.md`. Solo Net+Read (fetch_url con permiso Net + lectura de rutas extra); NUNCA Write/Bash por construcción.
+- worker (generador): ejecuta UNA subtarea con read/write/edit/delete/list/bash/search/fetch_url. Único con Write/Bash/Install (según permisos).
+- auditor: solo lee y reporta a `CONTEXT/TEMP.md` (`VERDICT: CLEAN|ISSUES` + `VERIFY: OK|FAIL` + `git diff --stat`). Nunca escribe código.
+
+## Flujo
+Orquestador > Analista (ANALYSIS.md) > Planner (PLAN.md) > Workers > Auditor (TEMP.md) > CLEAN fin + commit > ISSUES Analista revisa > Workers fix > Auditor > loop.
 
 ## Tools permitidas
-read_file (paginado: offset/limit), get_file_outline, write_file, edit_file, delete_file, list_dir, search_files (bloques con contexto), bash (allowlist + git con política por subcomando), fetch_url (dominios).
+read_file (paginado: offset/limit), get_file_outline, write_file, edit_file, delete_file, list_dir, search_files (bloques con contexto), bash (allowlist + git con política por subcomando), fetch_url (dominios), mcp__* (tools MCP stdio/HTTP, categoría Net/auto, npx pide Install).
 
 ## Reglas
 - Rutas relativas al workspace. Nunca escribir fuera (guard estricto).
 - `edit_file` exige 1 coincidencia exacta de `old`.
-- Pasos LLM->tools y tareas del plan según Límites de config; installs y red piden permiso (Install/Net).
+- Pasos LLM->tools y tareas del plan según Límites de config; installs y red piden permiso (Install/Net; el planner pide Net la 1ª vez).
 - Git (v0.7.2): se trabaja en la rama `ARQHIA`; `main`/`master` protegidas. Push con aprobación; destructivos bloqueados.
-- Tras workers, el auditor revisa (código + `cargo check`/`test`/`clippy`) y escribe CONTEXT/TEMP.md; el bucle `auditor -> fix` repite hasta quedar verde (tope `Limits.max_fix_cycles`, 0 = ilimitado). El auto-commit solo con el turno verde.
+- Tras workers, el auditor revisa (código + `cargo check`/`test`/`clippy`) y escribe CONTEXT/TEMP.md; el bucle `auditor -> analista -> fix` repite hasta quedar verde (tope `Limits.max_fix_cycles`, 0 = ilimitado). El auto-commit solo con el turno verde.
 "#;
 
 /// Crea AGENTS.md en el workspace si no existe. Devuelve línea de log o None.
@@ -1174,10 +1296,12 @@ mod tests {
 
     #[test]
     fn parse_tasks_plain_and_fenced() {
-        let plain = r#"[{"desc": "Crear a.rs", "files": ["src/a.rs"]}, {"desc": "Crear b.rs", "files": ["src/b.rs"]}]"#;
+        let plain = r#"[{"desc": "Crear a.rs", "files": ["src/a.rs"], "accept": "compila"}, {"desc": "Crear b.rs", "files": ["src/b.rs"]}]"#;
         let tasks = parse_tasks(plain).unwrap();
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].files, vec!["src/a.rs"]);
+        assert_eq!(tasks[0].accept, "compila");
+        assert!(tasks[1].accept.is_empty(), "accept es opcional");
         let fenced = format!("Aquí va:\n```json\n{plain}\n```\nlisto");
         assert_eq!(parse_tasks(&fenced).unwrap().len(), 2);
         assert!(parse_tasks("no hay json aquí").is_none());
@@ -1216,16 +1340,81 @@ mod tests {
     }
 
     #[test]
-    fn worker_system_mentions_task() {
-        let t = WTask {
+    fn context_docs_include_skill_reports() {
+        // v0.9.2: el siguiente turno del Orquestador lee los reportes de
+        // skills de dominio vía `read_context_docs`.
+        let dir = std::env::temp_dir().join("arqhia-skill-reports-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("CONTEXT")).unwrap();
+        std::fs::write(
+            dir.join("CONTEXT").join("UI-REVIEW.md"),
+            "## Chat\n- [Media] Aumentar el espaciado del composer",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("CONTEXT").join("CODE-REVIEW.md"),
+            "- [Alta] src/main.rs:10 — unwrap en producción",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("CONTEXT").join("QA-REPORT.md"),
+            "QA: PASS — check/test/clippy verdes",
+        )
+        .unwrap();
+        let docs = read_context_docs(&dir);
+        assert!(docs.contains("UI-REVIEW.md"), "{docs}");
+        assert!(docs.contains("CODE-REVIEW.md"), "{docs}");
+        assert!(docs.contains("QA-REPORT.md"), "{docs}");
+        assert!(docs.contains("unwrap en producción"), "{docs}");
+        assert!(docs.contains("QA: PASS"), "{docs}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn worker_system_mentions_task() {        let t = WTask {
             desc: "Crear hola".to_string(),
             files: vec!["hola.txt".to_string()],
+            accept: "hola.txt existe con el texto".to_string(),
         };
         let s = worker_system(Path::new("/tmp"), &t);
         assert!(s.contains("Crear hola"));
         assert!(s.contains("hola.txt"));
         // v0.7.1: el system es lean (ESPEC va como mensaje de contexto).
         assert!(!s.contains("Especificación del proyecto"));
+    }
+
+    /// v0.9.1: el gate por rol se ejecuta de verdad — el Worker escribe y
+    /// el Planner es denegado sin tocar el disco.
+    #[tokio::test]
+    async fn role_gate_blocks_planner_writes() {
+        let dir = std::env::temp_dir().join("arqhia-role-gate-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let call = PendingCall {
+            id: "1".to_string(),
+            name: "write_file".to_string(),
+            args: serde_json::json!({"path": "nota.txt", "content": "hola"}),
+        };
+        let policy = tools::ExecPolicy::default();
+        // Worker: ejecuta.
+        let (append, logs) =
+            exec_calls(Provider::OpenAI, &dir, &[], 1, std::slice::from_ref(&call), &policy, roles::Role::Worker)
+                .await;
+        assert!(dir.join("nota.txt").exists(), "el worker debe escribir");
+        assert!(logs.iter().any(|l| l.contains("write_file")), "{logs:?}");
+        assert_eq!(append.len(), 1);
+        let _ = std::fs::remove_file(dir.join("nota.txt"));
+        // Planner: denegado por rol, sin tocar el disco.
+        let (append2, logs2) =
+            exec_calls(Provider::OpenAI, &dir, &[], 1, &[call], &policy, roles::Role::Planner)
+                .await;
+        assert!(!dir.join("nota.txt").exists(), "el planner no debe escribir");
+        assert!(
+            logs2.iter().any(|l| l.contains("denegado por rol Planner")),
+            "{logs2:?}"
+        );
+        assert_eq!(append2.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

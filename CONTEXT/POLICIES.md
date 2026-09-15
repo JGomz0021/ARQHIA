@@ -16,7 +16,11 @@ Idioma: español (docs de producto). Revisar antes de v1.0 con criterio legal re
 *   Prohibido usar ARQHIA para malware, intrusión, spam, evasión de controles
     de terceros o cualquier uso ilegal. El usuario responde por lo que ordena.
 *   El planner (`Plan`) **nunca ejecuta herramientas**: solo lectura y plan.
-    La ejecución vive en `Work` bajo permisos.
+    La ejecución vive en `Work` bajo permisos. Desde v0.9.1 los roles son
+    5 explícitos (Orquestador > Analista > Planner > Workers > Auditor >
+    loop con re-análisis); el Planner solo Net+Read (consulta docs externos
+    con permiso Net + lee rutas extra con permiso Read) y nunca Write/Bash
+    por construcción y por gate de rol.
 
 ## 2. Privacidad: qué viaja al proveedor LLM
 

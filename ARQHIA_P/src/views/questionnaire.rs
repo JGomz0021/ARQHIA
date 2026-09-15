@@ -1,28 +1,28 @@
-//! Cuestionario v0.8: nivel + genéricas + por nivel + IA opcional.
+//! Cuestionario v0.8.1: universal (Categoría+Tipo, condicional) + import.
 //!
 //! Render puro sobre App. Sin I/O ni tareas.
 
 use iced::{Element, Theme};
 
 use crate::app::{App, Message};
-use crate::questionnaire::{self, levels, ArqPreset, EstiloPreset, Facturacion, Level, QKind, StackOpt, TipoProyecto};
+use crate::questionnaire::{self, levels, Categoria, QKind, SysType};
 
-pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, pick_list, progress_bar, row, text};
+pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {    use iced::widget::{column, container, pick_list, progress_bar, row, text};
     use crate::ui::{components, design};
     use crate::ui::design::{Tone, type_scale};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
     let level = state.q_level;
-    let total = levels::total_steps(level);
+    let (cat, sys) = (state.q_answers.cat, state.q_answers.sys);
+    let skip_nombre = state.q_answers.nombre_locked;
+    let total = levels::total_steps(level, cat, sys, skip_nombre);
     let step = state.q_step.min(total - 1);
     let progress = (step + 1) as f32 / total as f32;
 
     let body: Element<'_, Message> = if step == 0 {
-        // Paso 0 — Nivel.
         let picker: Element<'_, Message> = pick_list(
-            Level::ALL.to_vec(),
+            levels::Level::ALL.to_vec(),
             Some(level),
             Message::QLevelPicked,
         )
@@ -47,9 +47,9 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
             );
         }
         col.into()
-    } else if levels::is_ai_step(level, step) {
+    } else if levels::is_ai_step(level, cat, sys, skip_nombre, step) {
         view_ai_step(state, ts)
-    } else if let Some(q) = levels::step_question(level, step) {
+    } else if let Some(q) = levels::step_question(level, cat, sys, skip_nombre, step) {
         view_question_field(state, &q, ts)
     } else {
         text("Paso desconocido.").into()
@@ -61,13 +61,12 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
     }
     nav = nav.push(components::head_btn("Cancelar".to_string()).on_press(Message::QCancel));
     nav = nav.push(iced::widget::horizontal_space());
-    if levels::is_ai_step(level, step) {
+    if levels::is_ai_step(level, cat, sys, skip_nombre, step) {
         nav = nav.push(components::primary_btn("Generar documentos".to_string(), 13).on_press(Message::FinishQuestionnaire));
     } else {
         nav = nav.push(components::primary_btn("Siguiente".to_string(), 13).on_press(Message::QNext));
     }
 
-    // Step rail: números compactos (pasado/actual con acento) + título actual.
     let rail = row(
         (0..total)
             .map(|s| {
@@ -93,18 +92,23 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
 
     let mut col = column![
         components::section_label(app_theme.clone(),
-            format!("{level} · paso {} de {total}", step + 1)
+            format!("{} · {level} · {cat} · {sys} · paso {} de {total}", state.q_answers.nombre.trim(), step + 1)
         ),
         rail,
-        text(questionnaire::step_title(level, step)).size(design::fs(ts, 11)).color(dim),
+        text(questionnaire::step_title(level, cat, sys, skip_nombre, step)).size(design::fs(ts, 11)).color(dim),
         progress_bar(0.0..=1.0, progress)
             .height(4)
             .style(|t: &Theme| design::progress(t)),
-        body,
     ]
     .spacing(10)
     .padding(20)
     .max_width(640);
+    if !state.q_import_note.is_empty() {
+        col = col.push(
+            text(&state.q_import_note).size(design::fs(ts, 12)).color(design::accent(&app_theme)),
+        );
+    }
+    col = col.push(body);
     if !state.q_error.is_empty() {
         col = col.push(
             row![
@@ -115,6 +119,14 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
             ]
             .spacing(6)
             .align_y(iced::Alignment::Center),
+        );
+    }
+    // Aviso GPL visible al elegirla.
+    if state.q_answers.licencia == questionnaire::Licencia::Gpl3 {
+        col = col.push(
+            text("Aviso: GPL-3.0 obliga a liberar los derivados con la misma licencia.")
+                .size(design::fs(ts, 12))
+                .color(design::tone(&app_theme, Tone::Warn)),
         );
     }
     col = col.push(nav.spacing(8));
@@ -128,9 +140,6 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
         .into()
 }
 
-/// Lista de preguntas IA con sus respuestas + botón Regenerar.
-/// Se construye de una vez (un solo `column!`) para no mezclar vidas
-/// de préstamos entre pushes incrementales.
 fn view_ai_list(state: &App, ts: f32) -> Element<'_, Message> {
     use iced::widget::{column, text, text_input};
     use crate::ui::{components, design};
@@ -141,6 +150,7 @@ fn view_ai_list(state: &App, ts: f32) -> Element<'_, Message> {
             column![
                 text(format!("{}. {q}", i + 1)).size(design::fs(ts, 13)),
                 text_input("Tu respuesta (opcional)...", ans)
+                    .id(iced::widget::text_input::Id::new(format!("qai-{i}")))
                     .style(|t: &Theme, s| design::field(t, s))
                     .on_input(move |v| Message::QAiAnswerChanged(i, v)),
             ]
@@ -155,7 +165,6 @@ fn view_ai_list(state: &App, ts: f32) -> Element<'_, Message> {
     col.into()
 }
 
-/// Campo de una pregunta intermedia según su tipo.
 fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Element<'a, Message> {
     use iced::widget::{checkbox, column, pick_list, text, text_input};
     use crate::ui::design;
@@ -172,8 +181,31 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
             let (value, on_in): (&str, fn(String) -> Message) = match q.id {
                 "descripcion" => (&a.descripcion, Message::QDescChanged),
                 "objetivo" => (&a.objetivo, Message::QObjChanged),
+                "uso_previsto" => (&a.uso_previsto, Message::QUsoPrevistoChanged),
+                "publico_objetivo" => (&a.publico_objetivo, Message::QPublicoChanged),
                 "funcionalidades" => (&a.funcionalidades, Message::QFuncChanged),
                 "ui_ux" => (&a.ui_ux, Message::QUiUxChanged),
+                "endpoints" => (&a.endpoints, Message::QEndpointsChanged),
+                "escala" => (&a.escala, Message::QEscalaChanged),
+                "api_publica" => (&a.api_publica, Message::QApiPublicaChanged),
+                "ejemplos" => (&a.ejemplos, Message::QEjemplosChanged),
+                "arranque" => (&a.arranque, Message::QArranqueChanged),
+                "compat" => (&a.compat, Message::QCompatChanged),
+                "inputs" => (&a.inputs_secretos, Message::QInputsChanged),
+                "idempotencia" => (&a.idempotencia, Message::QIdempotenciaChanged),
+                "dataset" => (&a.dataset, Message::QDatasetChanged),
+                "pipeline" => (&a.pipeline_desc, Message::QPipelineChanged),
+                "modelo" => (&a.modelo_eval, Message::QModeloEvalChanged),
+                "sintaxis" => (&a.sintaxis, Message::QSintaxisChanged),
+                "toolchain" => (&a.toolchain, Message::QToolchainChanged),
+                "syscalls" => (&a.syscalls, Message::QSyscallsChanged),
+                "host_api" => (&a.host_api, Message::QHostApiChanged),
+                "oss_repo" => (&a.oss_repo, Message::QOssRepoChanged),
+                "oss_gobierno" => (&a.oss_gobierno, Message::QOssGobiernoChanged),
+                "oss_contrib" => (&a.oss_contrib, Message::QOssContribChanged),
+                // Inalcanzable si la matriz y el match están sincronizados.
+                // Se mantiene descripcion como fallback visible (antes causó
+                // duplicados al faltar uso_previsto/publico_objetivo).
                 _ => (&a.descripcion, Message::QDescChanged),
             };
             text_input("Escribe aquí...", value)
@@ -182,17 +214,24 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
                 .on_submit(Message::QNext)
                 .into()
         }
-        QKind::PickTipo => pick_list(
-            TipoProyecto::ALL.to_vec(),
-            Some(a.tipo),
-            Message::QTipoPicked,
+        QKind::PickCat => pick_list(
+            Categoria::ALL.to_vec(),
+            Some(a.cat),
+            Message::QCatPicked,
         )
         .style(|t: &Theme, s| design::field_pick(t, s))
         .width(280)
         .into(),
+        QKind::PickSys => {
+            let opts = SysType::for_cat(a.cat).to_vec();
+            pick_list(opts, Some(a.sys), Message::QSysPicked)
+                .style(|t: &Theme, s| design::field_pick(t, s))
+                .width(320)
+                .into()
+        }
         QKind::PickEstilo => {
             let pick: Element<'a, Message> = pick_list(
-                EstiloPreset::ALL.to_vec(),
+                questionnaire::EstiloPreset::ALL.to_vec(),
                 Some(a.estilo),
                 Message::QEstiloPicked,
             )
@@ -211,7 +250,7 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
         }
         QKind::MultiPlataforma => {
             let mut opts = column![].spacing(4);
-            for p in crate::questionnaire::Plataforma::ALL {
+            for p in questionnaire::Plataforma::ALL {
                 let checked = a.plataformas.contains(&p);
                 opts = opts.push(
                     checkbox(p.to_string(), checked).on_toggle(move |_| Message::QPlataformaToggled(p)),
@@ -221,7 +260,7 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
         }
         QKind::MultiStack => {
             let mut opts = column![].spacing(4);
-            for s in StackOpt::ALL {
+            for s in questionnaire::StackOpt::ALL {
                 let checked = a.stacks.contains(&s);
                 opts = opts.push(
                     checkbox(s.to_string(), checked).on_toggle(move |_| Message::QStackToggled(s)),
@@ -236,31 +275,62 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
             opts.into()
         }
         QKind::PickFacturacion => pick_list(
-            Facturacion::ALL.to_vec(),
+            questionnaire::Facturacion::ALL.to_vec(),
             Some(a.facturacion),
             Message::QFacturacionPicked,
         )
         .style(|t: &Theme, s| design::field_pick(t, s))
         .width(280)
         .into(),
-        QKind::PickArq => {
-            let pick: Element<'a, Message> = pick_list(
-                ArqPreset::ALL.to_vec(),
-                Some(a.arq),
-                Message::QArqPicked,
-            )
-            .style(|t: &Theme, s| design::field_pick(t, s))
-            .width(280)
-            .into();
-            column![
-                pick,
-                text_input("Detalle (módulos, capas, cómo escala...)", &a.arquitectura)
-                    .style(|t: &Theme, s| design::field(t, s))
-                    .on_input(Message::QArqChanged)
-                    .on_submit(Message::QNext),
-            ]
-            .spacing(8)
-            .into()
+        QKind::PickLicencia => pick_list(
+            questionnaire::Licencia::ALL.to_vec(),
+            Some(a.licencia),
+            Message::QLicenciaPicked,
+        )
+        .style(|t: &Theme, s| design::field_pick(t, s))
+        .width(280)
+        .into(),
+        QKind::PickApiStyle => pick_list(
+            questionnaire::ApiStyle::ALL.to_vec(),
+            Some(a.api_style),
+            Message::QApiStylePicked,
+        )
+        .style(|t: &Theme, s| design::field_pick(t, s))
+        .width(280)
+        .into(),
+        QKind::PickAuth => pick_list(
+            questionnaire::AuthKind::ALL.to_vec(),
+            Some(a.auth),
+            Message::QAuthPicked,
+        )
+        .style(|t: &Theme, s| design::field_pick(t, s))
+        .width(280)
+        .into(),
+        QKind::PickTrigger => pick_list(
+            questionnaire::Trigger::ALL.to_vec(),
+            Some(a.trigger),
+            Message::QTriggerPicked,
+        )
+        .style(|t: &Theme, s| design::field_pick(t, s))
+        .width(280)
+        .into(),
+        QKind::PickSemver => pick_list(
+            questionnaire::SemverOpt::ALL.to_vec(),
+            Some(a.semver),
+            Message::QSemverPicked,
+        )
+        .style(|t: &Theme, s| design::field_pick(t, s))
+        .width(280)
+        .into(),
+        QKind::MultiArch => {
+            let mut opts = column![].spacing(4);
+            for arch in questionnaire::ArchOpt::ALL {
+                let checked = a.archs.contains(&arch);
+                opts = opts.push(
+                    checkbox(arch.to_string(), checked).on_toggle(move |_| Message::QArchToggled(arch)),
+                );
+            }
+            opts.into()
         }
     };
     let mut col = column![
@@ -274,7 +344,6 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
     col.into()
 }
 
-/// Último paso: preguntas adicionales generadas por IA (saltable).
 fn view_ai_step(state: &App, ts: f32) -> Element<'_, Message> {
     use iced::widget::{column, row, text};
     use crate::ui::{components, design};
@@ -285,13 +354,13 @@ fn view_ai_step(state: &App, ts: f32) -> Element<'_, Message> {
     let has_api = state.config.active_config().is_configured_for(provider);
     let mut col = column![
         text("¿Afinamos con la IA? (opcional)").size(design::fs(ts, type_scale::HEADLINE)),
-        text("El provider activo propone 3–5 preguntas adaptadas a lo respondido. \
+        text("El provider activo propone 5–10 preguntas adaptadas a lo respondido. \
             Puedes responderlas o saltar este paso: los documentos se generan igual.")
             .size(design::fs(ts, 12))
             .color(dim),
     ]
     .spacing(10);
-    if !has_api {
+    if !has_api && state.q_source == questionnaire::QSource::New {
         col = col.push(
             text("Sin API configurada: este paso está deshabilitado. Pulsa Generar documentos para continuar.")
                 .size(design::fs(ts, 12))
@@ -324,4 +393,48 @@ fn view_ai_step(state: &App, ts: f32) -> Element<'_, Message> {
         );
     }
     col.into()
+}
+
+/// Pantalla de carga MVP (v0.8.2): la IA genera CONTEXT + serie v0.1→v1.0
+/// sin pasar por el chat. Solo progreso + Detener.
+pub(crate) fn view_generating(state: &App) -> Element<'_, Message> {
+    use iced::widget::{column, container, progress_bar, text};
+    use crate::ui::{components, design};
+    use crate::ui::design::type_scale;
+    let app_theme = super::app_theme(state);
+    let dim = design::ink_2(&app_theme);
+    let ts = state.config.appearance.text_size.scale();
+    let mut col = column![
+        text("Generando tu proyecto…").size(design::fs(ts, type_scale::HEADLINE)),
+        text(&state.gen_phase).size(design::fs(ts, 12)).color(dim),
+        progress_bar(0.0..=1.0, state.gen_progress.clamp(0.0, 1.0))
+            .height(6)
+            .style(|t: &Theme| design::progress(t)),
+        text("CONTEXT + ROADMAP + VERSIONS (v0.1 → v1.0 MVP) + ToDo. Sin chat: es un proceso previo al desarrollo.")
+            .size(design::fs(ts, 12))
+            .color(dim),
+    ]
+    .spacing(12)
+    .padding(24)
+    .max_width(560);
+    if !state.gen_error.is_empty() {
+        col = col.push(
+            text(&state.gen_error)
+                .size(design::fs(ts, 13))
+                .color(design::tone(&app_theme, design::Tone::Err)),
+        );
+    }
+    col = col.push(
+        iced::widget::row![
+            components::danger_btn("Detener".to_string()).on_press(Message::GenCancel),
+        ]
+        .spacing(8),
+    );
+    container(container(col).style(|t: &Theme| design::card(t)))
+        .width(iced::Fill)
+        .height(iced::Fill)
+        .center_x(iced::Fill)
+        .center_y(iced::Fill)
+        .padding(24)
+        .into()
 }

@@ -31,6 +31,9 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .unwrap_or_default();
             state.profile_menu = None;
             state.editing_profile = None;
+            // v0.9 Track B: staging de identidad para la pestaña STACK.
+            state.identity_name = state.config.identity.name.clone();
+            state.identity_email = state.config.identity.email.clone();
             Task::none()
         }
         Message::ConfigBack => {
@@ -383,6 +386,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let _ = state.config.save();
             Task::none()
         }
+        Message::PermPlannerNetToggled(v) => {
+            state.config.permissions.planner_net = v;
+            let _ = state.config.save();
+            Task::none()
+        }
         Message::PermInstallToggled(v) => {
             state.config.permissions.auto_install = v;
             let _ = state.config.save();
@@ -408,7 +416,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             for raw in state.perm_extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
                 let expanded = if let Some(rest) = raw.strip_prefix("~/") {
                     std::path::PathBuf::from(
-                        std::env::var("HOME").unwrap_or_else(|_| ".".to_string()),
+                        std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()),
                     )
                     .join(rest)
                 } else {
@@ -730,6 +738,72 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.model_browser = false;
             state.model_status.clear();
             state.status = format!("Modelo elegido: {id}. Pulsa Guardar para aplicarlo.");
+            Task::none()
+        }
+        // v0.9 Track B — consentimiento del STACK (todo OFF por defecto).
+        Message::StackUseToggled(v) => {
+            state.config.stack_consent.use_stack = v;
+            let _ = state.config.save();
+            state.status = if v {
+                "El agente consultará el STACK local en cada tarea.".to_string()
+            } else {
+                "El agente no usará el STACK.".to_string()
+            };
+            Task::none()
+        }
+        Message::StackShareLocalToggled(v) => {
+            state.config.stack_consent.share_local = v;
+            let _ = state.config.save();
+            Task::none()
+        }
+        Message::StackShareCloudToggled(v) => {
+            state.config.stack_consent.share_cloud = v;
+            let _ = state.config.save();
+            if v {
+                // La nube real es v1.0: aún no hay sesión, solo queda marcado.
+                state.status = "Subida a la nube marcada (requiere sesión v1.0).".to_string();
+            }
+            Task::none()
+        }
+        Message::IdentityNameChanged(v) => {
+            state.identity_name = v;
+            Task::none()
+        }
+        Message::IdentityEmailChanged(v) => {
+            state.identity_email = v;
+            Task::none()
+        }
+        Message::IdentitySave => {
+            let id = crate::config::Identity {
+                name: state.identity_name.trim().to_string(),
+                email: state.identity_email.trim().to_string(),
+            };
+            match id.validate() {
+                Ok(()) => {
+                    state.config.identity = id;
+                    match state.config.save() {
+                        Ok(()) => state.status = "Identidad guardada.".to_string(),
+                        Err(e) => state.status = format!("Identidad válida pero no se guardó: {e}"),
+                    }
+                }
+                Err(e) => state.status = e,
+            }
+            Task::none()
+        }
+        // v0.9 Track C — skills: recargar lista y borrar.
+        Message::SkillsReload => {
+            match crate::skills::ensure_embedded() {
+                Ok(0) => state.status = "Skills al día.".to_string(),
+                Ok(n) => state.status = format!("{n} skill(s) restaurada(s)."),
+                Err(e) => state.status = format!("No se pudo recargar: {e}"),
+            }
+            Task::none()
+        }
+        Message::SkillsDelete(name) => {
+            match crate::skills::delete(&name) {
+                Ok(msg) => state.status = msg,
+                Err(e) => state.status = e,
+            }
             Task::none()
         }
         // Inalcanzable si el dispatch exterior está al día (es total).

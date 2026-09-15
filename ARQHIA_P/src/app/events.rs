@@ -7,7 +7,7 @@ use iced::widget::markdown;
 use crate::agent;
 use crate::config::{AccentChoice, Density, Provider, TextSize, ThemeMode};
 use crate::db::Mode;
-use crate::questionnaire::{ArqPreset, EstiloPreset, Facturacion, Level, Plataforma, StackOpt, TipoProyecto};
+use crate::questionnaire::{ApiStyle, ArchOpt, AuthKind, Categoria, EstiloPreset, Facturacion, Level, Licencia, Plataforma, SemverOpt, StackOpt, SysType, Trigger};
 
 #[derive(Debug, Clone, PartialEq)]
 #[derive(Default)]
@@ -17,6 +17,10 @@ pub enum View {
     Chat,
     Config,
     Questionnaire,
+    /// v0.8.2: pantalla de carga MVP (generación sin pasar por el chat).
+    Generating,
+    /// v0.9: panel del STACK local (búsqueda + preview + guardar/valorar).
+    Stack,
 }
 
 
@@ -29,16 +33,22 @@ pub enum ConfigTab {
     Proyectos,
     /// v0.7.1: lista de solo lectura de atajos de teclado.
     Atajos,
+    /// v0.9 Track B: consentimiento + identidad + uso.
+    Stack,
+    /// v0.9 Track C: administración de skills.
+    Skills,
 }
 
 impl ConfigTab {
-    pub const ALL: [ConfigTab; 6] = [
+    pub const ALL: [ConfigTab; 8] = [
         ConfigTab::Api,
         ConfigTab::Apariencia,
         ConfigTab::Permisos,
         ConfigTab::Git,
         ConfigTab::Proyectos,
         ConfigTab::Atajos,
+        ConfigTab::Stack,
+        ConfigTab::Skills,
     ];
 
     pub fn label(self) -> &'static str {
@@ -49,6 +59,8 @@ impl ConfigTab {
             ConfigTab::Git => "Git",
             ConfigTab::Proyectos => "Proyectos",
             ConfigTab::Atajos => "Atajos",
+            ConfigTab::Stack => "STACK",
+            ConfigTab::Skills => "Skills",
         }
     }
 }
@@ -77,6 +89,8 @@ pub enum Message {
     CreateNameChanged(String),
     CreatePathChanged(String),
     SubmitCreateProject,
+    /// Crear proyecto sin pasar por el cuestionario (v0.9.2 tweak).
+    SubmitCreateProjectSkip,
     OpenProject,
     EnterProject(i64),
     FolderPicked(Option<std::path::PathBuf>),
@@ -109,9 +123,15 @@ pub enum Message {
     NewProjectNameChanged(String),
     NewProjectPathChanged(String),
     CreateProject,
+    /// Crear proyecto sin cuestionario desde la sidebar.
+    CreateProjectSkip,
     ToggleProjectForm,
     ToggleProject(i64),
     ToggleProjectMenu(i64),
+    /// Colapsa/expande la sección Proyectos de la sidebar.
+    ToggleProjectsSection,
+    /// Mostrar/ocultar chats sueltos más allá de 8 (sidebar compacta).
+    ToggleLooseChats,
     OpenWorkspaceFolder(i64),
     DeleteProject(i64),
     ConfirmDeleteProject,
@@ -129,6 +149,9 @@ pub enum Message {
     AgentPlan(u64, Result<Vec<agent::WTask>, String>),
     /// Analista dedicado (v0.7.3): brief antes del planner.
     AgentAnalyze(u64, Result<String, String>),
+    /// Re-análisis del ciclo de fix (v0.9.1): el analista revisa el TEMP.md
+    /// del auditor antes de lanzar el worker de fixes.
+    AgentReanalyze(u64, Result<String, String>),
     AgentLlm(u64, Result<agent::StepOutcome, String>),
     AgentExecDone(u64, Vec<agent::PendingCall>, Vec<serde_json::Value>, Vec<String>),
     AgentAudit(u64, Result<(String, Vec<String>, bool), String>),
@@ -171,6 +194,9 @@ pub enum Message {
     PermBashToggled(bool),
     PermNetToggled(bool),
     PermInstallToggled(bool),
+    /// El planner puede consultar docs externos al diseñar el plan
+    /// (v0.9.1, OFF por defecto: si no, pide permiso Net la 1ª vez).
+    PermPlannerNetToggled(bool),
     PermDomainsChanged(String),
     PermExtraChanged(String),
     SavePermLists,
@@ -223,23 +249,55 @@ pub enum Message {
     QNombreChanged(String),
     QDescChanged(String),
     QObjChanged(String),
+    QUsoPrevistoChanged(String),
+    QPublicoChanged(String),
     QFuncChanged(String),
     QEstiloPicked(EstiloPreset),
     QEstiloFreeChanged(String),
     QUiUxChanged(String),
-    QTipoPicked(TipoProyecto),
+    QCatPicked(Categoria),
+    QSysPicked(SysType),
     QPlataformaToggled(Plataforma),
     QFacturacionPicked(Facturacion),
+    QLicenciaPicked(Licencia),
+    QApiStylePicked(ApiStyle),
+    QAuthPicked(AuthKind),
+    QTriggerPicked(Trigger),
+    QSemverPicked(SemverOpt),
+    QArchToggled(ArchOpt),
     QStackToggled(StackOpt),
     QStackFreeChanged(String),
-    QArqPicked(ArqPreset),
-    QArqChanged(String),
+    QEndpointsChanged(String),
+    QEscalaChanged(String),
+    QApiPublicaChanged(String),
+    QEjemplosChanged(String),
+    QArranqueChanged(String),
+    QCompatChanged(String),
+    QInputsChanged(String),
+    QIdempotenciaChanged(String),
+    QDatasetChanged(String),
+    QPipelineChanged(String),
+    QModeloEvalChanged(String),
+    QSintaxisChanged(String),
+    QToolchainChanged(String),
+    QSyscallsChanged(String),
+    QHostApiChanged(String),
+    QOssRepoChanged(String),
+    QOssGobiernoChanged(String),
+    QOssContribChanged(String),
     /// Respuesta a la pregunta IA nº N.
     QAiAnswerChanged(usize, String),
-    /// Pide al provider activo 3–5 preguntas adicionales.
+    /// Pide al provider activo 5–10 preguntas adicionales.
     QAiGenerate,
     QAiGenerated(Result<Vec<String>, String>),
+    /// Tab / Shift+Tab entre respuestas IA (adelante/atrás).
+    QAiFocusCycle(bool),
     FinishQuestionnaire,
+    /// v0.8.2: la pantalla de carga terminó (archivos parseados o error).
+    /// La generación invalida resultados tardíos tras cancelar.
+    GenDone(u64, Result<Vec<(String, String)>, String>),
+    /// v0.8.2: Detener la generación MVP y volver al cuestionario.
+    GenCancel,
     // v0.7.4 — perfiles de modelo con nombre
     ProfilePicked(String),
     ProfileNameChanged(String),
@@ -272,4 +330,35 @@ pub enum Message {
     CancelTruncate,
     /// Regenera el `session_id` del chat activo (v0.8, menú ⋯ del chat).
     ResetSession,
+    // v0.9 — STACK local (Track A: panel; Track B: consentimiento/identidad)
+    OpenStack,
+    StackBack,
+    StackQueryChanged(String),
+    StackTagsChanged(String),
+    StackSearch,
+    StackSelect(i64),
+    StackSaveTitleChanged(String),
+    StackSaveTagsChanged(String),
+    StackSaveLangChanged(String),
+    StackSaveLicensePicked(String),
+    StackSaveCodeChanged(String),
+    StackSave,
+    StackOpinionChanged(String),
+    /// Valora el snippet seleccionado con 1–5 estrellas (+ opinión).
+    StackRate(u8),
+    /// Copia el código seleccionado al workspace activo como archivo.
+    StackCopyToWs,
+    /// Prepara un pedido al agente para usar el snippet seleccionado.
+    StackAskAgent,
+    StackBugChanged(String),
+    StackReportBug,
+    StackUseToggled(bool),
+    StackShareLocalToggled(bool),
+    StackShareCloudToggled(bool),
+    IdentityNameChanged(String),
+    IdentityEmailChanged(String),
+    IdentitySave,
+    // v0.9 Track C — skills
+    SkillsReload,
+    SkillsDelete(String),
 }

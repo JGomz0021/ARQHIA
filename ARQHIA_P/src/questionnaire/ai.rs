@@ -5,14 +5,17 @@
 
 use super::levels::Level;
 
-/// Prompt para proponer 3–5 preguntas adaptadas a lo respondido.
+/// Prompt para proponer 5–10 preguntas adicionales adaptadas a lo respondido.
+/// Cubre vacíos sin repetir info ya dada (funcionales/técnicos/uso/arquitectura/seguridad/negocio/despliegue).
 pub fn ai_prompt(level: Level, summary: &str) -> String {
     format!(
         "Estoy definiendo un proyecto con un asistente. Nivel del usuario: {level}.\n\
         Lo respondido hasta ahora:\n{summary}\n\n\
-        Propón entre 3 y 5 preguntas ADICIONALES pertinentes para afinar la \
-        especificación (una por línea, sin numerar con paréntesis raros, sin \
-        explicaciones). Solo las preguntas, nada más."
+        Analiza los vacíos importantes y propón entre 5 y 10 preguntas ADICIONALES dinámicas \
+        para eliminar incertidumbres relevantes antes de generar el CONTEXT. No repitas información \
+        ya proporcionada. Prioriza lo necesario para especificar correctamente el proyecto \
+        (funcional, técnico, de uso, arquitectura, seguridad, negocio o despliegue según los vacíos). \
+        Una por línea, sin numerar con paréntesis raros, sin explicaciones. Solo las preguntas, nada más."
     )
 }
 
@@ -36,8 +39,19 @@ pub fn answers_summary(
     out
 }
 
-/// Parsea la respuesta del modelo a 3–5 preguntas limpias.
-/// Quita numeración (`1.`, `1)`, `-`, `*`), ignora vacías, tope 5.
+/// Prompt para huecos de import (solo lo que falta del CONTEXT).
+pub fn import_gap_prompt(summary: &str, gaps: &[&str]) -> String {
+    format!(
+        "Estoy importando código existente a un asistente. Lo detectado:\n{summary}\n\n\
+        Campos que faltan: {}.\n\
+        Propón entre 5 y 10 preguntas cortas SOLO sobre esos huecos \
+        (una por línea, sin numeración rara, sin explicaciones).",
+        gaps.join(", ")
+    )
+}
+
+/// Parsea la respuesta del modelo a 5–10 preguntas limpias (mín 5, máx 10).
+/// Quita numeración (`1.`, `1)`, `-`, `*`), ignora vacías y duplicadas, tope 10.
 pub fn parse_ai_questions(raw: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in raw.lines() {
@@ -50,10 +64,10 @@ pub fn parse_ai_questions(raw: &str) -> Vec<String> {
         if !digits.is_empty() {
             t = chars.as_str().trim_start_matches(['.', ')', ':', '-']).trim();
         }
-        if t.chars().count() >= 4 {
+        if t.chars().count() >= 4 && !out.contains(&t.to_string()) {
             out.push(t.to_string());
         }
-        if out.len() >= 5 {
+        if out.len() >= 10 {
             break;
         }
     }
@@ -75,10 +89,13 @@ mod tests {
     }
 
     #[test]
-    fn caps_at_five_and_skips_short() {
-        let raw = (1..=8).map(|i| format!("{i}. Pregunta número {i}")).collect::<Vec<_>>().join("\n");
-        assert_eq!(parse_ai_questions(&raw).len(), 5);
+    fn caps_at_ten_and_skips_short_and_dedups() {
+        let raw = (1..=12).map(|i| format!("{i}. Pregunta número {i}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(parse_ai_questions(&raw).len(), 10);
         assert!(!parse_ai_questions("hola\n\n  \nok, ¿y el logo?").is_empty());
+        // duplicadas no se cuentan dos veces
+        let dup = "1. ¿Quién lo usará?\n1. ¿Quién lo usará?\n2. ¿Offline o nube?";
+        assert_eq!(parse_ai_questions(dup).len(), 2);
     }
 
     #[test]
