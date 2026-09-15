@@ -26,18 +26,6 @@ use iced::{Background, Border, Color, Shadow, Theme, Vector};
 // Tokens
 // ---------------------------------------------------------------------------
 
-/// Spacing scale. Use these steps, nothing in between.
-#[allow(dead_code)]
-pub mod space {
-    pub const X2: u16 = 2;
-    pub const X4: u16 = 4;
-    pub const X6: u16 = 6;
-    pub const X8: u16 = 8;
-    pub const X12: u16 = 12;
-    pub const X16: u16 = 16;
-    pub const X24: u16 = 24;
-}
-
 /// Type scale.
 #[allow(dead_code)]
 pub mod type_scale {
@@ -58,12 +46,20 @@ pub fn fs(scale: f32, base: u16) -> u16 {
 
 /// Espaciado según densidad (v0.7 Track B): compacta resta 4px (mínimo 2).
 pub fn gap(compact: bool, normal: u16) -> u16 {
-    if compact { normal.saturating_sub(4).max(2) } else { normal }
+    if compact {
+        normal.saturating_sub(4).max(2)
+    } else {
+        normal
+    }
 }
 
 /// Padding según densidad: compacta reduce 4px dejando un mínimo de 2.
 pub fn pad(compact: bool, normal: u16) -> u16 {
-    if compact { normal.saturating_sub(4).max(2) } else { normal }
+    if compact {
+        normal.saturating_sub(4).max(2)
+    } else {
+        normal
+    }
 }
 
 /// Radius scale.
@@ -111,49 +107,86 @@ fn c(r: u8, g: u8, b: u8) -> Color {
 }
 
 fn ca(r: u8, g: u8, b: u8, a: f32) -> Color {
-    Color { r: r as f32 / 255.0, g: g as f32 / 255.0, b: b as f32 / 255.0, a }
+    Color {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a,
+    }
 }
 
 // --- surfaces ---------------------------------------------------------------
 
 /// Base application surface.
 pub fn app_bg(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0x16, 0x18, 0x1D) } else { c(0xF1, 0xF2, 0xF4) }
+    if is_dark(theme) {
+        c(0x16, 0x18, 0x1D)
+    } else {
+        c(0xF1, 0xF2, 0xF4)
+    }
 }
 
 /// Sidebar / navigation surface, one step above the base.
 pub fn side_bg(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0x1C, 0x1F, 0x26) } else { c(0xE8, 0xEA, 0xEE) }
+    if is_dark(theme) {
+        c(0x1C, 0x1F, 0x26)
+    } else {
+        c(0xE8, 0xEA, 0xEE)
+    }
 }
 
 /// Raised surface: cards, composer, user messages.
 pub fn raised(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0x21, 0x25, 0x2D) } else { c(0xFF, 0xFF, 0xFF) }
+    if is_dark(theme) {
+        c(0x21, 0x25, 0x2D)
+    } else {
+        c(0xFF, 0xFF, 0xFF)
+    }
 }
 
 /// Sunken surface: activity well, code-ish panels.
 pub fn well(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0x10, 0x12, 0x16) } else { c(0xE3, 0xE5, 0xE9) }
+    if is_dark(theme) {
+        c(0x10, 0x12, 0x16)
+    } else {
+        c(0xE3, 0xE5, 0xE9)
+    }
 }
 
 /// Hairline border color.
 pub fn border(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0x2C, 0x31, 0x3B) } else { c(0xD5, 0xD8, 0xDE) }
+    if is_dark(theme) {
+        c(0x2C, 0x31, 0x3B)
+    } else {
+        c(0xD5, 0xD8, 0xDE)
+    }
 }
 
 // --- text -------------------------------------------------------------------
 
 pub fn ink(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0xE6, 0xE8, 0xEC) } else { c(0x1D, 0x21, 0x26) }
+    if is_dark(theme) {
+        c(0xE6, 0xE8, 0xEC)
+    } else {
+        c(0x1D, 0x21, 0x26)
+    }
 }
 
 pub fn ink_2(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0xA7, 0xAD, 0xBA) } else { c(0x59, 0x60, 0x6B) }
+    if is_dark(theme) {
+        c(0xA7, 0xAD, 0xBA)
+    } else {
+        c(0x59, 0x60, 0x6B)
+    }
 }
 
 /// Legacy helper kept for call sites that only know dark/light.
 pub fn muted(dark: bool) -> Color {
-    if dark { c(0x8B, 0x91, 0x9E) } else { c(0x6B, 0x71, 0x7D) }
+    if dark {
+        c(0x8B, 0x91, 0x9E)
+    } else {
+        c(0x6B, 0x71, 0x7D)
+    }
 }
 
 // --- accent -----------------------------------------------------------------
@@ -177,20 +210,34 @@ pub fn accent_hover(theme: &Theme) -> Color {
 
 /// Text placed on top of the accent fill.
 pub fn on_accent(theme: &Theme) -> Color {
-    if is_dark(theme) { c(0x0C, 0x1A, 0x18) } else { c(0xFF, 0xFF, 0xFF) }
+    if is_dark(theme) {
+        c(0x0C, 0x1A, 0x18)
+    } else {
+        c(0xFF, 0xFF, 0xFF)
+    }
 }
 
 /// Translucent accent wash for current-selection backgrounds. Deriva del
 /// acento activo (no de un teal fijo) para que Violeta/Ámbar sean coherentes.
 pub fn accent_wash(theme: &Theme) -> Color {
     let a = accent(theme);
-    Color { r: a.r, g: a.g, b: a.b, a: if is_dark(theme) { 0.16 } else { 0.10 } }
+    Color {
+        r: a.r,
+        g: a.g,
+        b: a.b,
+        a: if is_dark(theme) { 0.16 } else { 0.10 },
+    }
 }
 
 /// Wash reforzado para hover sobre una selección activa.
 pub fn accent_wash_strong(theme: &Theme) -> Color {
     let a = accent(theme);
-    Color { r: a.r, g: a.g, b: a.b, a: if is_dark(theme) { 0.26 } else { 0.16 } }
+    Color {
+        r: a.r,
+        g: a.g,
+        b: a.b,
+        a: if is_dark(theme) { 0.26 } else { 0.16 },
+    }
 }
 
 // --- semantic ---------------------------------------------------------------
@@ -208,13 +255,25 @@ pub fn tone(theme: &Theme, kind: Tone) -> Color {
     match kind {
         Tone::Neutral => ink_2(theme),
         Tone::Ok => {
-            if is_dark(theme) { c(0x55, 0xB8, 0x7F) } else { c(0x1E, 0x7A, 0x4C) }
+            if is_dark(theme) {
+                c(0x55, 0xB8, 0x7F)
+            } else {
+                c(0x1E, 0x7A, 0x4C)
+            }
         }
         Tone::Warn => {
-            if is_dark(theme) { c(0xD1, 0xA7, 0x3D) } else { c(0x8A, 0x6D, 0x1A) }
+            if is_dark(theme) {
+                c(0xD1, 0xA7, 0x3D)
+            } else {
+                c(0x8A, 0x6D, 0x1A)
+            }
         }
         Tone::Err => {
-            if is_dark(theme) { c(0xDE, 0x6E, 0x64) } else { c(0xB3, 0x36, 0x2E) }
+            if is_dark(theme) {
+                c(0xDE, 0x6E, 0x64)
+            } else {
+                c(0xB3, 0x36, 0x2E)
+            }
         }
         Tone::Accent => accent(theme),
     }
@@ -229,11 +288,6 @@ pub fn tone_wash(theme: &Theme, kind: Tone) -> Color {
         Tone::Accent => return accent_wash(theme),
     };
     ca(r, g, b, a)
-}
-
-#[allow(dead_code)]
-pub fn ok(dark: bool) -> Color {
-    if dark { c(0x55, 0xB8, 0x7F) } else { c(0x1E, 0x7A, 0x4C) }
 }
 
 /// Clasifica un mensaje de estado de la app en un `Tone` para que el color
@@ -285,7 +339,11 @@ pub fn status_tone(status: &str) -> Tone {
 // ---------------------------------------------------------------------------
 
 fn hairline(theme: &Theme) -> Border {
-    Border { color: border(theme), width: 1.0, radius: radius::BOX.into() }
+    Border {
+        color: border(theme),
+        width: 1.0,
+        radius: radius::BOX.into(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +396,11 @@ pub fn composer(theme: &Theme) -> container::Style {
 pub fn well_box(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(well(theme))),
-        border: Border { color: border(theme), width: 1.0, radius: radius::SMALL.into() },
+        border: Border {
+            color: border(theme),
+            width: 1.0,
+            radius: radius::SMALL.into(),
+        },
         text_color: Some(ink_2(theme)),
         ..container::Style::default()
     }
@@ -348,7 +410,11 @@ pub fn well_box(theme: &Theme) -> container::Style {
 pub fn user_msg(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(raised(theme))),
-        border: Border { color: accent(theme), width: 1.0, radius: radius::BOX.into() },
+        border: Border {
+            color: accent(theme),
+            width: 1.0,
+            radius: radius::BOX.into(),
+        },
         text_color: Some(ink(theme)),
         ..container::Style::default()
     }
@@ -368,7 +434,11 @@ pub fn ai_msg(theme: &Theme) -> container::Style {
 pub fn segmented(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(well(theme))),
-        border: Border { color: border(theme), width: 1.0, radius: radius::PILL.into() },
+        border: Border {
+            color: border(theme),
+            width: 1.0,
+            radius: radius::PILL.into(),
+        },
         text_color: Some(ink_2(theme)),
         ..container::Style::default()
     }
@@ -379,7 +449,11 @@ pub fn segmented(theme: &Theme) -> container::Style {
 pub fn segmented_flash(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(tone_wash(theme, Tone::Accent))),
-        border: Border { color: accent(theme), width: 2.0, radius: radius::PILL.into() },
+        border: Border {
+            color: accent(theme),
+            width: 2.0,
+            radius: radius::PILL.into(),
+        },
         text_color: Some(ink_2(theme)),
         ..container::Style::default()
     }
@@ -389,7 +463,11 @@ pub fn segmented_flash(theme: &Theme) -> container::Style {
 pub fn avatar(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(raised(theme))),
-        border: Border { color: accent(theme), width: 1.0, radius: radius::BOX.into() },
+        border: Border {
+            color: accent(theme),
+            width: 1.0,
+            radius: radius::BOX.into(),
+        },
         text_color: Some(accent(theme)),
         ..container::Style::default()
     }
@@ -450,7 +528,11 @@ pub fn task_card(theme: &Theme, kind: Tone) -> container::Style {
 pub fn approval(theme: &Theme) -> container::Style {
     container::Style {
         background: Some(Background::Color(tone_wash(theme, Tone::Warn))),
-        border: Border { color: tone(theme, Tone::Warn), width: 1.0, radius: radius::BOX.into() },
+        border: Border {
+            color: tone(theme, Tone::Warn),
+            width: 1.0,
+            radius: radius::BOX.into(),
+        },
         text_color: Some(ink(theme)),
         ..container::Style::default()
     }
@@ -484,7 +566,11 @@ fn btn_base(
     let main = button::Style {
         background: Some(Background::Color(bg)),
         text_color: fg,
-        border: Border { color: Color::TRANSPARENT, width: 0.0, radius: radius::SMALL.into() },
+        border: Border {
+            color: Color::TRANSPARENT,
+            width: 0.0,
+            radius: radius::SMALL.into(),
+        },
         shadow: Shadow::default(),
     };
     match status {
@@ -504,7 +590,13 @@ fn btn_base(
 /// Primary: accent fill. Reserved for Enviar / Crear / Guardar / Finalizar /
 /// Siguiente / Permitir.
 pub fn primary(theme: &Theme, status: button::Status) -> button::Style {
-    btn_base(theme, status, accent(theme), accent_hover(theme), on_accent(theme))
+    btn_base(
+        theme,
+        status,
+        accent(theme),
+        accent_hover(theme),
+        on_accent(theme),
+    )
 }
 
 /// Secondary: raised surface + hairline border.
@@ -589,7 +681,11 @@ pub fn nav(theme: &Theme, status: button::Status, selected: bool) -> button::Sty
 /// Segmento del toggle de modos: radio pill, activo en acento, mismo alto
 /// para todos los segmentos.
 pub fn segment(theme: &Theme, status: button::Status, active: bool) -> button::Style {
-    let border = Border { color: Color::TRANSPARENT, width: 0.0, radius: radius::PILL.into() };
+    let border = Border {
+        color: Color::TRANSPARENT,
+        width: 0.0,
+        radius: radius::PILL.into(),
+    };
     if active {
         let main = button::Style {
             background: Some(Background::Color(accent(theme))),
@@ -627,7 +723,11 @@ pub fn danger_outline(theme: &Theme, status: button::Status) -> button::Style {
     let main = button::Style {
         background: None,
         text_color: red,
-        border: Border { color: red, width: 1.0, radius: radius::SMALL.into() },
+        border: Border {
+            color: red,
+            width: 1.0,
+            radius: radius::SMALL.into(),
+        },
         shadow: Shadow::default(),
     };
     match status {
@@ -638,7 +738,11 @@ pub fn danger_outline(theme: &Theme, status: button::Status) -> button::Style {
         button::Status::Disabled => button::Style {
             background: Some(Background::Color(well(theme))),
             text_color: muted(is_dark(theme)),
-            border: Border { color: Color::TRANSPARENT, width: 0.0, radius: radius::SMALL.into() },
+            border: Border {
+                color: Color::TRANSPARENT,
+                width: 0.0,
+                radius: radius::SMALL.into(),
+            },
             ..main
         },
         _ => main,
@@ -678,7 +782,11 @@ pub fn field(theme: &Theme, status: text_input::Status) -> text_input::Style {
     };
     match status {
         text_input::Status::Focused => text_input::Style {
-            border: Border { color: accent(theme), width: 1.0, radius: radius::SMALL.into() },
+            border: Border {
+                color: accent(theme),
+                width: 1.0,
+                radius: radius::SMALL.into(),
+            },
             ..passive
         },
         text_input::Status::Disabled => text_input::Style {
@@ -743,7 +851,11 @@ impl ApplyPick for pick_list::Style {
     fn apply_pick(self, status: pick_list::Status, theme: &Theme) -> Self {
         match status {
             pick_list::Status::Hovered => Self {
-                border: Border { color: accent(theme), width: 1.0, radius: radius::SMALL.into() },
+                border: Border {
+                    color: accent(theme),
+                    width: 1.0,
+                    radius: radius::SMALL.into(),
+                },
                 ..self
             },
             _ => self,
@@ -759,7 +871,11 @@ pub fn accent_pick(theme: &Theme, status: pick_list::Status) -> pick_list::Style
         placeholder_color: muted(is_dark(theme)),
         handle_color: accent(theme),
         background: Background::Color(raised(theme)),
-        border: Border { color: accent(theme), width: 1.0, radius: radius::SMALL.into() },
+        border: Border {
+            color: accent(theme),
+            width: 1.0,
+            radius: radius::SMALL.into(),
+        },
     };
     match status {
         pick_list::Status::Hovered => pick_list::Style {
@@ -818,7 +934,11 @@ pub fn markdown_style(theme: &Theme) -> markdown::Style {
     let mut style = markdown::Style::from_palette(theme.palette());
     style.inline_code_highlight = markdown::Highlight {
         background: Background::Color(well(theme)),
-        border: Border { color: border(theme), width: 1.0, radius: radius::SMALL.into() },
+        border: Border {
+            color: border(theme),
+            width: 1.0,
+            radius: radius::SMALL.into(),
+        },
     };
     style.inline_code_color = ink(theme);
     style

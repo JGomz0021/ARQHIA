@@ -52,7 +52,7 @@ pub struct Usage {
 /// Estimador de tokens por caracteres (chars/4, redondeado hacia arriba).
 /// Se usa cuando el proveedor no reporta `usage` en el stream.
 pub fn estimate_tokens_chars(n: usize) -> u32 {
-    n.div_ceil(4) as u32
+    u32::try_from(n.div_ceil(4)).unwrap_or(u32::MAX)
 }
 
 pub fn estimate_tokens_text(s: &str) -> u32 {
@@ -236,15 +236,52 @@ pub fn http_client() -> reqwest::Client {
 }
 
 /// Cliente HTTP para streaming SSE. **Sin timeout total** (una generación
-/// larga puede durar minutos): solo acota la conexión, y el stream queda
-/// acotado por el botón Detener y `max_tokens_turn`. Evita el "error decoding
-/// response body" que lanzaba el timeout total de 20 s a mitad de stream.
+/// larga puede durar minutos): se acota la conexión y, con `read_timeout`, la
+/// espera entre chunks. Evita el "error decoding response body" del timeout
+/// total y evita quedarse colgado si el proveedor deja de enviar bytes.
 pub fn http_stream_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
+        .read_timeout(std::time::Duration::from_secs(90))
         .pool_idle_timeout(std::time::Duration::from_secs(90))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// true si la URL apunta a loopback (localhost/127.0.0.0/8/::1).
+pub fn is_loopback_url(url: &str) -> bool {
+    let u = url.trim().to_lowercase();
+    let rest = u
+        .strip_prefix("http://")
+        .or_else(|| u.strip_prefix("https://"))
+        .unwrap_or("");
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(after) = hostport.strip_prefix('[') {
+        after.split(']').next().unwrap_or("").to_string()
+    } else if hostport.matches(':').count() == 1 {
+        hostport.split(':').next().unwrap_or("").to_string()
+    } else {
+        hostport.to_string()
+    };
+    host == "localhost" || host == "::1" || host.starts_with("127.")
+}
+
+/// No enviar credenciales por HTTP en claro salvo a loopback (LM Studio).
+/// v0.9.5: evita filtrar la API key si la base_url se cambia a `http://`.
+pub fn ensure_secure_endpoint(cfg: &ProviderConfig) -> Result<(), String> {
+    if cfg.api_key.trim().is_empty() {
+        return Ok(());
+    }
+    let url = cfg.base_url.trim();
+    if url.starts_with("http://") && !is_loopback_url(url) {
+        return Err(
+            "Por seguridad, la API key solo se envía por HTTPS (o a un host local). \
+             Corrige la URL base en Configuración."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Envía chunks de texto por el callback. Retorna el uso de tokens si se pudo
@@ -259,6 +296,7 @@ pub async fn chat_stream(
     session: Option<String>,
     mut on_chunk: impl FnMut(String),
 ) -> Result<Usage, String> {
+    ensure_secure_endpoint(&cfg)?;
     // El Option<String> viaja por valor al task async ('static); cada
     // provider lo toma prestado al construir su body/headers.
     let s = session.as_deref();
@@ -271,6 +309,7 @@ pub async fn chat_stream(
 }
 
 pub async fn test_connection(provider: Provider, cfg: ProviderConfig) -> Result<String, String> {
+    ensure_secure_endpoint(&cfg)?;
     match provider {
         Provider::OpenAI => openai::test_connection(cfg).await,
         Provider::Anthropic => anthropic::test_connection(cfg).await,
@@ -340,7 +379,12 @@ pub fn parse_openai_usage(json: &str) -> Option<Usage> {
         .get("cost")
         .and_then(|c| c.as_f64())
         .or_else(|| u.get("total_cost").and_then(|c| c.as_f64()));
-    Some(Usage { input, output, cached, cost })
+    Some(Usage {
+        input,
+        output,
+        cached,
+        cost,
+    })
 }
 
 /// Anthropic `message_start`: `message.usage` con input, cache read/creation.
@@ -549,25 +593,38 @@ mod tests {
     fn usage_parsing_and_estimates() {
         assert_eq!(
             parse_openai_usage(r#"{"usage":{"prompt_tokens":10,"completion_tokens":20}}"#),
-            Some(Usage { input: 10, output: 20, cached: 0, cost: None })
+            Some(Usage {
+                input: 10,
+                output: 20,
+                cached: 0,
+                cost: None
+            })
         );
         assert_eq!(
             parse_openai_usage(
                 r#"{"usage":{"prompt_tokens":10,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":6}}}"#
             ),
-            Some(Usage { input: 10, output: 20, cached: 6, cost: None })
+            Some(Usage {
+                input: 10,
+                output: 20,
+                cached: 6,
+                cost: None
+            })
         );
         assert_eq!(parse_openai_usage(r#"{"choices":[]}"#), None);
         assert_eq!(
             parse_anthropic_start_usage(
                 r#"{"type":"message_start","message":{"usage":{"input_tokens":7,"cache_read_input_tokens":3}}}"#
             ),
-            Some(Usage { input: 10, output: 0, cached: 3, cost: None })
+            Some(Usage {
+                input: 10,
+                output: 0,
+                cached: 3,
+                cost: None
+            })
         );
         assert_eq!(
-            parse_anthropic_output_usage(
-                r#"{"type":"message_delta","usage":{"output_tokens":9}}"#
-            ),
+            parse_anthropic_output_usage(r#"{"type":"message_delta","usage":{"output_tokens":9}}"#),
             Some(9)
         );
         assert_eq!(estimate_tokens_text(""), 0);
@@ -578,12 +635,26 @@ mod tests {
     #[test]
     fn cost_and_context_helpers() {
         assert_eq!(context_window(Provider::Local, "x"), 32_768);
-        assert_eq!(context_window(Provider::OpenAI, "claude-3-5-sonnet"), 200_000);
+        assert_eq!(
+            context_window(Provider::OpenAI, "claude-3-5-sonnet"),
+            200_000
+        );
         assert_eq!(context_window(Provider::OpenAI, "gpt-4o-mini"), 128_000);
-        let million = Usage { input: 1_000_000, output: 0, cached: 0, cost: None };
-        assert_eq!(estimate_cost_usd(Provider::OpenAI, "gpt-4o", million), Some(2.5));
+        let million = Usage {
+            input: 1_000_000,
+            output: 0,
+            cached: 0,
+            cost: None,
+        };
+        assert_eq!(
+            estimate_cost_usd(Provider::OpenAI, "gpt-4o", million),
+            Some(2.5)
+        );
         assert_eq!(estimate_cost_usd(Provider::Local, "x", million), Some(0.0));
-        assert_eq!(estimate_cost_usd(Provider::OpenAI, "modelo-raro", million), None);
+        assert_eq!(
+            estimate_cost_usd(Provider::OpenAI, "modelo-raro", million),
+            None
+        );
         assert_eq!(format_tokens(999), "999");
         assert_eq!(format_tokens(12_000), "12k");
         assert_eq!(format_cost(None), "—");

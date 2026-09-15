@@ -9,8 +9,10 @@ pub fn validate(raw: &str) -> Result<PathBuf, String> {
     }
     // Expande ~ inicial
     let expanded = if let Some(rest) = trimmed.strip_prefix("~/") {
-        let home = std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string());
-        format!("{home}/{rest}")
+        crate::paths::home_dir()
+            .join(rest)
+            .to_string_lossy()
+            .to_string()
     } else {
         trimmed.to_string()
     };
@@ -42,7 +44,8 @@ pub fn list_top(workspace: &Path, limit: usize) -> Vec<String> {
 }
 
 /// Texto para el system prompt del agente (top 20 archivos).
-pub fn context_block(workspace: &Path) -> String {    let files = list_top(workspace, 20);
+pub fn context_block(workspace: &Path) -> String {
+    let files = list_top(workspace, 20);
     if files.is_empty() {
         format!("Workspace: {}\nArchivos: (vacío)", workspace.display())
     } else {
@@ -86,11 +89,7 @@ pub fn slugify(name: &str) -> String {
 
 /// Carpeta por defecto para un proyecto nuevo: ~/ARQHIA/projects/{slug}.
 pub fn default_project_dir(name: &str) -> PathBuf {
-    let home = std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join("ARQHIA")
-        .join("projects")
-        .join(slugify(name))
+    crate::paths::projects_base().join(slugify(name))
 }
 
 /// ¿La carpeta tiene contenido (no vacía)? Para el import auto v0.8.1.
@@ -98,7 +97,9 @@ pub fn is_nonempty_dir(dir: &Path) -> bool {
     if !dir.is_dir() {
         return false;
     }
-    std::fs::read_dir(dir).map(|mut it| it.next().is_some()).unwrap_or(false)
+    std::fs::read_dir(dir)
+        .map(|mut it| it.next().is_some())
+        .unwrap_or(false)
 }
 
 /// ¿Parece un proyecto con código? Manifiestos o más de 2 archivos
@@ -132,7 +133,10 @@ pub fn scan_import(dir: &Path) -> bool {
         "requirements.txt",
         "Dockerfile",
     ];
-    if names.iter().any(|n| MANIFESTS.contains(&n.as_str()) || n == ".git") {
+    if names
+        .iter()
+        .any(|n| MANIFESTS.contains(&n.as_str()) || n == ".git")
+    {
         return true;
     }
     names.len() > 2
@@ -151,8 +155,11 @@ pub fn ensure_project_layout(workspace: &Path) -> Result<Vec<String>, String> {
         .map_err(|e| format!("No se pudo crear CONTEXT/VERSIONS: {e}"))?;
     let todo = workspace.join("ToDo.md");
     if !todo.exists() {
-        std::fs::write(&todo, "# ToDo\n\n_Tablero de ejecución (lo mantiene el agente)._\n")
-            .map_err(|e| format!("No se pudo crear ToDo.md: {e}"))?;
+        std::fs::write(
+            &todo,
+            "# ToDo\n\n_Tablero de ejecución (lo mantiene el agente)._\n",
+        )
+        .map_err(|e| format!("No se pudo crear ToDo.md: {e}"))?;
     }
     Ok(vec![
         project.to_string_lossy().to_string(),
@@ -163,11 +170,20 @@ pub fn ensure_project_layout(workspace: &Path) -> Result<Vec<String>, String> {
 
 /// Escribe los 3 documentos del cuestionario en `{workspace}/CONTEXT/`.
 /// Devuelve las rutas escritas.
-pub fn save_project_docs(workspace: &Path, project: &str, specs: &str, context: &str) -> Result<Vec<String>, String> {
+pub fn save_project_docs(
+    workspace: &Path,
+    project: &str,
+    specs: &str,
+    context: &str,
+) -> Result<Vec<String>, String> {
     let dir = workspace.join("CONTEXT");
     std::fs::create_dir_all(&dir).map_err(|e| format!("No se pudo crear CONTEXT: {e}"))?;
     let mut out = Vec::new();
-    for (name, content) in [("PROJECT.md", project), ("SPECS.md", specs), ("CONTEXT.md", context)] {
+    for (name, content) in [
+        ("PROJECT.md", project),
+        ("SPECS.md", specs),
+        ("CONTEXT.md", context),
+    ] {
         let file = dir.join(name);
         std::fs::write(&file, content).map_err(|e| format!("No se pudo escribir {name}: {e}"))?;
         out.push(file.to_string_lossy().to_string());
@@ -223,7 +239,11 @@ fn free_upload_name(dir: &Path, file_name: &str) -> String {
 
 /// Copia archivos a `{workspace}/uploads/`. Devuelve (copiados, errores).
 /// Rechaza carpetas y archivos sobre el tope. Nunca sobrescribe.
-pub fn upload_files(workspace: &Path, srcs: &[PathBuf], max_bytes: u64) -> (Vec<String>, Vec<String>) {
+pub fn upload_files(
+    workspace: &Path,
+    srcs: &[PathBuf],
+    max_bytes: u64,
+) -> (Vec<String>, Vec<String>) {
     upload_files_with_cap(workspace, srcs, max_bytes)
 }
 
@@ -237,10 +257,7 @@ fn upload_files_with_cap(
     let ws_canon = match workspace.canonicalize() {
         Ok(p) => p,
         Err(e) => {
-            return (
-                Vec::new(),
-                vec![format!("Workspace inválido: {e}")],
-            );
+            return (Vec::new(), vec![format!("Workspace inválido: {e}")]);
         }
     };
     let dir = uploads_dir(&ws_canon);
@@ -336,6 +353,32 @@ pub fn delete_upload(workspace: &Path, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Variantes async (v0.9.5): el FS bloqueante va a `spawn_blocking` para no
+// bloquear el executor ni la UI. Las sync se conservan (rutas rápidas de la
+// UI como el banner Import, que solo lee 1 nivel).
+// ---------------------------------------------------------------------------
+
+/// `context_block` en background.
+pub async fn context_block_async(workspace: &Path) -> String {
+    let ws = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || context_block(&ws))
+        .await
+        .unwrap_or_else(|_| "(contexto no disponible)".to_string())
+}
+
+/// `scan_import` en background.
+// NOTE(v0.9.5): la ruta de la UI (banner Import) usa la sync a propósito:
+// es un único `read_dir` (≤60 entradas, microsegundos). Este wrapper sirve
+// a llamantes en background y está cubierto por tests.
+#[allow(dead_code)]
+pub async fn scan_import_async(dir: &Path) -> bool {
+    let d = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || scan_import(&d))
+        .await
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,7 +424,10 @@ mod tests {
         assert!(migrate_espec(&ws2).is_some());
         assert!(ws2.join("CONTEXT").join("SPECS.md").is_file());
         assert!(migrate_espec(&ws2).is_none());
-        assert!(migrate_espec(&ws).is_none(), "sin ESPEC no hay nada que migrar");
+        assert!(
+            migrate_espec(&ws).is_none(),
+            "sin ESPEC no hay nada que migrar"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

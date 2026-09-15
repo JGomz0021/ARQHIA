@@ -7,9 +7,9 @@ use iced::Task;
 use super::events::Message;
 use super::state::App;
 use crate::agent;
+use crate::config;
 use crate::config::Provider;
 use crate::db;
-use crate::config;
 use crate::llm::{ChatMsg, Role};
 
 /// Sesión de un worker del orquestador (v0.6 + v0.7.1): historial crudo
@@ -118,7 +118,11 @@ async fn run_planner(
         Some(&pp.brief),
         &pp.cfg,
         &pp.label,
-        if extra.is_empty() { None } else { Some(extra.as_str()) },
+        if extra.is_empty() {
+            None
+        } else {
+            Some(extra.as_str())
+        },
     )
     .await;
     (pp.mode, res)
@@ -126,7 +130,11 @@ async fn run_planner(
 
 /// Lanza `plan_tasks` con el contexto ya resuelto (v0.9.1: brief + Net+Read).
 /// El mensaje de vuelta respeta el modo (Plan → PlanDone, Work → AgentPlan).
-pub(crate) fn spawn_planner(state: &mut App, pp: PendingPlanner, net_approved: bool) -> Task<Message> {
+pub(crate) fn spawn_planner(
+    state: &mut App,
+    pp: PendingPlanner,
+    net_approved: bool,
+) -> Task<Message> {
     let turn = state.agent_gen;
     Task::perform(
         async move { run_planner(pp, net_approved).await },
@@ -175,9 +183,12 @@ pub(crate) fn worker_seed(
     };
     // Contexto del proyecto UNA vez, delante de todo (v0.7.1 adelgazado).
     if let Some(ctx) = agent::worker_context_block(ws, agents_md.as_deref()) {
-        let mut prefix = String::from("Contexto del proyecto (solo lectura, no repetir en cada paso):\n");
+        let mut prefix =
+            String::from("Contexto del proyecto (solo lectura, no repetir en cada paso):\n");
         if cut > 0 {
-            prefix.push_str(&format!("[{cut} mensajes previos omitidos por ventana de historial]\n"));
+            prefix.push_str(&format!(
+                "[{cut} mensajes previos omitidos por ventana de historial]\n"
+            ));
         }
         prefix.push_str(&ctx);
         raw.insert(0, serde_json::json!({"role": "user", "content": prefix}));
@@ -267,9 +278,10 @@ pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
         final_answer.push_str(&block);
     }
     if let Some(last) = state.messages.last_mut()
-        && last.role == Role::Assistant {
-            last.content = final_answer.clone();
-        }
+        && last.role == Role::Assistant
+    {
+        last.content = final_answer.clone();
+    }
     state.reparse_last_md();
     // Uso estimado del turno de agente (sin `usage` real: es no-streaming).
     let input_est: u32 = state
@@ -278,7 +290,12 @@ pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
         .map(|m| crate::llm::estimate_tokens_text(&m.content))
         .sum();
     let output_est = crate::llm::estimate_tokens_text(&answer);
-    let usage = crate::llm::Usage { input: input_est, output: output_est, cached: 0, cost: None };
+    let usage = crate::llm::Usage {
+        input: input_est,
+        output: output_est,
+        cached: 0,
+        cost: None,
+    };
     let n = state.messages.len();
     state.msg_usage.resize(n, None);
     if n > 0 && state.messages[n - 1].role == Role::Assistant {
@@ -291,10 +308,15 @@ pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
         state.config.active,
         &state.config.active_config().base_url,
     );
-    let cost = state
-        .pricing
-        .cost_in(pid.as_deref(), &model, usage)
-        .or_else(|| crate::llm::estimate_cost_usd(state.config.active, &model, usage));
+    // Local nunca cuesta; no caer al catálogo global (coste falso).
+    let cost = if state.config.active == Provider::Local {
+        Some(0.0)
+    } else {
+        state
+            .pricing
+            .cost_in(pid.as_deref(), &model, usage)
+            .or_else(|| crate::llm::estimate_cost_usd(state.config.active, &model, usage))
+    };
     state.session_in += input_est as u64;
     state.session_out += output_est as u64;
     if let Some(c) = cost {
@@ -306,12 +328,13 @@ pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
         output_est,
         crate::llm::format_cost(cost)
     ));
-    if let Some(chat_id) = state.active_chat
+    if let Some(chat_id) = state.o_chat.or(state.active_chat)
         && let Some(last) = state.messages.last()
-            && !last.content.trim().is_empty() {
-                let _ = db::save_msg(chat_id, "assistant", &last.content);
-                state.resync_msg_meta(chat_id);
-            }
+        && !last.content.trim().is_empty()
+    {
+        let _ = db::save_msg(chat_id, "assistant", &last.content);
+        state.resync_msg_meta(chat_id);
+    }
 }
 
 /// Quita el placeholder del turno si abortó ("orquestando..." o
@@ -319,9 +342,10 @@ pub(crate) fn finish_agent_answer(state: &mut App, answer: String) {
 pub(crate) fn abort_agent_placeholder(state: &mut App) {
     if let Some(last) = state.messages.last()
         && last.role == Role::Assistant
-        && (last.content == "orquestando..." || last.content == "planificando...") {
-            state.pop_last_message();
-        }
+        && (last.content == "orquestando..." || last.content == "planificando...")
+    {
+        state.pop_last_message();
+    }
 }
 
 /// Lanza el worker `idx` de orch_tasks (o el fix si idx == len-1 y es fix).
@@ -342,7 +366,11 @@ pub(crate) fn start_worker(state: &mut App, idx: usize) -> Task<Message> {
     )
 }
 
-pub(crate) fn start_worker_with_task(state: &mut App, idx: usize, task: agent::WTask) -> Task<Message> {
+pub(crate) fn start_worker_with_task(
+    state: &mut App,
+    idx: usize,
+    task: agent::WTask,
+) -> Task<Message> {
     let (provider, cfg, ws) = match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
         (Some(p), Some(c), Some(w)) => (p, c, w),
         _ => return Task::none(),
@@ -351,7 +379,8 @@ pub(crate) fn start_worker_with_task(state: &mut App, idx: usize, task: agent::W
         t.active = true;
     }
     let limits = state.config.limits.clamped();
-    let (system_base, raw) = worker_seed(provider, &state.o_history, &task, &ws, limits.history_limit);
+    let (system_base, raw) =
+        worker_seed(provider, &state.o_history, &task, &ws, limits.history_limit);
     // El system declara modo y capacidades (v0.7.1 visibilidad obligatoria).
     // v0.9 Track B: sin `share_local`, el agente nunca propone guardar.
     let share_note = share_note(state.config.stack_consent.share_local);
@@ -387,7 +416,13 @@ pub(crate) fn short_task(desc: &str) -> String {
 /// Pide UN paso LLM al driver actual (el resultado vuelve como AgentLlm).
 pub(crate) fn request_next_llm_step(state: &mut App) -> Task<Message> {
     let (provider, cfg, system, raw, turn) = match state.driver.as_ref() {
-        Some(d) => (d.provider, d.cfg.clone(), d.system.clone(), d.raw.clone(), state.agent_gen),
+        Some(d) => (
+            d.provider,
+            d.cfg.clone(),
+            d.system.clone(),
+            d.raw.clone(),
+            state.agent_gen,
+        ),
         None => return Task::none(),
     };
     Task::perform(
@@ -424,8 +459,16 @@ pub(crate) fn spawn_exec_calls(
     // puede mover capturas): así AgentExecDone puede poblar la caché.
     Task::perform(
         async move {
-            let (append, logs) =
-                agent::exec_calls(provider, &ws, &extra, step, &calls, &policy, agent::roles::Role::Worker).await;
+            let (append, logs) = agent::exec_calls(
+                provider,
+                &ws,
+                &extra,
+                step,
+                &calls,
+                &policy,
+                agent::roles::Role::Worker,
+            )
+            .await;
             (calls, append, logs)
         },
         move |(calls, append, logs)| Message::AgentExecDone(turn, calls, append, logs),
@@ -434,20 +477,21 @@ pub(crate) fn spawn_exec_calls(
 
 /// Tras terminar un worker: siguiente worker o auditoría.
 pub(crate) fn continue_after_worker(state: &mut App) -> Task<Message> {
-    let next = state
-        .orch_tasks
-        .iter()
-        .position(|t| !t.done && !t.active);
+    let next = state.orch_tasks.iter().position(|t| !t.done && !t.active);
     match next {
         Some(idx) => start_worker(state, idx),
         None => {
             // Todos listos -> auditor
-            let (provider, cfg, ws) = match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
-                (Some(p), Some(c), Some(w)) => (p, c, w),
-                _ => {
-                    return finish_orchestrator(state, " (sin auditor: faltan datos)".to_string());
-                }
-            };
+            let (provider, cfg, ws) =
+                match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
+                    (Some(p), Some(c), Some(w)) => (p, c, w),
+                    _ => {
+                        return finish_orchestrator(
+                            state,
+                            " (sin auditor: faltan datos)".to_string(),
+                        );
+                    }
+                };
             orch_phase(state, 4, 5, "auditor");
             let turn = state.agent_gen;
             let cycle = state.fix_cycle;
@@ -514,7 +558,12 @@ pub(crate) fn refresh_token_badge(state: &mut App) {
     } else {
         format!("🪙 {} tokens este turno", agent::format_tokens(used))
     };
-    if state.tool_logs.last().map(|l| l.starts_with("🪙")).unwrap_or(false) {
+    if state
+        .tool_logs
+        .last()
+        .map(|l| l.starts_with("🪙"))
+        .unwrap_or(false)
+    {
         let last = state.tool_logs.len() - 1;
         state.tool_logs[last] = line;
     } else {
@@ -546,6 +595,48 @@ pub(crate) fn share_note(share_local: bool) -> &'static str {
     } else {
         "\nNota de consentimiento: el usuario NO permite guardar en el STACK local; no propongas guardar snippets."
     }
+}
+
+/// Decisión pura del bucle auditor → analista → fix (v0.9.5).
+/// `temp`: contenido de TEMP.md del auditor; `cycle`: ciclo actual;
+/// `max`: tope de `Limits.max_fix_cycles` (0 = ilimitado).
+/// El handler solo despacha `Message`; la lógica vive aquí y es testeable.
+pub(crate) fn run_fix_cycle(
+    temp: &str,
+    cycle: usize,
+    max: usize,
+) -> crate::agent::roles::FixDecision {
+    use crate::agent::{roles::fix_decision, temp_has_issues};
+    // v0.9.5: tope duro de seguridad cuando la config lo deja "ilimitado"
+    // (0): evita un bucle infinito quemando tokens si el auditor nunca queda
+    // verde. Alineado con el máximo configurable (20).
+    const SAFETY_MAX_FIX_CYCLES: usize = 20;
+    let effective = if max == 0 { SAFETY_MAX_FIX_CYCLES } else { max };
+    fix_decision(temp_has_issues(temp), cycle, effective)
+}
+
+/// Issues contados en un TEMP (líneas `- ...`): puro, para el Log.
+pub(crate) fn count_temp_issues(temp: &str) -> usize {
+    temp.lines()
+        .filter(|l| l.trim_start().starts_with('-'))
+        .count()
+}
+
+/// Prompt de re-análisis del analista ante ISSUES (v0.9.5): puro.
+pub(crate) fn reanalyze_prompt(pedido_orig: &str, temp: &str, cycle: usize) -> String {
+    format!(
+        "Re-analiza antes de arreglar (ciclo {cycle}). Pedido original: {pedido_orig}\n\n## TEMP del auditor:\n{}",
+        temp.chars().take(1500).collect::<String>()
+    )
+}
+
+/// Descripción del worker de fixes (v0.9.5): pura.
+pub(crate) fn fix_task_desc(temp: &str, cycle: usize) -> String {
+    format!(
+        "Corrige estos issues del auditor (ciclo {}, sin cambiar nada más):\n{}",
+        cycle,
+        temp.chars().take(1200).collect::<String>()
+    )
 }
 
 /// Respuesta final del turno: resumen de workers + veredicto.
@@ -588,7 +679,9 @@ pub(crate) fn prepare_git_turn(state: &mut App) {
     state.git_turn_interrupted = false;
     state.git_clean_before = true;
     let git = state.config.git.clone();
-    let Some(ws) = state.o_ws.clone() else { return; };
+    let Some(ws) = state.o_ws.clone() else {
+        return;
+    };
     if !git.enabled {
         return;
     }
@@ -602,14 +695,18 @@ pub(crate) fn prepare_git_turn(state: &mut App) {
     }
 }
 
-/// Cierra el turno con git (v0.7.2): auto-commit solo si la verificación
-/// pasó y el árbol venía limpio; push solo si `CommitAndPush + push_enabled`.
+/// Cierra el turno con git (v0.7.2, commit async v0.9.5): auto-commit solo
+/// si la verificación pasó y el árbol venía limpio; el commit corre en
+/// background (`GitCommitDone`) y el push —solo si `CommitAndPush +
+/// push_enabled`— se encadena desde ese mensaje. La UI no se congela.
 fn close_git_turn(state: &mut App) -> Task<Message> {
     let git = state.config.git.clone();
     if !git.enabled || matches!(git.autonomy, crate::config::GitAutonomy::ReadOnly) {
         return Task::none();
     }
-    let Some(ws) = state.o_ws.clone() else { return Task::none(); };
+    let Some(ws) = state.o_ws.clone() else {
+        return Task::none();
+    };
     if !crate::git::is_repo(&ws) {
         return Task::none();
     }
@@ -626,21 +723,13 @@ fn close_git_turn(state: &mut App) -> Task<Message> {
         return Task::none();
     }
     let msg = format!("ARQHIA: {}", last_user_summary(state));
-    match crate::git::commit_all(&ws, &msg, git.author(), state.git_clean_before) {
-        Ok(Some(sha)) => state.push_log(format!("🌿 commit {sha}: {msg}")),
-        Ok(None) => {}
-        Err(e) => state.push_log(format!("⚠️ commit falló: {e}")),
-    }
-    if git.auto_push() {
-        let remote = git.remote.clone();
-        let branch = git.push_target().to_string();
-        state.push_log(format!("⬆ push {remote}/{branch}…"));
-        return Task::perform(
-            async move { crate::git::push(&ws, &remote, &branch).await },
-            Message::GitPushDone,
-        );
-    }
-    Task::none()
+    let author = git.author();
+    let clean_before = state.git_clean_before;
+    state.push_log("🌿 commit en background…".to_string());
+    Task::perform(
+        async move { crate::git::commit_all_async(&ws, &msg, author, clean_before).await },
+        Message::GitCommitDone,
+    )
 }
 
 /// Resumen corto del último pedido del usuario para el mensaje de commit.
@@ -668,13 +757,58 @@ mod tests {
     }
 
     fn task(desc: &str) -> agent::WTask {
-        agent::WTask { desc: desc.to_string(), files: Vec::new(), accept: String::new() }
+        agent::WTask {
+            desc: desc.to_string(),
+            files: Vec::new(),
+            accept: String::new(),
+        }
     }
 
     fn history(n: usize) -> Vec<ChatMsg> {
         (0..n)
-            .map(|i| ChatMsg { role: if i % 2 == 0 { Role::User } else { Role::Assistant }, content: format!("m{i}") })
+            .map(|i| ChatMsg {
+                role: if i % 2 == 0 {
+                    Role::User
+                } else {
+                    Role::Assistant
+                },
+                content: format!("m{i}"),
+            })
             .collect()
+    }
+
+    #[test]
+    fn run_fix_cycle_pure_clean_fix_cap() {
+        use crate::agent::roles::FixDecision;
+        assert_eq!(
+            run_fix_cycle("## Auditoría\n\nSIN ISSUES", 0, 0),
+            FixDecision::Clean
+        );
+        assert_eq!(run_fix_cycle("VERDICT: CLEAN", 5, 2), FixDecision::Clean);
+        assert_eq!(
+            run_fix_cycle("VERDICT: ISSUES\n- algo roto", 0, 0),
+            FixDecision::Fix
+        );
+        assert_eq!(
+            run_fix_cycle("VERDICT: ISSUES\n- algo roto", 5, 0),
+            FixDecision::Fix
+        );
+        assert_eq!(
+            run_fix_cycle("VERDICT: ISSUES\n- x", 0, 2),
+            FixDecision::Fix
+        );
+        assert_eq!(
+            run_fix_cycle("VERDICT: ISSUES\n- x", 1, 2),
+            FixDecision::Fix
+        );
+        assert_eq!(
+            run_fix_cycle("VERDICT: ISSUES\n- x", 2, 2),
+            FixDecision::CapReached
+        );
+        assert_eq!(count_temp_issues("VERDICT: ISSUES\n- a\n- b\n#c"), 2);
+        assert_eq!(count_temp_issues("SIN ISSUES"), 0);
+        assert!(reanalyze_prompt("haz X", "- roto", 1).contains("ciclo 1"));
+        assert!(fix_task_desc("- roto", 2).contains("ciclo 2"));
     }
 
     #[test]
@@ -684,7 +818,10 @@ mod tests {
         // Historial largo (30) con ventana 20: 20 mensajes + contexto + tarea.
         let (system, raw) = worker_seed(Provider::OpenAI, &history(30), &task("haz X"), &ws, 20);
         assert!(system.contains("haz X"));
-        assert!(!system.contains("Demo"), "ESPEC no va en el system (va una vez como mensaje)");
+        assert!(
+            !system.contains("Demo"),
+            "ESPEC no va en el system (va una vez como mensaje)"
+        );
         let first = raw[0]["content"].as_str().unwrap_or("");
         assert!(first.contains("Demo"), "contexto primero: {first}");
         assert!(first.contains("10 mensajes previos omitidos"), "{first}");
@@ -737,7 +874,10 @@ mod tests {
             .args(["rev-list", "--count", "HEAD"])
             .output()
             .expect("git rev-list");
-        String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0)
+        String::from_utf8_lossy(&out.stdout)
+            .trim()
+            .parse()
+            .unwrap_or(0)
     }
 
     /// v0.9: consentimiento del STACK (Track A consulta, Track B niega).
@@ -758,9 +898,12 @@ mod tests {
     }
 
     /// v0.7.3: el auto-commit del cierre solo ocurre con el turno verde.
-    #[test]
+    /// v0.9.5: el commit corre en background (`GitCommitDone`); aquí se
+    /// verifica la guarda (rojo = sin commit ni tarea) y el commit real
+    /// se prueba vía `commit_all_async`.
+    #[tokio::test]
     #[allow(clippy::field_reassign_with_default)]
-    fn commit_only_when_turn_is_green() {
+    async fn commit_only_when_turn_is_green() {
         let ws = std::env::temp_dir().join("arqhia-orch-commit-test");
         let _ = std::fs::remove_dir_all(&ws);
         std::fs::create_dir_all(&ws).unwrap();
@@ -771,7 +914,9 @@ mod tests {
         };
         crate::git::ensure_work_branch(&ws, &git).unwrap();
         std::fs::write(ws.join("a.txt"), "1").unwrap();
-        crate::git::commit_all(&ws, "init", git.author(), true).unwrap();
+        crate::git::commit_all_async(&ws, "init", git.author(), true)
+            .await
+            .unwrap();
         let before = commit_count(&ws);
 
         // Turno ROJO: hay cambios pero la verificación no pasó -> sin commit.
@@ -779,7 +924,10 @@ mod tests {
         red.active_chat = None;
         red.config.git = git.clone();
         red.o_ws = Some(ws.clone());
-        red.o_history = vec![ChatMsg { role: Role::User, content: "haz algo".to_string() }];
+        red.o_history = vec![ChatMsg {
+            role: Role::User,
+            content: "haz algo".to_string(),
+        }];
         red.worker_answers = vec!["listo".to_string()];
         red.git_clean_before = true;
         red.git_verify_ok = false;
@@ -787,16 +935,31 @@ mod tests {
         let _ = finish_orchestrator(&mut red, String::new());
         assert_eq!(commit_count(&ws), before, "en rojo no debe commitear");
 
-        // Turno VERDE: mismo cambio pendiente -> commit.
+        // Turno VERDE: mismo cambio pendiente -> commit en background.
         let mut green = App::default();
         green.active_chat = None;
         green.config.git = git.clone();
         green.o_ws = Some(ws.clone());
-        green.o_history = vec![ChatMsg { role: Role::User, content: "haz algo".to_string() }];
+        green.o_history = vec![ChatMsg {
+            role: Role::User,
+            content: "haz algo".to_string(),
+        }];
         green.worker_answers = vec!["listo".to_string()];
         green.git_clean_before = true;
         green.git_verify_ok = true;
         let _ = finish_orchestrator(&mut green, String::new());
+        assert!(
+            green
+                .tool_logs
+                .iter()
+                .any(|l| l.contains("commit en background")),
+            "en verde se agenda el commit async"
+        );
+        // El commit real (async) hace el trabajo sin bloquear.
+        let sha = crate::git::commit_all_async(&ws, "ARQHIA: verde", git.author(), true)
+            .await
+            .unwrap();
+        assert!(sha.is_some(), "en verde debe commitear");
         assert_eq!(commit_count(&ws), before + 1, "en verde debe commitear");
         let _ = std::fs::remove_dir_all(&ws);
     }

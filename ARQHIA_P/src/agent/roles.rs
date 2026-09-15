@@ -504,9 +504,7 @@ mod tests {
             1
         );
         // Flag ON + Net auto + listado: sale directo.
-        assert!(
-            planner_urls_needing_permission(pedido, true, true, &doms, false).is_empty()
-        );
+        assert!(planner_urls_needing_permission(pedido, true, true, &doms, false).is_empty());
         // Flag ON pero Net OFF: pide permiso.
         assert_eq!(
             planner_urls_needing_permission(pedido, true, false, &doms, false).len(),
@@ -518,14 +516,9 @@ mod tests {
             1
         );
         // Lote aprobado: no pide más.
-        assert!(
-            planner_urls_needing_permission(pedido, false, false, &[], true).is_empty()
-        );
+        assert!(planner_urls_needing_permission(pedido, false, false, &[], true).is_empty());
         // Sin URLs: nada que pedir.
-        assert!(
-            planner_urls_needing_permission("crea a.txt", true, true, &doms, false)
-                .is_empty()
-        );
+        assert!(planner_urls_needing_permission("crea a.txt", true, true, &doms, false).is_empty());
     }
 
     #[test]
@@ -561,7 +554,9 @@ mod tests {
             "test-qa"
         );
         assert_eq!(
-            suggest_skill_for_issues("## Auditoría\n\n- src/main.rs: unwrap\n\nVERDICT: ISSUES\n\nVERIFY: OK\n"),
+            suggest_skill_for_issues(
+                "## Auditoría\n\n- src/main.rs: unwrap\n\nVERDICT: ISSUES\n\nVERIFY: OK\n"
+            ),
             "code-review"
         );
     }

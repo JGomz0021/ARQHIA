@@ -9,9 +9,9 @@ use crate::db::ChatMeta;
 use crate::titles;
 
 pub(crate) fn chat_row<'a>(state: &'a App, chat: &'a ChatMeta) -> Element<'a, Message> {
-    use iced::widget::{column, container, row, text};
-    use crate::ui::{components, design};
     use crate::ui::design::type_scale;
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, row, text};
     let selected = state.active_chat == Some(chat.id);
     let ts = state.config.appearance.text_size.scale();
     if state.pending_delete == Some(chat.id) {
@@ -58,29 +58,30 @@ pub(crate) fn chat_row<'a>(state: &'a App, chat: &'a ChatMeta) -> Element<'a, Me
                 .map(|p| (p.id, p.name.clone()))
                 .collect();
             if chat.project_id.is_some() {
-                menu = menu.push(
-                    components::icon_btn("Sin proyecto".to_string()).on_press(Message::AssignChatProject {
+                menu = menu.push(components::icon_btn("Sin proyecto".to_string()).on_press(
+                    Message::AssignChatProject {
                         chat: cid,
                         project: None,
-                    }),
-                );
+                    },
+                ));
             }
             let no_targets = others.is_empty() && chat.project_id.is_none();
             for (pid, name) in &others {
                 let pid = *pid;
-                menu = menu.push(
-                    components::icon_btn(name.clone()).on_press(Message::AssignChatProject {
+                menu = menu.push(components::icon_btn(name.clone()).on_press(
+                    Message::AssignChatProject {
                         chat: cid,
                         project: Some(pid),
-                    }),
-                );
+                    },
+                ));
             }
             if no_targets {
                 menu = menu.push(text("No hay proyectos.").size(design::fs(ts, 12)));
             }
         } else {
             menu = menu.push(
-                components::icon_btn("Mover a proyecto…".to_string()).on_press(Message::ToggleMovePick(cid)),
+                components::icon_btn("Mover a proyecto…".to_string())
+                    .on_press(Message::ToggleMovePick(cid)),
             );
         }
         if chat.archived {
@@ -92,14 +93,14 @@ pub(crate) fn chat_row<'a>(state: &'a App, chat: &'a ChatMeta) -> Element<'a, Me
                 components::icon_btn("Archivar".to_string()).on_press(Message::ArchiveChat(cid)),
             );
         }
-        menu = menu.push(
-            components::icon_btn("Borrar".to_string()).on_press(Message::DeleteChat(cid)),
-        );
+        menu = menu
+            .push(components::icon_btn("Borrar".to_string()).on_press(Message::DeleteChat(cid)));
         // v0.8: regenera el session_id del chat (limpia la caché del provider).
         // Solo tiene sentido sobre el chat activo (la sesión vive por chat).
         if state.active_chat == Some(cid) {
             menu = menu.push(
-                components::icon_btn("Reiniciar sesión".to_string()).on_press(Message::ResetSession),
+                components::icon_btn("Reiniciar sesión".to_string())
+                    .on_press(Message::ResetSession),
             );
         }
         col = col.push(
@@ -113,9 +114,9 @@ pub(crate) fn chat_row<'a>(state: &'a App, chat: &'a ChatMeta) -> Element<'a, Me
 }
 
 pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, row, scrollable, text, text_input};
-    use crate::ui::{components, design};
     use crate::ui::design::type_scale;
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, row, scrollable, text, text_input};
     let cx = state.config.appearance.compact();
     let mut list = column![].spacing(design::gap(cx, 8));
     let ts = state.config.appearance.text_size.scale();
@@ -141,218 +142,242 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
         .align_y(iced::Alignment::Center),
     );
     if show_projects {
-    if state.show_project_form {
-        list = list.push(
-            container(
-                column![
-                    text_input("Nombre del proyecto...", &state.new_project_name)
-                        .size(design::fs(ts, 12))
-                        .style(|t: &Theme, s| design::field(t, s))
-                        .on_input(Message::NewProjectNameChanged)
-                        .on_submit(Message::CreateProject)
-                        .width(iced::Fill),
-                    text_input("Ruta (vacío = ~/ARQHIA/projects/...)", &state.new_project_path)
+        if state.show_project_form {
+            list = list.push(
+                container(
+                    column![
+                        text_input("Nombre del proyecto...", &state.new_project_name)
+                            .size(design::fs(ts, 12))
+                            .style(|t: &Theme, s| design::field(t, s))
+                            .on_input(Message::NewProjectNameChanged)
+                            .on_submit(Message::CreateProject)
+                            .width(iced::Fill),
+                        text_input(
+                            "Ruta (vacío = ~/ARQHIA/projects/...)",
+                            &state.new_project_path
+                        )
                         .size(design::fs(ts, 11))
                         .style(|t: &Theme, s| design::field(t, s))
                         .on_input(Message::NewProjectPathChanged)
                         .on_submit(Message::CreateProject)
                         .width(iced::Fill),
-                    row![
-                        components::primary_btn("Crear".to_string(), 12).on_press(Message::CreateProject),
-                        components::quiet_btn("Sin cuestionario".to_string()).on_press(Message::CreateProjectSkip),
-                        components::icon_btn("Cancelar".to_string()).on_press(Message::ToggleProjectForm),
-                    ]
-                    .spacing(6),
-                ]
-                .spacing(6),
-            )
-            .padding(10)
-            .style(|t: &Theme| design::card(t)),
-        );
-    }
-    if state.projects.is_empty() && !state.show_project_form {
-        list = list.push(components::empty_state(super::app_theme(state),
-            "Sin proyectos",
-            "Crea uno para agrupar chats y asignar workspace.",
-        ));
-    }
-    for project in &state.projects {
-        let project_chats: Vec<&ChatMeta> = state
-            .chats
-            .iter()
-            .filter(|c| c.project_id == Some(project.id) && !c.archived)
-            .collect();
-        let collapsed = state.collapsed.contains(&project.id);
-        let chevron = if collapsed { ">" } else { "v" };
-        let has_ws = project
-            .path
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .is_some();
-        if state.pending_project_delete == Some(project.id) {
-            list = list.push(
-                container(
-                    column![
-                        text(format!("Borrar '{}'?", project.name)).size(design::fs(ts, 12)),
-                        text("Sus chats se eliminan y la carpeta va a la papelera.")
-                            .size(design::fs(ts, 11)),
                         row![
-                            components::danger_btn("Sí, borrar".to_string())
-                                .on_press(Message::ConfirmDeleteProject),
-                            components::icon_btn("No".to_string()).on_press(Message::CancelDeleteProject),
+                            components::primary_btn("Crear".to_string(), 12)
+                                .on_press(Message::CreateProject),
+                            components::quiet_btn("Sin cuestionario".to_string())
+                                .on_press(Message::CreateProjectSkip),
+                            components::icon_btn("Cancelar".to_string())
+                                .on_press(Message::ToggleProjectForm),
                         ]
                         .spacing(6),
                     ]
-                    .spacing(4),
+                    .spacing(6),
                 )
-                .padding(8)
+                .padding(10)
                 .style(|t: &Theme| design::card(t)),
             );
-            continue;
         }
-        // Project block: header + context + chats wrapped in a card so
-        // projects read as units, clearly apart from loose chats.
-        // Workspace actions live behind the ⋯ menu, not inline.
-        let menu_open = state.project_menu == Some(project.id);
-        let mut pcol = column![
-            row![
-                components::icon_btn(chevron.to_string()).on_press(Message::ToggleProject(project.id)),
-                text(&project.name).size(design::fs(ts, type_scale::BODY)),
-                components::dot(super::app_theme(state),
-                    if has_ws {
-                        design::Tone::Ok
-                    } else {
-                        design::Tone::Neutral
-                    }
-                ),
-                text(format!("{}", project_chats.len()))
-                    .size(design::fs(ts, 12)),
-                iced::widget::horizontal_space(),
-                components::icon_btn("+".to_string()).on_press(Message::NewChatInProject(project.id)),
-                components::icon_btn("...".to_string()).on_press(Message::ToggleProjectMenu(project.id)),
-            ]
-            .spacing(4)
-            .align_y(iced::Alignment::Center),
-        ]
-        .spacing(design::gap(cx, 4));
-        if collapsed {
-            list = list.push(
-                container(pcol)
-                    .padding(design::pad(cx, 6))
+        if state.projects.is_empty() && !state.show_project_form {
+            list = list.push(components::empty_state(
+                super::app_theme(state),
+                "Sin proyectos",
+                "Crea uno para agrupar chats y asignar workspace.",
+            ));
+        }
+        for project in &state.projects {
+            let project_chats: Vec<&ChatMeta> = state
+                .chats
+                .iter()
+                .filter(|c| c.project_id == Some(project.id) && !c.archived)
+                .collect();
+            let collapsed = state.collapsed.contains(&project.id);
+            let chevron = if collapsed { ">" } else { "v" };
+            let has_ws = project
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
+            if state.pending_project_delete == Some(project.id) {
+                list = list.push(
+                    container(
+                        column![
+                            text(format!("Borrar '{}'?", project.name)).size(design::fs(ts, 12)),
+                            text("Sus chats se eliminan y la carpeta va a la papelera.")
+                                .size(design::fs(ts, 11)),
+                            row![
+                                components::danger_btn("Sí, borrar".to_string())
+                                    .on_press(Message::ConfirmDeleteProject),
+                                components::icon_btn("No".to_string())
+                                    .on_press(Message::CancelDeleteProject),
+                            ]
+                            .spacing(6),
+                        ]
+                        .spacing(4),
+                    )
+                    .padding(8)
                     .style(|t: &Theme| design::card(t)),
-            );
-            continue;
-        }
-        match project.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            // Con workspace: la ruta solo vive dentro del menú ⋯ (input
-            // prellenado), no como línea visible permanente.
-            Some(_) => {
-                if menu_open {
-                    let current = state
+                );
+                continue;
+            }
+            // Project block: header + context + chats wrapped in a card so
+            // projects read as units, clearly apart from loose chats.
+            // Workspace actions live behind the ⋯ menu, not inline.
+            let menu_open = state.project_menu == Some(project.id);
+            let mut pcol = column![
+                row![
+                    components::icon_btn(chevron.to_string())
+                        .on_press(Message::ToggleProject(project.id)),
+                    text(&project.name).size(design::fs(ts, type_scale::BODY)),
+                    components::dot(
+                        super::app_theme(state),
+                        if has_ws {
+                            design::Tone::Ok
+                        } else {
+                            design::Tone::Neutral
+                        }
+                    ),
+                    text(format!("{}", project_chats.len())).size(design::fs(ts, 12)),
+                    iced::widget::horizontal_space(),
+                    components::icon_btn("+".to_string())
+                        .on_press(Message::NewChatInProject(project.id)),
+                    components::icon_btn("...".to_string())
+                        .on_press(Message::ToggleProjectMenu(project.id)),
+                ]
+                .spacing(4)
+                .align_y(iced::Alignment::Center),
+            ]
+            .spacing(design::gap(cx, 4));
+            if collapsed {
+                list = list.push(
+                    container(pcol)
+                        .padding(design::pad(cx, 6))
+                        .style(|t: &Theme| design::card(t)),
+                );
+                continue;
+            }
+            match project
+                .path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                // Con workspace: la ruta solo vive dentro del menú ⋯ (input
+                // prellenado), no como línea visible permanente.
+                Some(_) => {
+                    if menu_open {
+                        let current = state
+                            .workspace_inputs
+                            .get(&project.id)
+                            .cloned()
+                            .unwrap_or_default();
+                        let pid = project.id;
+                        pcol = pcol.push(
+                            container(
+                                column![
+                                    text("Cambiar ruta del workspace").size(design::fs(ts, 12)),
+                                    row![
+                                        text_input("Ruta de la carpeta...", &current)
+                                            .size(design::fs(ts, 12))
+                                            .style(|t: &Theme, s| design::field(t, s))
+                                            .on_input(move |v| {
+                                                Message::WorkspacePathChanged(pid, v)
+                                            })
+                                            .on_submit(Message::AssignWorkspace(pid))
+                                            .width(iced::Fill),
+                                        components::head_btn("Guardar".to_string())
+                                            .on_press(Message::AssignWorkspace(pid)),
+                                    ]
+                                    .spacing(4)
+                                    .align_y(iced::Alignment::Center),
+                                    row![
+                                        components::head_btn("Abrir carpeta".to_string())
+                                            .on_press(Message::OpenWorkspaceFolder(pid)),
+                                        components::head_btn("Subir archivo".to_string())
+                                            .on_press(Message::UploadFiles(pid)),
+                                    ]
+                                    .spacing(4),
+                                    row![
+                                        components::icon_btn("Quitar workspace".to_string())
+                                            .on_press(Message::ClearWorkspace(pid)),
+                                        iced::widget::horizontal_space(),
+                                        components::danger_btn("Borrar".to_string())
+                                            .on_press(Message::DeleteProject(pid)),
+                                    ]
+                                    .spacing(4)
+                                    .align_y(iced::Alignment::Center),
+                                ]
+                                .spacing(6),
+                            )
+                            .padding(8)
+                            .style(|t: &Theme| design::well_box(t)),
+                        );
+                    }
+                }
+                None => {
+                    let value = state
                         .workspace_inputs
                         .get(&project.id)
                         .cloned()
                         .unwrap_or_default();
                     let pid = project.id;
                     pcol = pcol.push(
-                        container(
-                            column![
-                                text("Cambiar ruta del workspace").size(design::fs(ts, 12)),
-                                row![
-                                    text_input("Ruta de la carpeta...", &current)
-                                        .size(design::fs(ts, 12))
-                                        .style(|t: &Theme, s| design::field(t, s))
-                                        .on_input(move |v| {
-                                            Message::WorkspacePathChanged(pid, v)
-                                        })
-                                        .on_submit(Message::AssignWorkspace(pid))
-                                        .width(iced::Fill),
-                                    components::head_btn("Guardar".to_string())
-                                        .on_press(Message::AssignWorkspace(pid)),
-                                ]
-                                .spacing(4)
-                                .align_y(iced::Alignment::Center),
-                                row![
-                                    components::head_btn("Abrir carpeta".to_string())
-                                        .on_press(Message::OpenWorkspaceFolder(pid)),
-                                    components::head_btn("Subir archivo".to_string())
-                                        .on_press(Message::UploadFiles(pid)),
-                                ]
-                                .spacing(4),
-                                row![
-                                    components::icon_btn("Quitar workspace".to_string())
-                                        .on_press(Message::ClearWorkspace(pid)),
-                                    iced::widget::horizontal_space(),
-                                    components::danger_btn("Borrar".to_string())
-                                        .on_press(Message::DeleteProject(pid)),
-                                ]
-                                .spacing(4)
-                                .align_y(iced::Alignment::Center),
-                            ]
-                            .spacing(6),
-                        )
-                        .padding(8)
-                        .style(|t: &Theme| design::well_box(t)),
+                        row![
+                            text_input("Carpeta del proyecto...", &value)
+                                .size(design::fs(ts, 12))
+                                .style(|t: &Theme, s| design::field(t, s))
+                                .on_input(move |v| Message::WorkspacePathChanged(pid, v))
+                                .on_submit(Message::AssignWorkspace(pid))
+                                .width(iced::Fill),
+                            components::head_btn("Asignar".to_string())
+                                .on_press(Message::AssignWorkspace(pid)),
+                        ]
+                        .spacing(4)
+                        .align_y(iced::Alignment::Center),
                     );
                 }
             }
-            None => {
-                let value = state
-                    .workspace_inputs
-                    .get(&project.id)
-                    .cloned()
-                    .unwrap_or_default();
-                let pid = project.id;
-                pcol = pcol.push(
-                    row![
-                        text_input("Carpeta del proyecto...", &value)
-                            .size(design::fs(ts, 12))
-                            .style(|t: &Theme, s| design::field(t, s))
-                            .on_input(move |v| Message::WorkspacePathChanged(pid, v))
-                            .on_submit(Message::AssignWorkspace(pid))
-                            .width(iced::Fill),
-                        components::head_btn("Asignar".to_string()).on_press(Message::AssignWorkspace(pid)),
-                    ]
-                    .spacing(4)
-                    .align_y(iced::Alignment::Center),
-                );
+            if project_chats.is_empty() {
+                pcol = pcol.push(text("Sin chats todavía.").size(design::fs(ts, 12)));
             }
+            let total_pc = project_chats.len();
+            let vis_pc = if state.show_all_loose || total_pc <= 8 {
+                total_pc
+            } else {
+                8
+            };
+            for chat in project_chats.iter().copied().take(vis_pc) {
+                pcol = pcol.push(container(chat_row(state, chat)).padding(iced::Padding {
+                    left: 14.0,
+                    ..iced::Padding::ZERO
+                }));
+            }
+            if total_pc > 8 {
+                let more_pc: iced::Element<'_, Message> = iced::widget::row![
+                    components::quiet_btn(if state.show_all_loose {
+                        format!("Mostrar menos ({total_pc})")
+                    } else {
+                        format!("... {}/{}  ver más", vis_pc, total_pc)
+                    })
+                    .on_press(Message::ToggleLooseChats),
+                ]
+                .into();
+                pcol = pcol.push(more_pc);
+            }
+            list = list.push(
+                container(pcol)
+                    .padding(design::pad(cx, 6))
+                    .style(|t: &Theme| design::card(t)),
+            );
         }
-        if project_chats.is_empty() {
-            pcol = pcol.push(text("Sin chats todavía.").size(design::fs(ts, 12)));
-        }
-        let total_pc = project_chats.len();
-        let vis_pc = if state.show_all_loose || total_pc <= 8 { total_pc } else { 8 };
-        for chat in project_chats.iter().copied().take(vis_pc) {
-            pcol = pcol.push(container(chat_row(state, chat)).padding(iced::Padding {
-                left: 14.0,
-                ..iced::Padding::ZERO
-            }));
-        }
-        if total_pc > 8 {
-            let more_pc: iced::Element<'_, Message> = iced::widget::row![
-                components::quiet_btn(if state.show_all_loose {
-                    format!("Mostrar menos ({total_pc})")
-                } else {
-                    format!("... {}/{}  ver más", vis_pc, total_pc)
-                }).on_press(Message::ToggleLooseChats),
-            ].into();
-            pcol = pcol.push(more_pc);
-        }
-        list = list.push(
-            container(pcol)
-                .padding(design::pad(cx, 6))
-                .style(|t: &Theme| design::card(t)),
-        );
-    }
     } // show_projects
     // Separador proyectos / conversaciones.
-    list = list.push(
-        iced::widget::horizontal_rule(1).style(|t: &Theme| design::hairline_rule(t)),
-    );
+    list = list.push(iced::widget::horizontal_rule(1).style(|t: &Theme| design::hairline_rule(t)));
     if !loose.is_empty() {
-        list = list.push(components::section_label(super::app_theme(state), "Conversaciones"));
+        list = list.push(components::section_label(
+            super::app_theme(state),
+            "Conversaciones",
+        ));
         let total = loose.len();
         let show_all = state.show_all_loose;
         let visible = if show_all || total <= 8 { total } else { 8 };
@@ -365,8 +390,10 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
                     format!("Mostrar menos ({total})")
                 } else {
                     format!("... {}/{}  ver más", visible, total)
-                }).on_press(Message::ToggleLooseChats),
-            ].into();
+                })
+                .on_press(Message::ToggleLooseChats),
+            ]
+            .into();
             list = list.push(more);
         }
     }
@@ -376,9 +403,8 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
     // Archivados: ocultos por defecto, restaurables o borrables.
     let archived: Vec<&ChatMeta> = state.chats.iter().filter(|c| c.archived).collect();
     if !archived.is_empty() {
-        list = list.push(
-            iced::widget::horizontal_rule(1).style(|t: &Theme| design::hairline_rule(t)),
-        );
+        list =
+            list.push(iced::widget::horizontal_rule(1).style(|t: &Theme| design::hairline_rule(t)));
         let archived_n = state.chats.iter().filter(|c| c.archived).count();
         let archived_open = state.show_archived;
         // (Button es invariante en 'a: va envuelto en row! como el resto.)
@@ -401,11 +427,7 @@ pub(crate) fn view_sidebar(state: &App) -> Element<'_, Message> {
                     .map(|p| p.name.clone())
                     .unwrap_or_else(|| "Sin proyecto".to_string());
                 list = list.push(
-                    column![
-                        text(proj).size(design::fs(ts, 11)),
-                        chat_row(state, chat),
-                    ]
-                    .spacing(0),
+                    column![text(proj).size(design::fs(ts, 11)), chat_row(state, chat),].spacing(0),
                 );
             }
         }

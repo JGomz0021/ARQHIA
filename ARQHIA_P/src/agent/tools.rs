@@ -168,6 +168,13 @@ fn lexical_normalize(p: &Path) -> PathBuf {
     }
 }
 
+fn within_roots(canon: &Path, ws_canon: &Path, extra_canons: &[PathBuf]) -> bool {
+    if canon.starts_with(ws_canon) {
+        return true;
+    }
+    extra_canons.iter().any(|b| canon.starts_with(b))
+}
+
 fn resolve(workspace: &Path, extra: &[PathBuf], target: &str) -> Result<PathBuf, String> {
     let t = target.trim();
     if t.is_empty() {
@@ -176,6 +183,7 @@ fn resolve(workspace: &Path, extra: &[PathBuf], target: &str) -> Result<PathBuf,
     let ws_canon = workspace
         .canonicalize()
         .map_err(|e| format!("Workspace inválido: {e}"))?;
+    let extra_canons: Vec<PathBuf> = extra.iter().filter_map(|e| e.canonicalize().ok()).collect();
     let joined = if Path::new(t).is_absolute() {
         PathBuf::from(t)
     } else {
@@ -184,16 +192,56 @@ fn resolve(workspace: &Path, extra: &[PathBuf], target: &str) -> Result<PathBuf,
     // Chequeo léxico: impide `../` y absolutos fuera del workspace,
     // pero permite archivos/carpetas aún no creados (write los crea).
     let normalized = lexical_normalize(&joined);
-    if normalized.starts_with(&ws_canon) {
-        return Ok(normalized);
+    let lex_ok =
+        normalized.starts_with(&ws_canon) || extra_canons.iter().any(|b| normalized.starts_with(b));
+    if !lex_ok {
+        return Err(format!("⛔ Fuera del workspace: {t}"));
     }
-    // Rutas extra explícitas (v0.7 Track B): canonicalizadas y existentes.
-    for base in extra.iter().filter_map(|e| e.canonicalize().ok()) {
-        if normalized.starts_with(&base) {
-            return Ok(normalized);
+    // Anti-symlink (v0.9.4): si el destino existe, su canonical debe seguir
+    // dentro. Si aún no existe, se verifica el ancestro existente más
+    // cercano (cubre dirs symlinkeados + symlinks colgantes).
+    let mut probe = normalized.clone();
+    loop {
+        match std::fs::symlink_metadata(&probe) {
+            Ok(md) => {
+                if md.file_type().is_symlink() {
+                    match probe.canonicalize() {
+                        Ok(canon) => {
+                            if !within_roots(&canon, &ws_canon, &extra_canons) {
+                                return Err(format!("⛔ Fuera del workspace (symlink): {t}"));
+                            }
+                        }
+                        Err(_) => {
+                            return Err(format!("⛔ Fuera del workspace (symlink): {t}"));
+                        }
+                    }
+                } else if let Ok(canon) = probe.canonicalize()
+                    && !within_roots(&canon, &ws_canon, &extra_canons)
+                {
+                    return Err(format!("⛔ Fuera del workspace (symlink): {t}"));
+                }
+                break;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let Some(parent) = probe.parent().map(|p| p.to_path_buf()) else {
+                    break;
+                };
+                if parent.as_os_str().is_empty() {
+                    break;
+                }
+                probe = parent;
+                continue;
+            }
+            Err(_) => break,
         }
     }
-    Err(format!("⛔ Fuera del workspace: {t}"))
+    // El ancestro existente debe seguir dentro (dir padre symlinkeado fuera).
+    if let Ok(canon) = probe.canonicalize()
+        && !within_roots(&canon, &ws_canon, &extra_canons)
+    {
+        return Err(format!("⛔ Fuera del workspace (symlink): {t}"));
+    }
+    Ok(normalized)
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -250,12 +298,21 @@ pub async fn read_file(
         out.push_str(&format!("{}| {clean}\n", start + i + 1));
     }
     if end < total {
-        out.push_str(&format!("…siguen {} líneas (pide offset {})", total - end, end + 1));
+        out.push_str(&format!(
+            "…siguen {} líneas (pide offset {})",
+            total - end,
+            end + 1
+        ));
     }
     Ok(truncate(&out, max_chars.max(1024)))
 }
 
-pub async fn write_file(workspace: &Path, extra: &[PathBuf], target: &str, content: &str) -> Result<String, String> {
+pub async fn write_file(
+    workspace: &Path,
+    extra: &[PathBuf],
+    target: &str,
+    content: &str,
+) -> Result<String, String> {
     let path = resolve(workspace, extra, target)?;
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
@@ -263,10 +320,15 @@ pub async fn write_file(workspace: &Path, extra: &[PathBuf], target: &str, conte
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|e| format!("No se pudo crear dirs: {e}"))?;
-    }    tokio::fs::write(&path, content)
+    }
+    tokio::fs::write(&path, content)
         .await
         .map_err(|e| format!("No se pudo escribir: {e}"))?;
-    Ok(format!("✅ write {} ({} bytes)", rel(workspace, &path), content.len()))
+    Ok(format!(
+        "✅ write {} ({} bytes)",
+        rel(workspace, &path),
+        content.len()
+    ))
 }
 
 pub async fn edit_file(
@@ -296,7 +358,11 @@ pub async fn edit_file(
     Ok(format!("✅ edit {}", rel(workspace, &path)))
 }
 
-pub async fn delete_file(workspace: &Path, extra: &[PathBuf], target: &str) -> Result<String, String> {
+pub async fn delete_file(
+    workspace: &Path,
+    extra: &[PathBuf],
+    target: &str,
+) -> Result<String, String> {
     let path = resolve(workspace, extra, target)?;
     if !path.exists() {
         return Err(format!("No existe: {target}"));
@@ -317,7 +383,9 @@ pub async fn list_dir(
     ignores: &[String],
 ) -> Result<String, String> {
     let dir = if target.trim().is_empty() || target.trim() == "." {
-        workspace.canonicalize().map_err(|e| format!("Workspace inválido: {e}"))?
+        workspace
+            .canonicalize()
+            .map_err(|e| format!("Workspace inválido: {e}"))?
     } else {
         resolve(workspace, extra, target)?
     };
@@ -330,12 +398,20 @@ pub async fn list_dir(
     let mut names: Vec<String> = Vec::new();
     while let Ok(Some(e)) = entries.next_entry().await {
         let n = e.file_name().to_string_lossy().to_string();
-        let suffixed = if e.path().is_dir() { format!("{n}/") } else { n.clone() };
+        let suffixed = if e.path().is_dir() {
+            format!("{n}/")
+        } else {
+            n.clone()
+        };
         // v0.7.1: filtra ignorados también en el listado directo.
         if is_ignored(&suffixed, ignores) || is_ignored(&n, ignores) {
             continue;
         }
-        names.push(if e.path().is_dir() { format!("{n}/") } else { n });
+        names.push(if e.path().is_dir() {
+            format!("{n}/")
+        } else {
+            n
+        });
         if names.len() >= 100 {
             break;
         }
@@ -348,37 +424,105 @@ pub async fn list_dir(
     }
 }
 
-/// Comandos permitidos en v0.3 (prefijo o igualdad exacta).
+/// Tokeniza sin shell (v0.9.4): respeta comillas simples/dobles, sin
+/// expansiones. `sh -c` ya no se usa: esto evita `;`, `&&`, `$()` etc.
+pub fn split_argv(cmd: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut in_token = false;
+    let mut chars = cmd.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else if c == '\\' && q == '"' {
+                if let Some(n) = chars.next() {
+                    cur.push(n);
+                }
+            } else {
+                cur.push(c);
+            }
+            in_token = true;
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                in_token = true;
+            }
+            c if c.is_whitespace() => {
+                if in_token {
+                    out.push(std::mem::take(&mut cur));
+                    in_token = false;
+                }
+            }
+            _ => {
+                cur.push(c);
+                in_token = true;
+            }
+        }
+    }
+    if in_token || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// true si hay metacaracteres de shell fuera de comillas (`;|&$`...).
+/// Con `exec` directo serían inofensivos, pero se deniegan por allowlist
+/// exacta: `cargo test; curl` nunca debe ni intentarse.
+fn contains_shell_metachars(cmd: &str) -> bool {
+    let mut quote: Option<char> = None;
+    for c in cmd.chars() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => quote = Some(c),
+            ';' | '|' | '`' | '>' | '<' | '\n' => return true,
+            '&' | '$' | '!' | '*' | '?' | '~' | '(' | ')' | '{' | '}' => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Comandos permitidos (v0.9.4: `exec` directo sin shell, argv[0] exacto).
 /// `pub` para testear la política sin ejecutar nada.
 pub fn is_allowed(cmd: &str) -> bool {
-    const ALLOW: [&str; 12] = [
-        "ls",
-        "cat",
-        "echo",
-        "pwd",
-        "cargo --version",
-        "rustc --version",
-        "cargo check",
-        "cargo build",
-        "cargo test",
-        "cargo run",
-        "cargo clippy",
-        "cargo fmt",
-    ];
     let c = cmd.trim();
+    if c.is_empty() || contains_shell_metachars(c) {
+        return false;
+    }
     // Instaladores y sudo pasan al gate de permiso (executor): sin
     // auto_install o aprobación del lote, se deniegan allí.
-    if INSTALL_PREFIXES.iter().any(|p| c == *p || c.starts_with(&format!("{p} ")))
+    if INSTALL_PREFIXES
+        .iter()
+        .any(|p| c == *p || c.starts_with(&format!("{p} ")))
         || c.starts_with("sudo ")
     {
         return true;
     }
-    // Git: el allowlist deja pasar; la política por comando (classify_git)
-    // decide en el executor qué se ejecuta y qué pide permiso.
-    if c == "git" || c.starts_with("git ") {
-        return true;
+    let argv = split_argv(c);
+    if argv.is_empty() {
+        return false;
     }
-    ALLOW.iter().any(|a| c == *a || c.starts_with(&format!("{a} ")))
+    match argv[0].as_str() {
+        "ls" | "cat" | "echo" | "pwd" => true,
+        "rustc" => argv.get(1).is_some_and(|a| a == "--version" || a == "-V"),
+        "cargo" => matches!(
+            argv.get(1).map(|s| s.as_str()),
+            Some("--version" | "check" | "build" | "test" | "run" | "clippy" | "fmt")
+        ),
+        // Git: el allowlist deja pasar; la política por comando (classify_git)
+        // decide en el executor qué se ejecuta y qué pide permiso.
+        "git" => true,
+        _ => false,
+    }
 }
 
 fn allowed_list() -> &'static str {
@@ -404,7 +548,9 @@ const INSTALL_PREFIXES: [&str; 10] = [
 /// conservador por seguridad).
 pub fn is_install_cmd(cmd: &str) -> bool {
     let c = cmd.trim();
-    INSTALL_PREFIXES.iter().any(|p| c == *p || c.starts_with(&format!("{p} ")))
+    INSTALL_PREFIXES
+        .iter()
+        .any(|p| c == *p || c.starts_with(&format!("{p} ")))
         || c.starts_with("sudo ")
 }
 
@@ -490,14 +636,103 @@ fn is_git_commit(cmd: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Parsea una URL http(s) y devuelve `(host, puerto)` con el host en
+/// minúsculas, SIN credenciales (`user:pass@`) ni puerto, o `None` si no es
+/// http(s) o no tiene host. Es la base del anti-SSRF: separar bien el host
+/// evita el bypass `http://evil.com@127.0.0.1/` (v0.9.5).
+fn parse_http_url(url: &str) -> Option<(String, u16)> {
+    let u = url.trim();
+    let (rest, default_port) = if let Some(r) = u.strip_prefix("https://") {
+        (r, 443u16)
+    } else {
+        let r = u.strip_prefix("http://")?;
+        (r, 80u16)
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Quita userinfo: `user:pass@host` -> `host`.
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    if hostport.is_empty() {
+        return None;
+    }
+    let (host, port) = if let Some(after_bracket) = hostport.strip_prefix('[') {
+        // IPv6: `[::1]:8000` -> host `::1`, puerto opcional.
+        let close = after_bracket.find(']')?;
+        let host = &after_bracket[..close];
+        let port = after_bracket[close + 1..]
+            .strip_prefix(':')
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(default_port);
+        (host.to_string(), port)
+    } else if hostport.matches(':').count() == 1 {
+        let mut parts = hostport.splitn(2, ':');
+        let h = parts.next().unwrap_or("");
+        let p = parts
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(default_port);
+        (h.to_string(), p)
+    } else {
+        (hostport.to_string(), default_port)
+    };
+    // Minúsculas y sin punto final (`127.0.0.1.` no debe colarse).
+    let host = host.trim().trim_matches('.').to_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, port))
+}
+
 /// Host de una URL http(s) en minúsculas, o "" si inválida.
 fn url_host(url: &str) -> String {
-    let u = url.trim();
-    let rest = match u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) {
-        Some(r) => r,
-        None => return String::new(),
-    };
-    rest.split('/').next().unwrap_or("").to_lowercase()
+    parse_http_url(url).map(|(h, _)| h).unwrap_or_default()
+}
+
+/// true si la IP resuelta es interna/no enrutable (anti-SSRF v0.9.5):
+/// loopback, privadas, link-local, CGNAT, multicast, sin especificar,
+/// documentación y equivalencias IPv6 (incl. IPv4-mapped).
+fn is_blocked_ip(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || o[0] == 0
+                // 100.64.0.0/10 (CGNAT).
+                || (o[0] == 100 && (o[1] & 0xc0) == 64)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return is_blocked_ip(IpAddr::V4(mapped));
+            }
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+                || v6.is_multicast()
+        }
+    }
+}
+
+/// Resuelve el host y comprueba que NINGUNA IP de destino sea interna.
+/// Si la resolución falla, devuelve false (reqwest reportará el error real).
+/// Corre en `spawn_blocking`: `getaddrinfo` bloquea.
+async fn host_resolves_to_blocked(host: &str, port: u16) -> bool {
+    let host = host.to_string();
+    tokio::task::spawn_blocking(move || {
+        use std::net::ToSocketAddrs;
+        match (host.as_str(), port).to_socket_addrs() {
+            Ok(mut addrs) => addrs.any(|a| is_blocked_ip(a.ip())),
+            Err(_) => false,
+        }
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// true si el host está en la allowlist (exacto o subdominio).
@@ -512,36 +747,113 @@ pub fn url_domain_listed(url: &str, domains: &[String]) -> bool {
     })
 }
 
-/// GET http(s) con timeout 20s y tope 64k chars (v0.7 Track B).
-/// Dominios: listados siempre; no listados solo con lote aprobado.
-pub async fn fetch_url(url: &str, policy: &ExecPolicy) -> Result<String, String> {
-    let host = url_host(url);
-    if host.is_empty() {
-        return Err("URL inválida (solo http/https)".to_string());
+/// true si el host (o una IP literal) apunta a un destino interno (SSRF).
+/// Normaliza userinfo, corchetes IPv6 y puerto; bloquea `localhost`,
+/// nombres de metadatos y cualquier IP interna vía `is_blocked_ip`.
+/// Para nombres de dominio la validación real ocurre tras resolver DNS
+/// (`host_resolves_to_blocked`).
+pub fn is_ssrf_host(host: &str) -> bool {
+    let h = host.trim().to_lowercase();
+    // Sin credenciales ni punto final.
+    let h = h.rsplit('@').next().unwrap_or(&h);
+    let bare = if let Some(stripped) = h.strip_prefix('[') {
+        stripped.split(']').next().unwrap_or("").trim()
+    } else if h.matches(':').count() > 1 {
+        h
+    } else {
+        h.split(':').next().unwrap_or("").trim()
+    };
+    let bare = bare
+        .trim_matches(|c| c == '[' || c == ']')
+        .trim_matches('.');
+    if bare.is_empty() {
+        return true;
     }
-    if !url_domain_listed(url, &policy.net_domains) && !policy.net_approved {
-        return Err(format!("⛔ Dominio no autorizado: {host}"));
+    if bare == "localhost"
+        || bare.ends_with(".localhost")
+        || bare == "metadata.google.internal"
+        || bare == "metadata"
+    {
+        return true;
     }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(20))
-        .build()
-        .map_err(|e| format!("Error HTTP: {e}"))?;
-    let resp = client
-        .get(url.trim())
-        .send()
-        .await
-        .map_err(|e| format!("Error de red: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("HTTP {}: {}", resp.status(), url.trim()));
+    if let Ok(ip) = bare.parse::<std::net::IpAddr>() {
+        return is_blocked_ip(ip);
     }
-    let text = resp.text().await.unwrap_or_default();
-    if text.trim().is_empty() {
-        return Ok("(respuesta vacía)".to_string());
-    }
-    Ok(truncate(&text, 64_000))
+    false
 }
 
-pub async fn bash(workspace: &Path, extra: &[PathBuf], cmd: &str, policy: &ExecPolicy) -> Result<String, String> {
+/// GET http(s) con timeout 20s y tope 64k chars (v0.7 Track B).
+/// Dominios: listados siempre; no listados solo con lote aprobado.
+/// Anti-SSRF (v0.9.4): bloquea loopback/metadatos y sigue máx 3 redirects
+/// re-validando cada salto (sin petición al destino bloqueado).
+pub async fn fetch_url(url: &str, policy: &ExecPolicy) -> Result<String, String> {
+    let mut current = url.trim().to_string();
+    for _ in 0..4 {
+        let Some((host, port)) = parse_http_url(&current) else {
+            return Err("URL inválida (solo http/https)".to_string());
+        };
+        if is_ssrf_host(&host) {
+            return Err(format!("⛔ Destino interno bloqueado (SSRF): {host}"));
+        }
+        // Anti-SSRF real: valida también las IPs resueltas por DNS (cubre
+        // dominios que apuntan a red interna y ataques de rebinding básicos).
+        if host_resolves_to_blocked(&host, port).await {
+            return Err(format!(
+                "⛔ Destino interno bloqueado tras resolver DNS (SSRF): {host}"
+            ));
+        }
+        if !url_domain_listed(&current, &policy.net_domains) && !policy.net_approved {
+            return Err(format!("⛔ Dominio no autorizado: {host}"));
+        }
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(20))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|e| format!("Error HTTP: {e}"))?;
+        let resp = client
+            .get(current.clone())
+            .send()
+            .await
+            .map_err(|e| format!("Error de red: {e}"))?;
+        if resp.status().is_redirection() {
+            let Some(next) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            else {
+                return Err(format!("Redirect sin Location: {}", resp.status()));
+            };
+            // Relativo respecto al actual; absoluto tal cual.
+            if next.starts_with("http://") || next.starts_with("https://") {
+                current = next.to_string();
+            } else if let Some(base_end) = current
+                .find("://")
+                .and_then(|i| current[i + 3..].find('/').map(|j| i + 3 + j))
+            {
+                current = format!("{}{}", &current[..base_end], next);
+            } else {
+                current = format!("{current}{next}");
+            }
+            continue;
+        }
+        if !resp.status().is_success() {
+            return Err(format!("HTTP {}: {}", resp.status(), current));
+        }
+        let text = resp.text().await.unwrap_or_default();
+        if text.trim().is_empty() {
+            return Ok("(respuesta vacía)".to_string());
+        }
+        return Ok(truncate(&text, 64_000));
+    }
+    Err("Demasiados redirects (máx 3)".to_string())
+}
+
+pub async fn bash(
+    workspace: &Path,
+    extra: &[PathBuf],
+    cmd: &str,
+    policy: &ExecPolicy,
+) -> Result<String, String> {
     let _ = extra;
     if !is_allowed(cmd) {
         return Err(format!(
@@ -552,7 +864,9 @@ pub async fn bash(workspace: &Path, extra: &[PathBuf], cmd: &str, policy: &ExecP
     }
     // Instaladores: solo con auto_install o aprobación del lote.
     if is_install_cmd(cmd) && !policy.allow_install {
-        return Err("⛔ Instalación no aprobada: actívala en Permisos o aprueba la acción.".to_string());
+        return Err(
+            "⛔ Instalación no aprobada: actívala en Permisos o aprueba la acción.".to_string(),
+        );
     }
     // Política git por comando (v0.7.2): lo destructivo se bloquea siempre;
     // el resto respeta autonomía/push salvo que el lote esté aprobado.
@@ -565,10 +879,12 @@ pub async fn bash(workspace: &Path, extra: &[PathBuf], cmd: &str, policy: &ExecP
         }
         if matches!(kind, GitKind::Write)
             && is_git_commit(cmd)
-            && let Some(br) = crate::git::current_branch(workspace)
+            && let Some(br) = crate::git::current_branch_async(workspace).await
             && policy.git_protected.iter().any(|p| p == &br)
         {
-            return Err(format!("⛔ commit sobre rama protegida `{br}` (usa la rama de trabajo)"));
+            return Err(format!(
+                "⛔ commit sobre rama protegida `{br}` (usa la rama de trabajo)"
+            ));
         }
         if !policy.git_approved {
             let allowed = match kind {
@@ -590,18 +906,26 @@ pub async fn bash(workspace: &Path, extra: &[PathBuf], cmd: &str, policy: &ExecP
     let ws = workspace
         .canonicalize()
         .map_err(|e| format!("Workspace inválido: {e}"))?;
-    let child = tokio::process::Command::new("sh")
-        .arg("-c")
-        .arg(cmd.trim())
+    // v0.9.4: `exec` directo sin shell. `split_argv` ya validó que no hay
+    // metacaracteres; aquí argv[0] es el binario exacto.
+    let argv = split_argv(cmd.trim());
+    if argv.is_empty() {
+        return Err("Comando vacío".to_string());
+    }
+    let child = tokio::process::Command::new(&argv[0])
+        .args(&argv[1..])
         .current_dir(&ws)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("No se pudo ejecutar: {e}"))?;
-    let out = tokio::time::timeout(std::time::Duration::from_secs(policy.timeout_s.max(1)), child.wait_with_output())
-        .await
-        .map_err(|_| format!("⏱ bash excedió {}s", policy.timeout_s.max(1)))?
-        .map_err(|e| format!("Falló ejecución: {e}"))?;
+    let out = tokio::time::timeout(
+        std::time::Duration::from_secs(policy.timeout_s.max(1)),
+        child.wait_with_output(),
+    )
+    .await
+    .map_err(|_| format!("⏱ bash excedió {}s", policy.timeout_s.max(1)))?
+    .map_err(|e| format!("Falló ejecución: {e}"))?;
     let mut combined = String::new();
     combined.push_str(&String::from_utf8_lossy(&out.stdout));
     if !out.stderr.is_empty() {
@@ -619,7 +943,9 @@ pub async fn bash(workspace: &Path, extra: &[PathBuf], cmd: &str, policy: &ExecP
 }
 
 fn rel(workspace: &Path, path: &Path) -> String {
-    let ws = workspace.canonicalize().unwrap_or_else(|_| workspace.to_path_buf());
+    let ws = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.to_path_buf());
     path.strip_prefix(&ws)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| path.display().to_string())
@@ -751,6 +1077,14 @@ pub async fn search_files(
         .filter(|e| e.file_type().is_file());
     for entry in walker {
         let path = entry.path();
+        // v0.9.4 anti-symlink: un symlink que apunte fuera no se sigue.
+        if let Ok(md) = std::fs::symlink_metadata(path)
+            && md.file_type().is_symlink()
+            && let Ok(canon) = path.canonicalize()
+            && !canon.starts_with(&ws_canon)
+        {
+            continue;
+        }
         let rel_s = path
             .strip_prefix(&ws_canon)
             .unwrap_or(path)
@@ -874,9 +1208,29 @@ fn outline_sig(line: &str) -> Option<String> {
     }
     // Prefijos por lenguaje (Rust, Python, JS/TS, Go, markdown headers).
     const PREFIXES: [&str; 24] = [
-        "fn ", "pub fn ", "pub async fn ", "async fn ", "struct ", "pub struct ", "enum ",
-        "pub enum ", "trait ", "pub trait ", "impl ", "mod ", "pub mod ", "use ", "type ",
-        "pub type ", "const ", "pub const ", "static ", "def ", "class ", "import ", "from ",
+        "fn ",
+        "pub fn ",
+        "pub async fn ",
+        "async fn ",
+        "struct ",
+        "pub struct ",
+        "enum ",
+        "pub enum ",
+        "trait ",
+        "pub trait ",
+        "impl ",
+        "mod ",
+        "pub mod ",
+        "use ",
+        "type ",
+        "pub type ",
+        "const ",
+        "pub const ",
+        "static ",
+        "def ",
+        "class ",
+        "import ",
+        "from ",
         "func ",
     ];
     // Normaliza `pub(crate)`, `pub(super)`, `export`, `async`, `pub ` líderes.
@@ -1024,9 +1378,7 @@ pub async fn execute(
             let u = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
             fetch_url(u, policy).await
         }
-        other if crate::mcp::is_mcp_tool(other) => {
-            execute_mcp(other, args, policy).await
-        }
+        other if crate::mcp::is_mcp_tool(other) => execute_mcp(other, args, policy).await,
         other => Err(format!("Tool desconocida: {other}")),
     };
     match res {
@@ -1035,7 +1387,11 @@ pub async fn execute(
     }
 }
 
-async fn execute_mcp(name: &str, args: &serde_json::Value, policy: &ExecPolicy) -> Result<String, String> {
+async fn execute_mcp(
+    name: &str,
+    args: &serde_json::Value,
+    policy: &ExecPolicy,
+) -> Result<String, String> {
     let Some((srv, tool)) = crate::mcp::parse_mcp_tool(name) else {
         return Err(format!("MCP tool inválida: {name}"));
     };
@@ -1049,7 +1405,11 @@ async fn execute_mcp(name: &str, args: &serde_json::Value, policy: &ExecPolicy) 
     }
     // auto=false ya cubierto por categoría, pero aquí respetamos timeout
     // args es el input del tool (ya viene como objeto JSON)
-    let input = if args.is_object() { args.clone() } else { serde_json::json!({}) };
+    let input = if args.is_object() {
+        args.clone()
+    } else {
+        serde_json::json!({})
+    };
     // Si el método es resources/* o prompts/* -> error hasta v1.0.1
     if tool.starts_with("resources/") || tool.starts_with("prompts/") {
         return Err("resources/prompts hasta v1.0.1".to_string());
@@ -1061,7 +1421,9 @@ async fn execute_mcp(name: &str, args: &serde_json::Value, policy: &ExecPolicy) 
 }
 
 /// Helpers para anexar schemas MCP a los nativos (v0.9.3).
-pub fn mcp_openai_schemas(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+pub fn mcp_openai_schemas(
+    collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>,
+) -> serde_json::Value {
     let mut out = Vec::new();
     for (srv, tools) in collected {
         for t in tools {
@@ -1070,7 +1432,9 @@ pub fn mcp_openai_schemas(collected: &std::collections::HashMap<String, Vec<crat
     }
     serde_json::Value::Array(out)
 }
-pub fn mcp_anthropic_schemas(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+pub fn mcp_anthropic_schemas(
+    collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>,
+) -> serde_json::Value {
     let mut out = Vec::new();
     for (srv, tools) in collected {
         for t in tools {
@@ -1081,7 +1445,9 @@ pub fn mcp_anthropic_schemas(collected: &std::collections::HashMap<String, Vec<c
 }
 
 /// Combina schemas nativos + MCP (trunca aviso si > 20 tools totales).
-pub fn openai_schemas_with_mcp(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+pub fn openai_schemas_with_mcp(
+    collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>,
+) -> serde_json::Value {
     let mut base = openai_schemas();
     let mcp = mcp_openai_schemas(collected);
     if let (Some(arr), Some(marr)) = (base.as_array_mut(), mcp.as_array()) {
@@ -1089,7 +1455,9 @@ pub fn openai_schemas_with_mcp(collected: &std::collections::HashMap<String, Vec
     }
     base
 }
-pub fn anthropic_schemas_with_mcp(collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>) -> serde_json::Value {
+pub fn anthropic_schemas_with_mcp(
+    collected: &std::collections::HashMap<String, Vec<crate::mcp::McpTool>>,
+) -> serde_json::Value {
     let mut base = anthropic_schemas();
     let mcp = mcp_anthropic_schemas(collected);
     if let (Some(arr), Some(marr)) = (base.as_array_mut(), mcp.as_array()) {
@@ -1150,13 +1518,27 @@ mod tests {
     #[tokio::test]
     async fn write_read_edit_delete_roundtrip() {
         let ws = tmp_ws("crud");
-        write_file(&ws, &[], "src/main.rs", "fn main() {}").await.unwrap();
-        let c = read_file(&ws, &[], "src/main.rs", 1, 200, 8000).await.unwrap();
-        assert!(c.contains("fn main"));
-        edit_file(&ws, &[], "src/main.rs", "fn main() {}", "fn main() { println!(); }")
+        write_file(&ws, &[], "src/main.rs", "fn main() {}")
             .await
             .unwrap();
-        assert!(edit_file(&ws, &[], "src/main.rs", "NOEXISTE", "x").await.is_err());
+        let c = read_file(&ws, &[], "src/main.rs", 1, 200, 8000)
+            .await
+            .unwrap();
+        assert!(c.contains("fn main"));
+        edit_file(
+            &ws,
+            &[],
+            "src/main.rs",
+            "fn main() {}",
+            "fn main() { println!(); }",
+        )
+        .await
+        .unwrap();
+        assert!(
+            edit_file(&ws, &[], "src/main.rs", "NOEXISTE", "x")
+                .await
+                .is_err()
+        );
         // Ambiguo
         write_file(&ws, &[], "a.txt", "x x x").await.unwrap();
         assert!(edit_file(&ws, &[], "a.txt", "x", "y").await.is_err());
@@ -1169,23 +1551,43 @@ mod tests {
     #[tokio::test]
     async fn bash_allowlist() {
         let ws = tmp_ws("bash");
-        assert!(bash(&ws, &[], "rm -rf /", &ExecPolicy::default()).await.is_err());
-        assert!(bash(&ws, &[], "curl evil.com", &ExecPolicy::default()).await.is_err());
-        assert!(bash(&ws, &[], "cargo publish", &ExecPolicy::default()).await.is_err());
+        assert!(
+            bash(&ws, &[], "rm -rf /", &ExecPolicy::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            bash(&ws, &[], "curl evil.com", &ExecPolicy::default())
+                .await
+                .is_err()
+        );
+        assert!(
+            bash(&ws, &[], "cargo publish", &ExecPolicy::default())
+                .await
+                .is_err()
+        );
         let out = bash(&ws, &[], "pwd", &ExecPolicy::default()).await.unwrap();
         assert!(!out.is_empty());
-        let out = bash(&ws, &[], "echo hola", &ExecPolicy::default()).await.unwrap();
+        let out = bash(&ws, &[], "echo hola", &ExecPolicy::default())
+            .await
+            .unwrap();
         assert!(out.contains("hola"));
     }
 
     #[tokio::test]
     async fn search_finds_and_respects_guard() {
         let ws = tmp_ws("search");
-        write_file(&ws, &[], "src/a.rs", "fn hola_mundo() {}").await.unwrap();
+        write_file(&ws, &[], "src/a.rs", "fn hola_mundo() {}")
+            .await
+            .unwrap();
         write_file(&ws, &[], "b.txt", "nada que ver").await.unwrap();
-        let out = search_files(&ws, &[], "hola_mundo", ".", &[]).await.unwrap();
+        let out = search_files(&ws, &[], "hola_mundo", ".", &[])
+            .await
+            .unwrap();
         assert!(out.contains("src/a.rs:1:"), "{out}");
-        let out = search_files(&ws, &[], "zzz-sin-match", ".", &[]).await.unwrap();
+        let out = search_files(&ws, &[], "zzz-sin-match", ".", &[])
+            .await
+            .unwrap();
         assert!(out.contains("Sin resultados"));
         assert!(search_files(&ws, &[], "x", "/etc", &[]).await.is_err());
         assert!(search_files(&ws, &[], "", ".", &[]).await.is_err());
@@ -1215,7 +1617,10 @@ mod tests {
         let bash_plain = serde_json::json!({"cmd": "cargo build"});
         assert_eq!(category_of_call("bash", &bash_install), ToolCat::Install);
         assert_eq!(category_of_call("bash", &bash_plain), ToolCat::Bash);
-        assert_eq!(category_of_call("fetch_url", &serde_json::json!({})), ToolCat::Net);
+        assert_eq!(
+            category_of_call("fetch_url", &serde_json::json!({})),
+            ToolCat::Net
+        );
     }
 
     #[test]
@@ -1226,12 +1631,24 @@ mod tests {
         assert_eq!(classify_git("git add -A"), Some(GitKind::Write));
         assert_eq!(classify_git("git commit -m x"), Some(GitKind::Write));
         assert_eq!(classify_git("git push origin ARQHIA"), Some(GitKind::Net));
-        assert_eq!(classify_git("git push --force origin x"), Some(GitKind::Blocked));
-        assert_eq!(classify_git("git reset --hard HEAD"), Some(GitKind::Blocked));
+        assert_eq!(
+            classify_git("git push --force origin x"),
+            Some(GitKind::Blocked)
+        );
+        assert_eq!(
+            classify_git("git reset --hard HEAD"),
+            Some(GitKind::Blocked)
+        );
         assert_eq!(classify_git("git clean -fd"), Some(GitKind::Blocked));
         assert_eq!(classify_git("git rebase main"), Some(GitKind::Blocked));
-        assert_eq!(classify_git("git config user.name x"), Some(GitKind::Blocked));
-        assert_eq!(classify_git("git remote add origin url"), Some(GitKind::Blocked));
+        assert_eq!(
+            classify_git("git config user.name x"),
+            Some(GitKind::Blocked)
+        );
+        assert_eq!(
+            classify_git("git remote add origin url"),
+            Some(GitKind::Blocked)
+        );
         assert_eq!(classify_git("git -C /etc status"), Some(GitKind::Blocked));
         assert_eq!(classify_git("ls -la"), None);
         // Categorías de permiso para el panel.
@@ -1260,11 +1677,16 @@ mod tests {
             assert!(err.contains("bloqueado"), "{cmd}: {err}");
         }
         // Write con autonomía ReadOnly: rechazado por política.
-        let ro = ExecPolicy { git_autonomy: GitAutonomy::ReadOnly, ..ExecPolicy::default() };
+        let ro = ExecPolicy {
+            git_autonomy: GitAutonomy::ReadOnly,
+            ..ExecPolicy::default()
+        };
         let err = bash(&ws, &[], "git add -A", &ro).await.unwrap_err();
         assert!(err.contains("no permitida"), "{err}");
         // Push sin push_enabled: rechazado por política (aunque CommitLocal).
-        let err = bash(&ws, &[], "git push origin ARQHIA", &policy).await.unwrap_err();
+        let err = bash(&ws, &[], "git push origin ARQHIA", &policy)
+            .await
+            .unwrap_err();
         assert!(err.contains("no permitida"), "{err}");
         // CommitAndPush + push_enabled: el gate pasa (falla luego git, no política).
         let ap = ExecPolicy {
@@ -1276,7 +1698,8 @@ mod tests {
     }
 
     #[test]
-    fn url_domain_allowlist() {        let doms = vec!["example.com".to_string()];
+    fn url_domain_allowlist() {
+        let doms = vec!["example.com".to_string()];
         assert!(url_domain_listed("https://example.com/x", &doms));
         assert!(url_domain_listed("https://sub.example.com/x", &doms));
         assert!(!url_domain_listed("https://evil-example.com/x", &doms));
@@ -1290,10 +1713,12 @@ mod tests {
     fn truncate_never_splits_utf8() {
         let s = "diseño ñandú 🚀".repeat(10);
         let cut = truncate(&s, 20);
-        assert_eq!(cut.chars().count(), 20 + "…[truncado 110 chars]".chars().count());
+        assert_eq!(
+            cut.chars().count(),
+            20 + "…[truncado 110 chars]".chars().count()
+        );
         assert!(cut.starts_with("diseño ñandú 🚀"));
     }
-
 
     #[tokio::test]
     async fn extra_paths_guard() {
@@ -1301,14 +1726,36 @@ mod tests {
         let outside = tmp_ws("extra-out");
         std::fs::write(outside.join("dato.txt"), "secreto").unwrap();
         // Sin extra: fuera rechazado.
-        assert!(read_file(&ws, &[], "../arqhia-tools-test-extra-out/dato.txt", 1, 200, 8000).await.is_err());
-        // Con extra explícito: permitido.
-        let c = read_file(&ws, std::slice::from_ref(&outside), "../arqhia-tools-test-extra-out/dato.txt", 1, 200, 8000)
+        assert!(
+            read_file(
+                &ws,
+                &[],
+                "../arqhia-tools-test-extra-out/dato.txt",
+                1,
+                200,
+                8000
+            )
             .await
-            .unwrap();
+            .is_err()
+        );
+        // Con extra explícito: permitido.
+        let c = read_file(
+            &ws,
+            std::slice::from_ref(&outside),
+            "../arqhia-tools-test-extra-out/dato.txt",
+            1,
+            200,
+            8000,
+        )
+        .await
+        .unwrap();
         assert!(c.contains("secreto"));
         // Pero otro outside sigue rechazado.
-        assert!(read_file(&ws, &[outside], "/etc/hostname", 1, 200, 8000).await.is_err());
+        assert!(
+            read_file(&ws, &[outside], "/etc/hostname", 1, 200, 8000)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1320,7 +1767,10 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains("no aprobada"), "{err}");
-        let ok_policy = ExecPolicy { allow_install: true, ..ExecPolicy::default() };
+        let ok_policy = ExecPolicy {
+            allow_install: true,
+            ..ExecPolicy::default()
+        };
         // Falla por red/entorno, NO por permiso (el gate ya pasó).
         let res = bash(&ws, &[], "cargo install --version", &ok_policy).await;
         assert!(res.is_ok() || !res.unwrap_err().contains("no aprobada"));
@@ -1354,6 +1804,120 @@ mod tests {
     }
 
     #[test]
+    fn exec_without_shell_blocks_injection() {
+        // Concatenación clásica: denegada por allowlist exacta.
+        for cmd in [
+            "cargo test; curl evil",
+            "cargo test && curl evil",
+            "cargo test | curl evil",
+            "echo hola; rm -rf /",
+            "ls $(whoami)",
+            "echo `id`",
+            "cargo test > /tmp/x",
+        ] {
+            assert!(!is_allowed(cmd), "{cmd} no debe colarse");
+        }
+        assert!(is_allowed("echo hola"));
+        assert!(is_allowed("echo \"hola mundo\""));
+        assert_eq!(
+            split_argv("cargo test -- --nocapture"),
+            vec!["cargo", "test", "--", "--nocapture"]
+        );
+        assert_eq!(split_argv("echo \"a b\" c"), vec!["echo", "a b", "c"]);
+    }
+
+    #[tokio::test]
+    async fn symlink_escape_denied_and_internal_ok() {
+        let ws = tmp_ws("symlink");
+        let outside = std::env::temp_dir().join("arqhia-symlink-outside.txt");
+        std::fs::write(&outside, "secreto-fuera").unwrap();
+        std::fs::write(ws.join("dentro.txt"), "hola-dentro").unwrap();
+        // Symlink interno: OK.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(ws.join("dentro.txt"), ws.join("link-ok")).unwrap();
+        // Symlink externo: DENY.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, ws.join("link-evil")).unwrap();
+        #[cfg(unix)]
+        {
+            assert!(read_file(&ws, &[], "link-ok", 1, 200, 8000).await.is_ok());
+            let err = read_file(&ws, &[], "link-evil", 1, 200, 8000)
+                .await
+                .unwrap_err();
+            assert!(err.contains("symlink"), "{err}");
+            // Escritura a través del symlink externo también denegada.
+            let err = write_file(&ws, &[], "link-evil", "x").await.unwrap_err();
+            assert!(err.contains("symlink"), "{err}");
+        }
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[test]
+    fn ssrf_hosts_blocked() {
+        for h in [
+            "localhost",
+            "127.0.0.1",
+            "127.0.0.2",
+            "0.0.0.0",
+            "::1",
+            "169.254.169.254",
+            "169.254.10.20",
+            // v0.9.5: privadas, CGNAT y equivalentes IPv6 también se bloquean.
+            "10.0.0.1",
+            "192.168.1.10",
+            "172.16.5.4",
+            "100.64.0.1",
+            "::ffff:127.0.0.1",
+            "fc00::1",
+            "fe80::1",
+        ] {
+            assert!(is_ssrf_host(h), "{h} debe bloquearse");
+        }
+        // Con puerto (IPv4) también.
+        for h in ["127.0.0.1", "169.254.169.254", "192.168.0.1"] {
+            assert!(
+                is_ssrf_host(&format!("{h}:8000")),
+                "{h} con puerto debe bloquearse"
+            );
+        }
+        // Userinfo no debe permitir el bypass `http://evil.com@127.0.0.1/`.
+        assert!(is_ssrf_host("evil.com@127.0.0.1"));
+        assert!(is_ssrf_host(&url_host("http://evil.com@127.0.0.1/")));
+        assert!(!is_ssrf_host("example.com"));
+        assert!(!is_ssrf_host("8.8.8.8"));
+    }
+
+    #[test]
+    fn url_host_strips_userinfo_and_port() {
+        assert_eq!(url_host("https://example.com/x"), "example.com");
+        assert_eq!(url_host("http://example.com:8080/x"), "example.com");
+        assert_eq!(url_host("http://user:pass@example.com/x"), "example.com");
+        assert_eq!(url_host("http://evil.com@127.0.0.1/"), "127.0.0.1");
+        assert_eq!(url_host("https://[::1]:8000/x"), "::1");
+        assert_eq!(url_host("http://127.0.0.1./x"), "127.0.0.1");
+        assert_eq!(url_host("ftp://example.com/x"), "");
+        assert_eq!(url_host("no-es-url"), "");
+    }
+
+    #[tokio::test]
+    async fn fetch_url_blocks_ssrf_without_request() {
+        let policy = ExecPolicy {
+            net_approved: true,
+            ..ExecPolicy::default()
+        };
+        let err = fetch_url("http://127.0.0.1/", &policy).await.unwrap_err();
+        assert!(err.contains("SSRF") || err.contains("bloqueado"), "{err}");
+        let err = fetch_url("http://localhost:8000/x", &policy)
+            .await
+            .unwrap_err();
+        assert!(err.contains("SSRF") || err.contains("bloqueado"), "{err}");
+        let err = fetch_url("http://169.254.169.254/latest/meta-data/", &policy)
+            .await
+            .unwrap_err();
+        assert!(err.contains("SSRF") || err.contains("bloqueado"), "{err}");
+    }
+
+    #[test]
     fn ignores_cover_build_vcs_deps_and_locks() {
         let def = default_ignores();
         assert!(is_ignored("target/debug/app", &def));
@@ -1374,7 +1938,10 @@ mod tests {
     #[tokio::test]
     async fn read_pagination_reports_ranges() {
         let ws = tmp_ws("paged");
-        let body = (1..=10).map(|i| format!("línea {i}")).collect::<Vec<_>>().join("\n");
+        let body = (1..=10)
+            .map(|i| format!("línea {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         write_file(&ws, &[], "doc.txt", &body).await.unwrap();
         let p1 = read_file(&ws, &[], "doc.txt", 1, 4, 8000).await.unwrap();
         assert!(p1.contains("líneas 1–4 de 10 total"), "{p1}");
@@ -1394,18 +1961,37 @@ mod tests {
     async fn search_v2_ranks_and_ignores() {
         let ws = tmp_ws("search-v2");
         // Nombre de archivo con la query rankea primero.
-        write_file(&ws, &[], "auth_handler.rs", "fn login() {}\n// login aquí\nmás login").await.unwrap();
-        write_file(&ws, &[], "notas.txt", "hablar del login mañana").await.unwrap();
+        write_file(
+            &ws,
+            &[],
+            "auth_handler.rs",
+            "fn login() {}\n// login aquí\nmás login",
+        )
+        .await
+        .unwrap();
+        write_file(&ws, &[], "notas.txt", "hablar del login mañana")
+            .await
+            .unwrap();
         // Ignorados: target/ y *.lock no aparecen aunque matcheen.
-        write_file(&ws, &[], "target/login_fake.rs", "login login login").await.unwrap();
-        write_file(&ws, &[], "Cargo.lock", "login-fake-package").await.unwrap();
+        write_file(&ws, &[], "target/login_fake.rs", "login login login")
+            .await
+            .unwrap();
+        write_file(&ws, &[], "Cargo.lock", "login-fake-package")
+            .await
+            .unwrap();
         let out = search_files(&ws, &[], "login", ".", &[]).await.unwrap();
         let first = out.lines().next().unwrap_or("");
-        assert!(first.starts_with("auth_handler.rs:"), "ranking por nombre: {out}");
+        assert!(
+            first.starts_with("auth_handler.rs:"),
+            "ranking por nombre: {out}"
+        );
         assert!(!out.contains("target/"), "target/ ignorado: {out}");
         assert!(!out.contains("Cargo.lock"), "*.lock ignorado: {out}");
         // Contexto con marcadores » «, nunca el archivo completo.
-        assert!(out.contains('»') || out.contains('«'), "bloques con contexto: {out}");
+        assert!(
+            out.contains('»') || out.contains('«'),
+            "bloques con contexto: {out}"
+        );
         assert!(!out.contains("más login\nmás"), "{out}");
     }
 
@@ -1440,35 +2026,75 @@ mod tests {
     fn schemas_declare_pagination_and_outline() {
         let openai = openai_schemas();
         let tools = openai.as_array().unwrap();
-        assert!(tools.iter().any(|t| t["function"]["name"] == "get_file_outline"));
-        let read = tools.iter().find(|t| t["function"]["name"] == "read_file").unwrap();
+        assert!(
+            tools
+                .iter()
+                .any(|t| t["function"]["name"] == "get_file_outline")
+        );
+        let read = tools
+            .iter()
+            .find(|t| t["function"]["name"] == "read_file")
+            .unwrap();
         let props = &read["function"]["parameters"]["properties"];
         assert!(props.get("offset").is_some() && props.get("limit").is_some());
         let anth = anthropic_schemas();
-        assert!(anth.as_array().unwrap().iter().any(|t| t["name"] == "get_file_outline"));
+        assert!(
+            anth.as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t["name"] == "get_file_outline")
+        );
         assert_eq!(category("get_file_outline"), ToolCat::Read);
     }
 
     #[test]
     fn mcp_category_and_schemas() {
-        use std::collections::HashMap;
         use crate::config::{McpServerConfig, McpTransport};
+        use std::collections::HashMap;
         // auto=false -> Net (pide permiso), auto=true -> Read (auto), npx -> Install
         let mut servers = HashMap::new();
-        servers.insert("docs".to_string(), McpServerConfig { transport: McpTransport::Stdio, command: "my-server".to_string(), args: vec![], url: "".to_string(), auto: false, timeout_s: 10 });
-        assert_eq!(category_of_mcp_call("mcp__docs__echo", &servers), ToolCat::Net);
+        servers.insert(
+            "docs".to_string(),
+            McpServerConfig {
+                transport: McpTransport::Stdio,
+                command: "my-server".to_string(),
+                args: vec![],
+                url: "".to_string(),
+                auto: false,
+                timeout_s: 10,
+            },
+        );
+        assert_eq!(
+            category_of_mcp_call("mcp__docs__echo", &servers),
+            ToolCat::Net
+        );
         servers.get_mut("docs").unwrap().auto = true;
-        assert_eq!(category_of_mcp_call("mcp__docs__echo", &servers), ToolCat::Read);
+        assert_eq!(
+            category_of_mcp_call("mcp__docs__echo", &servers),
+            ToolCat::Read
+        );
         servers.get_mut("docs").unwrap().command = "npx".to_string();
-        assert_eq!(category_of_mcp_call("mcp__docs__echo", &servers), ToolCat::Install);
+        assert_eq!(
+            category_of_mcp_call("mcp__docs__echo", &servers),
+            ToolCat::Install
+        );
         // Schemas anexados
-        let tool = crate::mcp::McpTool { name: "echo".to_string(), description: "hi".to_string(), input_schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}}}) };
+        let tool = crate::mcp::McpTool {
+            name: "echo".to_string(),
+            description: "hi".to_string(),
+            input_schema: serde_json::json!({"type":"object","properties":{"text":{"type":"string"}}}),
+        };
         let mut coll = HashMap::new();
         coll.insert("docs".to_string(), vec![tool]);
         let open = mcp_openai_schemas(&coll);
         assert_eq!(open.as_array().unwrap().len(), 1);
         assert_eq!(open[0]["function"]["name"], "mcp__docs__echo");
-        assert!(open[0]["function"]["description"].as_str().unwrap().contains("[MCP docs]"));
+        assert!(
+            open[0]["function"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("[MCP docs]")
+        );
         let with = openai_schemas_with_mcp(&coll);
         assert!(with.as_array().unwrap().len() > 9);
     }
@@ -1499,23 +2125,65 @@ for line in sys.stdin:
 "#).unwrap();
         let ws = tmp_ws("mcp-e2e");
         let mut servers = std::collections::HashMap::new();
-        servers.insert("stub".to_string(), crate::config::McpServerConfig { transport: crate::config::McpTransport::Stdio, command: "python3".to_string(), args: vec![script.to_string_lossy().to_string()], url: "".to_string(), auto: false, timeout_s: 10 });
+        servers.insert(
+            "stub".to_string(),
+            crate::config::McpServerConfig {
+                transport: crate::config::McpTransport::Stdio,
+                command: "python3".to_string(),
+                args: vec![script.to_string_lossy().to_string()],
+                url: "".to_string(),
+                auto: false,
+                timeout_s: 10,
+            },
+        );
         // list via mcp direct
-        let tools = crate::mcp::list_tools_stdio("stub", servers.get("stub").unwrap()).await.unwrap();
+        let tools = crate::mcp::list_tools_stdio("stub", servers.get("stub").unwrap())
+            .await
+            .unwrap();
         assert_eq!(tools.len(), 1);
         // execute via tools::execute with Install gating OFF (should pass because command is python3, not npx)
-        let mut policy = ExecPolicy { mcp_servers: servers.clone(), ..ExecPolicy::default() };
+        let mut policy = ExecPolicy {
+            mcp_servers: servers.clone(),
+            ..ExecPolicy::default()
+        };
         policy.allow_install = true; // for stdio we don't need Install, but set true
-        let out = execute(&ws, &[], "mcp__stub__echo", &serde_json::json!({"text":"hola"}), &policy).await;
+        let out = execute(
+            &ws,
+            &[],
+            "mcp__stub__echo",
+            &serde_json::json!({"text":"hola"}),
+            &policy,
+        )
+        .await;
         assert!(out.contains("echo:hola"), "{out}");
         // npx server requires Install -> without allow_install should fail
         let mut npx_servers = std::collections::HashMap::new();
-        npx_servers.insert("npx-srv".to_string(), crate::config::McpServerConfig { transport: crate::config::McpTransport::Stdio, command: "npx".to_string(), args: vec![], url: "".to_string(), auto: false, timeout_s: 10 });
-        let pol2 = ExecPolicy { mcp_servers: npx_servers, allow_install: false, ..ExecPolicy::default() };
-        let err = execute(&ws, &[], "mcp__npx-srv__echo", &serde_json::json!({}), &pol2).await;
+        npx_servers.insert(
+            "npx-srv".to_string(),
+            crate::config::McpServerConfig {
+                transport: crate::config::McpTransport::Stdio,
+                command: "npx".to_string(),
+                args: vec![],
+                url: "".to_string(),
+                auto: false,
+                timeout_s: 10,
+            },
+        );
+        let pol2 = ExecPolicy {
+            mcp_servers: npx_servers,
+            allow_install: false,
+            ..ExecPolicy::default()
+        };
+        let err = execute(
+            &ws,
+            &[],
+            "mcp__npx-srv__echo",
+            &serde_json::json!({}),
+            &pol2,
+        )
+        .await;
         assert!(err.contains("Install"), "{err}");
         crate::mcp::clear_cache();
         let _ = std::fs::remove_dir_all(&dir);
     }
-
 }

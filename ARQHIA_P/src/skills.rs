@@ -11,10 +11,7 @@ use std::path::PathBuf;
 pub const SKILL_BODY_LIMIT: usize = 8 * 1024;
 
 pub fn skills_dir() -> PathBuf {
-    let home = std::env::var("ARQHIA_HOME")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".local").join("share").join("arqhia").join("skills")
+    crate::paths::data_dir().join("skills")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,7 +87,8 @@ pub fn valid_skill_name(name: &str) -> bool {
     let n = name.trim();
     !n.is_empty()
         && n.len() <= 64
-        && n.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && n.chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Instala las embebidas a disco si faltan (primer arranque / tras borrar).
@@ -128,7 +126,9 @@ pub fn list() -> Vec<SkillDesc> {
         })
         .collect();
     let dir = skills_dir();
-    let entries = std::fs::read_dir(&dir).map(|r| r.collect::<Vec<_>>()).unwrap_or_default();
+    let entries = std::fs::read_dir(&dir)
+        .map(|r| r.collect::<Vec<_>>())
+        .unwrap_or_default();
     for entry in entries {
         let entry = match entry {
             Ok(e) => e,
@@ -144,7 +144,8 @@ pub fn list() -> Vec<SkillDesc> {
         };
         if let Ok((meta, _)) = parse_skill_md(&raw) {
             out.push(SkillDesc {
-                name: meta.name,
+                // El nombre del directorio es la clave canónica de load/delete.
+                name,
                 version: meta.version,
                 description: meta.description,
                 origin: SkillOrigin::Local,
@@ -306,7 +307,10 @@ pub fn context_block(skill: &Skill, extra: &str) -> String {
         skill.body
     );
     if !skill.extras.is_empty() {
-        s.push_str(&format!("\nRecursos/scripts disponibles: {}.\n", skill.extras.join(", ")));
+        s.push_str(&format!(
+            "\nRecursos/scripts disponibles: {}.\n",
+            skill.extras.join(", ")
+        ));
         s.push_str("Si el usuario pide ejecutar un script, pasa por el permiso Bash normal.\n");
     }
     if skill.truncated {
@@ -316,7 +320,10 @@ pub fn context_block(skill: &Skill, extra: &str) -> String {
         ));
     }
     if !extra.trim().is_empty() {
-        s.push_str(&format!("\nPetición del usuario tras /skill: {}\n", extra.trim()));
+        s.push_str(&format!(
+            "\nPetición del usuario tras /skill: {}\n",
+            extra.trim()
+        ));
     }
     s
 }
@@ -351,9 +358,10 @@ fn disk_extras(name: &str) -> Vec<String> {
         };
         for e in entries.flatten() {
             if e.path().is_file()
-                && let Some(n) = e.file_name().to_str() {
-                    out.push(format!("{sub}/{n}"));
-                }
+                && let Some(n) = e.file_name().to_str()
+            {
+                out.push(format!("{sub}/{n}"));
+            }
         }
     }
     out.sort();
@@ -362,6 +370,10 @@ fn disk_extras(name: &str) -> Vec<String> {
 
 /// `SKILL.md` = frontmatter `---` + cuerpo. Exige `nombre` + `descripcion`.
 fn parse_skill_md(raw: &str) -> Result<(SkillMeta, String), String> {
+    // Normaliza BOM + CRLF: con `\r\n` el cálculo de offsets por `len()+1`
+    // quedaba desplazado y el cuerpo salía mal (v0.9.5).
+    let norm = raw.trim_start_matches('\u{feff}').replace("\r\n", "\n");
+    let raw = norm.as_str();
     let mut lines = raw.lines();
     if lines.next().map(str::trim) != Some("---") {
         return Err("SKILL.md sin frontmatter (debe empezar con ---).".to_string());
@@ -382,7 +394,13 @@ fn parse_skill_md(raw: &str) -> Result<(SkillMeta, String), String> {
     let Some(start) = body_start else {
         return Err("SKILL.md sin cierre de frontmatter (segundo ---).".to_string());
     };
-    let get = |k: &str| front.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone()).unwrap_or_default();
+    let get = |k: &str| {
+        front
+            .iter()
+            .find(|(key, _)| key == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    };
     let name = get("nombre");
     let description = get("descripcion");
     if name.trim().is_empty() || description.trim().is_empty() {
@@ -417,21 +435,21 @@ mod tests {
 
     #[test]
     fn slash_forms_split_complete_and_resolve() {
-        // slash_tail pela `/` y el verbo `skill`.
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-slash_forms_"); // slash_tail pela `/` y el verbo `skill`.
         assert_eq!(
             slash_tail("/skill commit-msg añade login"),
             ("commit-msg".to_string(), "añade login".to_string())
         );
-        assert_eq!(
-            slash_tail("/code"),
-            ("code".to_string(), String::new())
-        );
+        assert_eq!(slash_tail("/code"), ("code".to_string(), String::new()));
         assert_eq!(
             slash_tail("  /skill code-review "),
             ("code-review".to_string(), String::new())
         );
         assert_eq!(slash_tail("/"), (String::new(), String::new()));
-        assert_eq!(slash_tail("/skills x"), ("skills".to_string(), "x".to_string()));
+        assert_eq!(
+            slash_tail("/skills x"),
+            ("skills".to_string(), "x".to_string())
+        );
         // resolve: exacto o prefijo único; si no, candidatas.
         assert_eq!(
             resolve_slash("/skill commit-msg añade login"),
@@ -454,23 +472,37 @@ mod tests {
 
     #[test]
     fn frontmatter_requires_name_and_description() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-frontmatter_");
         let ok = "---\nnombre: demo\ndescripcion: una demo\nversion: 1.2\n---\n\nHaz X.\n";
         let (m, b) = parse_skill_md(ok).unwrap();
-        assert_eq!((m.name, m.version, b), ("demo".to_string(), "1.2".to_string(), "Haz X.".to_string()));
+        assert_eq!(
+            (m.name, m.version, b),
+            ("demo".to_string(), "1.2".to_string(), "Haz X.".to_string())
+        );
         assert!(parse_skill_md("sin frontmatter").is_err());
-        assert!(parse_skill_md("---\nnombre: x\n---\ncuerpo").is_err(), "falta descripcion");
-        assert!(parse_skill_md("---\nnombre: x\ndescripcion: y\n---\n").is_err(), "cuerpo vacío");
+        assert!(
+            parse_skill_md("---\nnombre: x\n---\ncuerpo").is_err(),
+            "falta descripcion"
+        );
+        assert!(
+            parse_skill_md("---\nnombre: x\ndescripcion: y\n---\n").is_err(),
+            "cuerpo vacío"
+        );
         assert!(parse_skill_md("---\nnombre: x\ndescripcion: y\nsin cierre").is_err());
     }
 
     #[test]
     fn embedded_install_list_and_load() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-embedded_ins");
         assert!(ensure_embedded().is_ok());
         // Resto en disco de la retirada `revisar-codigo`: fuera para el test.
         let _ = delete("revisar-codigo");
         let names: Vec<String> = list().iter().map(|d| d.name.clone()).collect();
         assert!(names.contains(&"commit-msg".to_string()));
-        assert!(!names.contains(&"revisar-codigo".to_string()), "retirada: la cubre code-review");
+        assert!(
+            !names.contains(&"revisar-codigo".to_string()),
+            "retirada: la cubre code-review"
+        );
         // v0.9.2: skills de dominio embebidas (reportan a CONTEXT/).
         for n in ["ui-ux", "code-review", "test-qa"] {
             assert!(names.contains(&n.to_string()), "falta embebida {n}");
@@ -495,6 +527,7 @@ mod tests {
 
     #[test]
     fn suggest_filters_by_prefix_with_preview() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-suggest_filt");
         let all = suggest("/");
         let names: Vec<&str> = all.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"commit-msg") && names.contains(&"code-review"));
@@ -502,12 +535,17 @@ mod tests {
         assert_eq!(rev.len(), 1, "prefijo único: {rev:?}");
         assert_eq!(rev[0].name, "code-review");
         assert!(!rev[0].description.is_empty() && !rev[0].preview.is_empty());
-        assert!(suggest("/skill commit").iter().any(|s| s.name == "commit-msg"));
+        assert!(
+            suggest("/skill commit")
+                .iter()
+                .any(|s| s.name == "commit-msg")
+        );
         assert!(suggest("/zzz-sin-nada").is_empty());
     }
 
     #[test]
     fn ambiguous_prefix_lists_candidates() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-ambiguou");
         assert!(ensure_embedded().is_ok());
         for name in ["v09-tmp-amb-aa", "v09-tmp-amb-ab"] {
             let dir = skills_dir().join(name);
@@ -532,11 +570,16 @@ mod tests {
 
     #[test]
     fn local_skill_roundtrip_and_delete() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-local_sk");
         assert!(ensure_embedded().is_ok());
         let dir = skills_dir().join("v09-tmp-skill");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("SKILL.md"), "---\nnombre: v09-tmp-skill\ndescripcion: temporal\n---\n\nHaz T.\n").unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            "---\nnombre: v09-tmp-skill\ndescripcion: temporal\n---\n\nHaz T.\n",
+        )
+        .unwrap();
         let names: Vec<String> = list().iter().map(|d| d.name.clone()).collect();
         assert!(names.contains(&"v09-tmp-skill".to_string()));
         let skill = load("v09-tmp-skill").unwrap();
@@ -549,6 +592,7 @@ mod tests {
 
     #[test]
     fn delete_embedded_restores_it() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-delete_e");
         assert!(ensure_embedded().is_ok());
         let msg = delete("commit-msg").unwrap();
         assert!(msg.contains("restaur"));
@@ -563,11 +607,14 @@ mod tests {
         assert!(flag && cut.len() <= SKILL_BODY_LIMIT);
         let (same, flag2) = truncate_body("corto");
         assert!(!flag2 && same == "corto");
-        assert!(!valid_skill_name("../x") && !valid_skill_name("") && valid_skill_name("mi-skill_2"));
+        assert!(
+            !valid_skill_name("../x") && !valid_skill_name("") && valid_skill_name("mi-skill_2")
+        );
     }
 
     #[test]
     fn big_skill_file_loads_truncated() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-big_skil");
         assert!(ensure_embedded().is_ok());
         let dir = skills_dir().join("v09-tmp-big");
         let _ = std::fs::remove_dir_all(&dir);
@@ -584,5 +631,18 @@ mod tests {
         let ctx = context_block(&skill, "");
         assert!(ctx.contains("truncadas"), "aviso en el contexto");
         delete("v09-tmp-big").unwrap();
+    }
+
+    /// v0.9.5: `/skill code-review` cita `ChatHistory`/paralelos y symlinks
+    /// al inyectarse (criterio de funcionalidad: la skill cubre la calidad
+    /// estructural de esta versión).
+    #[test]
+    fn code_review_skill_mentions_history_and_symlinks() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("skills-code-rev");
+        assert!(ensure_embedded().is_ok());
+        let skill = load("code-review").expect("embebida code-review");
+        let ctx = context_block(&skill, "revisa el chat");
+        assert!(ctx.contains("ChatHistory"), "cita ChatHistory/paralelos");
+        assert!(ctx.contains("symlink"), "cita symlinks");
     }
 }

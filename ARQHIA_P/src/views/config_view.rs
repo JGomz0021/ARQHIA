@@ -4,14 +4,15 @@
 
 use iced::{Element, Theme};
 
+use super::config_api::view_config_api;
+use super::config_git::view_config_git;
 use crate::app::{App, ConfigTab, Message};
-use crate::config::{Provider, ThemeMode};
-use crate::workspace;
+use crate::config::ThemeMode;
 
 pub(crate) fn view_config(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, row, scrollable, text};
-    use crate::ui::{components, design};
     use crate::ui::design::type_scale;
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, row, scrollable, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -66,17 +67,20 @@ pub(crate) fn view_config(state: &App) -> Element<'_, Message> {
 }
 
 /// Settings section card: label + grouped controls.
-fn settings_card<'a>(
+pub(crate) fn settings_card<'a>(
     app_theme: &Theme,
     compact: bool,
     label: &str,
     body: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    use iced::widget::{column, container};
     use crate::ui::{components, design};
+    use iced::widget::{column, container};
     container(
-        column![components::section_label(app_theme.clone(), label), body.into()]
-            .spacing(design::gap(compact, 8)),
+        column![
+            components::section_label(app_theme.clone(), label),
+            body.into()
+        ]
+        .spacing(design::gap(compact, 8)),
     )
     .width(iced::Length::Fill)
     .padding(design::pad(compact, 12))
@@ -85,9 +89,9 @@ fn settings_card<'a>(
 }
 
 /// Etiqueta de límite con tooltip flotante al pasar el cursor.
-fn limit_label<'a>(ts: f32, label: &str, hint_text: &str) -> Element<'a, Message> {
-    use iced::widget::{container, text};
+pub(crate) fn limit_label<'a>(ts: f32, label: &str, hint_text: &str) -> Element<'a, Message> {
     use crate::ui::design;
+    use iced::widget::{container, text};
     iced::widget::Tooltip::new(
         text(label.to_string())
             .size(design::fs(ts, 13))
@@ -101,317 +105,10 @@ fn limit_label<'a>(ts: f32, label: &str, hint_text: &str) -> Element<'a, Message
     .into()
 }
 
-fn view_config_api(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, pick_list, row, text, text_input};
-    use crate::ui::{components, design};
-    let app_theme = super::app_theme(state);
-    let dim = design::ink_2(&app_theme);
-    let ts = state.config.appearance.text_size.scale();
-    let providers = Provider::ALL.to_vec();
-    let status_kind = design::status_tone(&state.status);
-    let browser: Element<'_, Message> = if state.model_browser {
-        model_browser(state)
-    } else {
-        iced::widget::vertical_space().height(0).into()
-    };
-    // Nivel de razonamiento: opciones determinadas por el modelo (models.dev).
-    let r_pid = crate::pricing::provider_id_for(state.edit_provider, &state.edit_base_url);
-    let r_opts = state.pricing.effort_choices_in(r_pid.as_deref(), &state.edit_model);
-    let r_current = if state.edit_reasoning.is_empty() {
-        "auto".to_string()
-    } else {
-        state.edit_reasoning.clone()
-    };
-    let reason_hint: Element<'_, Message> = if state.pricing.is_empty() {
-        text("Pulsa `Buscar modelo` una vez para cargar los niveles del catálogo.")
-            .size(design::fs(ts, 11))
-            .color(dim)
-            .into()
-    } else {
-        iced::widget::vertical_space().height(0).into()
-    };
-    let reasoning_row: Element<'_, Message> = column![
-        row![
-            text("Nivel de razonamiento").size(design::fs(ts, 12)).color(dim),
-            pick_list(r_opts, Some(r_current), Message::EditReasoningPicked)
-                .style(|t: &Theme, s| design::field_pick(t, s)),
-        ]
-        .spacing(8)
-        .align_y(iced::Alignment::Center),
-        reason_hint,
-    ]
-    .spacing(4)
-    .into();
-    let cx = state.config.appearance.compact();
-    // v0.7.4 (rediseño): el centro es CREAR un perfil — nombre arriba, luego
-    // provider, api + base, modelo + búsqueda, guardar/probar. Debajo, la
-    // lista de perfiles con menú "···" (Borrar/Editar) y overlay de edición.
-    let create_card = settings_card(
-        &app_theme,
-        cx,
-        "Nuevo perfil",
-        column![
-            text("El perfil guarda todo: nombre + provider + API key + URL base + modelo + nivel. Cambiar de perfil cambia todo.")
-                .size(design::fs(ts, 11))
-                .color(dim),
-            components::field(app_theme.clone(), "Nombre del perfil", None),
-            text_input("Ej. Rápido, Potente...", &state.profile_name)
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(crate::app::Message::ProfileNameChanged)
-                .on_submit(crate::app::Message::ProfileSave)
-                .width(iced::Fill),
-            components::field(app_theme.clone(), "Provider", None),
-            pick_list(providers, Some(state.edit_provider), Message::ProviderPicked)
-                .style(|t: &Theme, s| design::field_pick(t, s)),
-            components::field(app_theme.clone(), "API key", None),
-            text_input(
-                if state.edit_provider == Provider::Local {
-                    "Opcional en local (LM Studio la ignora)"
-                } else {
-                    "sk-... / sk-ant-... / or-..."
-                },
-                &state.edit_api_key,
-            )
-            .secure(true)
-            .style(|t: &Theme, s| design::field(t, s))
-            .on_input(Message::ApiKeyChanged),
-            components::field(app_theme.clone(), "URL base", None),
-            row![
-                text_input(
-                    if state.edit_provider == Provider::Local {
-                        "http://localhost:1234"
-                    } else {
-                        "https://..."
-                    },
-                    &state.edit_base_url
-                )
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::BaseUrlChanged)
-                .width(iced::Fill),
-                components::quiet_btn("Restablecer".to_string()).on_press(Message::UseDefaultBaseUrl),
-            ]
-            .spacing(8),
-            components::field(app_theme.clone(), "Modelo", None),
-            row![
-                text_input(
-                    if state.edit_provider == Provider::Local {
-                        "id exacto en LM Studio (ej. qwen3-8b)"
-                    } else {
-                        "gpt-4o-mini..."
-                    },
-                    &state.edit_model
-                )
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::ModelChanged)
-                .width(iced::Fill),
-                components::quiet_btn("Buscar modelo".to_string())
-                    .on_press(Message::OpenModelBrowser),
-                components::quiet_btn("Restablecer".to_string()).on_press(Message::UseDefaultModel),
-            ]
-            .spacing(8),
-            reasoning_row,
-            text(format!(
-                "Activo para chatear: {} — {}",
-                state.config.active,
-                state.config.active_config().model
-            ))
-            .size(design::fs(ts, 11))
-            .color(dim),
-            row![
-                components::primary_btn("Guardar perfil".to_string(), 13)
-                    .on_press(crate::app::Message::ProfileSave),
-                if state.testing {
-                    components::quiet_btn("Probando...".to_string())
-                } else {
-                    components::quiet_btn("Probar conexión".to_string()).on_press(Message::TestConnection)
-                },
-            ]
-            .spacing(8),
-            row![
-                text(components::log_icon(status_kind))
-                    .size(12)
-                    .color(design::tone(&app_theme, status_kind)),
-                text(&state.status).size(design::fs(ts, 12)).color(
-                    if status_kind == design::Tone::Neutral {
-                        dim
-                    } else {
-                        design::tone(&app_theme, status_kind)
-                    }
-                ),
-            ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
-            browser,
-        ]
-        .spacing(6),
-    );
-    let list_card = profiles_list_card(state);
-    let overlay: Element<'_, Message> = match state.editing_profile.clone() {
-        Some(_) => profile_edit_overlay(state),
-        None => iced::widget::vertical_space().height(0).into(),
-    };
-    column![create_card, list_card, overlay,]
-    .spacing(12)
-    .max_width(1200)
-    .into()
-}
-
-/// Lista de perfiles guardados (v0.7.4 rediseño): una caja por perfil con
-/// nombre + modelo y menú "···" (Borrar/Editar). Click en el nombre = usar.
-fn profiles_list_card(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, row, text};
-    use crate::ui::{components, design};
-    let app_theme = super::app_theme(state);
-    let dim = design::ink_2(&app_theme);
-    let ts = state.config.appearance.text_size.scale();
-    let cx = state.config.appearance.compact();
-    let mut list = column![
-        text(format!("Perfiles guardados ({})", state.config.model_profiles.len()))
-            .size(design::fs(ts, 13)),
-        text("Click en el nombre para usarlo en el chat. El ··· abre Borrar/Editar.")
-            .size(design::fs(ts, 11))
-            .color(dim),
-    ]
-    .spacing(4);
-    if state.config.model_profiles.is_empty() {
-        list = list.push(components::empty_state(
-            app_theme.clone(),
-            "Sin perfiles todavía",
-            "Crea el primero arriba con nombre + provider + API + modelo.",
-        ));
-    }
-    for p in &state.config.model_profiles {
-        let pid = p.id.clone();
-        let pid_menu = p.id.clone();
-        let pid_del = p.id.clone();
-        let pid_edit = p.id.clone();
-        let is_active = state.config.active_profile.as_deref() == Some(p.id.as_str());
-        let mut card = column![
-            row![
-                iced::widget::button(
-                    text(p.name.clone()).size(design::fs(ts, 14))
-                )
-                .padding(0)
-                .style(|t: &Theme, s| design::nav(t, s, false))
-                .on_press(Message::ProfilePicked(pid)),
-                iced::widget::horizontal_space(),
-                text(p.model.clone()).size(design::fs(ts, 12)).color(dim),
-                if is_active {
-                    components::badge(app_theme.clone(), design::Tone::Ok, "activo")
-                } else {
-                    components::badge(app_theme.clone(), design::Tone::Neutral, p.provider.to_string())
-                },
-                components::head_btn("···".to_string())
-                    .on_press(Message::ProfileMenuToggled(pid_menu)),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-        ]
-        .spacing(4);
-        if state.profile_menu.as_deref() == Some(p.id.as_str()) {
-            card = card.push(
-                row![
-                    components::quiet_btn("Editar".to_string())
-                        .on_press(Message::ProfileEdit(pid_edit)),
-                    components::quiet_btn("Borrar".to_string())
-                        .on_press(Message::ProfileDelete(pid_del)),
-                ]
-                .spacing(8),
-            );
-        }
-        list = list.push(
-            container(card)
-                .width(iced::Fill)
-                .padding(10)
-                .style(|t: &Theme| design::card(t)),
-        );
-    }
-    settings_card(&app_theme, cx, "Mis perfiles", list)
-}
-
-/// Overlay de edición de un perfil (v0.7.4 rediseño): mini formulario
-/// superpuesto con nombre, provider, api, url base, modelo y nivel.
-fn profile_edit_overlay(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, pick_list, row, text, text_input};
-    use crate::ui::{components, design};
-    let app_theme = super::app_theme(state);
-    let dim = design::ink_2(&app_theme);
-    let ts = state.config.appearance.text_size.scale();
-    let cx = state.config.appearance.compact();
-    let providers = Provider::ALL.to_vec();
-    let r_pid =
-        crate::pricing::provider_id_for(state.eprofile_provider, &state.eprofile_base);
-    let r_opts = state.pricing.effort_choices_in(r_pid.as_deref(), &state.eprofile_model);
-    let r_current = if state.eprofile_reasoning.is_empty() {
-        "auto".to_string()
-    } else {
-        state.eprofile_reasoning.clone()
-    };
-    settings_card(
-        &app_theme,
-        cx,
-        "Editar perfil",
-        column![
-            components::field(app_theme.clone(), "Nombre", None),
-            text_input("Nombre del perfil", &state.eprofile_name)
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::ProfileEditNameChanged)
-                .width(iced::Fill),
-            components::field(app_theme.clone(), "Provider", None),
-            pick_list(
-                providers,
-                Some(state.eprofile_provider),
-                Message::ProfileEditProviderPicked
-            )
-            .style(|t: &Theme, s| design::field_pick(t, s)),
-            components::field(app_theme.clone(), "API key", None),
-            text_input("sk-... / sk-ant-... / or-...", &state.eprofile_api)
-                .secure(true)
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::ProfileEditApiChanged),
-            components::field(app_theme.clone(), "URL base", None),
-            text_input("https://...", &state.eprofile_base)
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::ProfileEditBaseChanged)
-                .width(iced::Fill),
-            components::field(app_theme.clone(), "Modelo", None),
-            row![
-                text_input("gpt-4o-mini...", &state.eprofile_model)
-                    .style(|t: &Theme, s| design::field(t, s))
-                    .on_input(Message::ProfileEditModelChanged)
-                    .width(iced::Fill),
-                components::quiet_btn("Buscar".to_string())
-                    .on_press(Message::OpenModelBrowser),
-            ]
-            .spacing(8),
-            row![
-                text("Nivel de razonamiento").size(design::fs(ts, 12)).color(dim),
-                pick_list(
-                    r_opts,
-                    Some(r_current),
-                    Message::ProfileEditReasoningPicked
-                )
-                .style(|t: &Theme, s| design::field_pick(t, s)),
-            ]
-            .spacing(8)
-            .align_y(iced::Alignment::Center),
-            row![
-                components::primary_btn("Guardar cambios".to_string(), 13)
-                    .on_press(Message::ProfileUpdate),
-                components::quiet_btn("Cancelar".to_string())
-                    .on_press(Message::ProfileEditCancel),
-            ]
-            .spacing(8),
-            text(&state.status).size(design::fs(ts, 12)).color(dim),
-        ]
-        .spacing(6),
-    )
-}
-
 fn view_config_apariencia(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, pick_list, row, text};
-    use crate::ui::{components, design};
     use crate::config::{AccentChoice, Density, TextSize};
+    use crate::ui::{components, design};
+    use iced::widget::{column, pick_list, row, text};
     let app_theme = super::app_theme(state);
     let themes = ThemeMode::ALL.to_vec();
     let status_el: Element<'_, Message> = if state.status.is_empty() {
@@ -422,50 +119,80 @@ fn view_config_apariencia(state: &App) -> Element<'_, Message> {
             text(components::log_icon(kind))
                 .size(12)
                 .color(design::tone(&app_theme, kind)),
-            text(&state.status).size(12).color(design::tone(&app_theme, kind)),
+            text(&state.status)
+                .size(12)
+                .color(design::tone(&app_theme, kind)),
         ]
         .spacing(6)
         .align_y(iced::Alignment::Center)
         .into()
     };
-    column![
-        settings_card(
-            &app_theme,
-            state.config.appearance.compact(),
-            "Apariencia",
-            column![
-                components::field(app_theme.clone(), "Tema", Some("Se aplica al instante y se guarda.".to_string())),
-                pick_list(themes, Some(state.config.theme), Message::ThemePicked)
-                    .style(|t: &Theme, s| design::field_pick(t, s)),
-                components::field(app_theme.clone(), "Acento", Some("Identidad ARQHIA: acciones, selección y foco.".to_string())),
-                pick_list(AccentChoice::ALL.to_vec(), Some(state.config.appearance.accent), Message::AccentPicked)
-                    .style(|t: &Theme, s| design::field_pick(t, s)),
-                components::field(app_theme.clone(), "Tamaño de texto", Some("Escala todo el contenido (encabezados y controles fijos no cambian).".to_string())),
-                pick_list(TextSize::ALL.to_vec(), Some(state.config.appearance.text_size), Message::TextSizePicked)
-                    .style(|t: &Theme, s| design::field_pick(t, s)),
-                components::field(app_theme.clone(), "Densidad", Some("Compacta reduce el aire en mensajes y sidebar.".to_string())),
-                pick_list(Density::ALL.to_vec(), Some(state.config.appearance.density), Message::DensityPicked)
-                    .style(|t: &Theme, s| design::field_pick(t, s)),
-                row![
-                    components::dot(app_theme.clone(), design::Tone::Accent),
-                    text("Vista previa del acento").size(13),
-                ]
-                .spacing(6)
-                .align_y(iced::Alignment::Center),
-                status_el,
+    column![settings_card(
+        &app_theme,
+        state.config.appearance.compact(),
+        "Apariencia",
+        column![
+            components::field(
+                app_theme.clone(),
+                "Tema",
+                Some("Se aplica al instante y se guarda.".to_string())
+            ),
+            pick_list(themes, Some(state.config.theme), Message::ThemePicked)
+                .style(|t: &Theme, s| design::field_pick(t, s)),
+            components::field(
+                app_theme.clone(),
+                "Acento",
+                Some("Identidad ARQHIA: acciones, selección y foco.".to_string())
+            ),
+            pick_list(
+                AccentChoice::ALL.to_vec(),
+                Some(state.config.appearance.accent),
+                Message::AccentPicked
+            )
+            .style(|t: &Theme, s| design::field_pick(t, s)),
+            components::field(
+                app_theme.clone(),
+                "Tamaño de texto",
+                Some(
+                    "Escala todo el contenido (encabezados y controles fijos no cambian)."
+                        .to_string()
+                )
+            ),
+            pick_list(
+                TextSize::ALL.to_vec(),
+                Some(state.config.appearance.text_size),
+                Message::TextSizePicked
+            )
+            .style(|t: &Theme, s| design::field_pick(t, s)),
+            components::field(
+                app_theme.clone(),
+                "Densidad",
+                Some("Compacta reduce el aire en mensajes y sidebar.".to_string())
+            ),
+            pick_list(
+                Density::ALL.to_vec(),
+                Some(state.config.appearance.density),
+                Message::DensityPicked
+            )
+            .style(|t: &Theme, s| design::field_pick(t, s)),
+            row![
+                components::dot(app_theme.clone(), design::Tone::Accent),
+                text("Vista previa del acento").size(13),
             ]
             .spacing(6)
-        ),
-    ]
+            .align_y(iced::Alignment::Center),
+            status_el,
+        ]
+        .spacing(6)
+    ),]
     .spacing(10)
     .max_width(1200)
     .into()
 }
 
-
 fn view_config_permisos(state: &App) -> Element<'_, Message> {
-    use iced::widget::{checkbox, column, pick_list, row, text, text_input};
     use crate::ui::{components, design};
+    use iced::widget::{checkbox, column, pick_list, row, text, text_input};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -474,81 +201,81 @@ fn view_config_permisos(state: &App) -> Element<'_, Message> {
         &app_theme,
         state.config.appearance.compact(),
         "Permisos del agente",
-            column![
-                text("Lo no automático pide tu aprobación en el chat, por lote y con categoría.")
-                    .size(design::fs(ts, 12))
-                    .color(dim),
-                checkbox(
-                    "Lectura automática (leer, listar, buscar)",
-                    state.config.permissions.auto_read
-                )
-                .on_toggle(Message::PermReadToggled),
-                checkbox(
-                    "Escritura automática (crear, editar, borrar)",
-                    state.config.permissions.auto_write
-                )
-                .on_toggle(Message::PermWriteToggled),
-                checkbox(
-                    "Consola automática (comandos permitidos)",
-                    state.config.permissions.auto_bash
-                )
-                .on_toggle(Message::PermBashToggled),
-                checkbox(
-                    "Red automática (solo dominios listados abajo)",
-                    state.config.permissions.auto_net
-                )
-                .on_toggle(Message::PermNetToggled),
-                checkbox(
-                    "Red del planner (consulta docs externos al planificar)",
-                    state.config.permissions.planner_net
-                )
-                .on_toggle(Message::PermPlannerNetToggled),
-                checkbox(
-                    "Instalación automática (cargo/pip/npm/apt…)",
-                    state.config.permissions.auto_install
-                )
-                .on_toggle(Message::PermInstallToggled),
-                text("Recomendado: solo lectura. Red e instalación siempre piden.")
-                    .size(design::fs(ts, 11))
-                    .color(dim),
-            ]
-            .spacing(6)
+        column![
+            text("Lo no automático pide tu aprobación en el chat, por lote y con categoría.")
+                .size(design::fs(ts, 12))
+                .color(dim),
+            checkbox(
+                "Lectura automática (leer, listar, buscar)",
+                state.config.permissions.auto_read
+            )
+            .on_toggle(Message::PermReadToggled),
+            checkbox(
+                "Escritura automática (crear, editar, borrar)",
+                state.config.permissions.auto_write
+            )
+            .on_toggle(Message::PermWriteToggled),
+            checkbox(
+                "Consola automática (comandos permitidos)",
+                state.config.permissions.auto_bash
+            )
+            .on_toggle(Message::PermBashToggled),
+            checkbox(
+                "Red automática (solo dominios listados abajo)",
+                state.config.permissions.auto_net
+            )
+            .on_toggle(Message::PermNetToggled),
+            checkbox(
+                "Red del planner (consulta docs externos al planificar)",
+                state.config.permissions.planner_net
+            )
+            .on_toggle(Message::PermPlannerNetToggled),
+            checkbox(
+                "Instalación automática (cargo/pip/npm/apt…)",
+                state.config.permissions.auto_install
+            )
+            .on_toggle(Message::PermInstallToggled),
+            text("Recomendado: solo lectura. Red e instalación siempre piden.")
+                .size(design::fs(ts, 11))
+                .color(dim),
+        ]
+        .spacing(6),
     );
     let red_card = settings_card(
         &app_theme,
         state.config.appearance.compact(),
         "Red y rutas externas",
-            column![
-                components::field(
-                    app_theme.clone(),
-                    "Dominios permitidos (separados por comas)",
-                    Some("Vacío = todos piden permiso. Ej: docs.rs, github.com".to_string())
-                ),
-                text_input("docs.rs, github.com...", &state.perm_domains)
-                    .size(design::fs(ts, 13))
-                    .style(|t: &Theme, s| design::field(t, s))
-                    .on_input(Message::PermDomainsChanged)
-                    .on_submit(Message::SavePermLists)
-                    .width(iced::Fill),
-                components::field(
-                    app_theme.clone(),
-                    "Carpetas fuera del workspace (separadas por comas)",
-                    Some("Deben existir; se validan al guardar.".to_string())
-                ),
-                text_input("/ruta/a/datos, ...", &state.perm_extra)
-                    .size(design::fs(ts, 13))
-                    .style(|t: &Theme, s| design::field(t, s))
-                    .on_input(Message::PermExtraChanged)
-                    .on_submit(Message::SavePermLists)
-                    .width(iced::Fill),
-                row![
-                    components::quiet_btn("Guardar listas".to_string())
-                        .on_press(Message::SavePermLists),
-                ]
-                .spacing(8),
-                text(&state.status).size(design::fs(ts, 12)).color(dim),
+        column![
+            components::field(
+                app_theme.clone(),
+                "Dominios permitidos (separados por comas)",
+                Some("Vacío = todos piden permiso. Ej: docs.rs, github.com".to_string())
+            ),
+            text_input("docs.rs, github.com...", &state.perm_domains)
+                .size(design::fs(ts, 13))
+                .style(|t: &Theme, s| design::field(t, s))
+                .on_input(Message::PermDomainsChanged)
+                .on_submit(Message::SavePermLists)
+                .width(iced::Fill),
+            components::field(
+                app_theme.clone(),
+                "Carpetas fuera del workspace (separadas por comas)",
+                Some("Deben existir; se validan al guardar.".to_string())
+            ),
+            text_input("/ruta/a/datos, ...", &state.perm_extra)
+                .size(design::fs(ts, 13))
+                .style(|t: &Theme, s| design::field(t, s))
+                .on_input(Message::PermExtraChanged)
+                .on_submit(Message::SavePermLists)
+                .width(iced::Fill),
+            row![
+                components::quiet_btn("Guardar listas".to_string())
+                    .on_press(Message::SavePermLists),
             ]
-            .spacing(6)
+            .spacing(8),
+            text(&state.status).size(design::fs(ts, 12)).color(dim),
+        ]
+        .spacing(6),
     );
     let limites_card = settings_card(
         &app_theme,
@@ -634,157 +361,10 @@ fn view_config_permisos(state: &App) -> Element<'_, Message> {
     .into()
 }
 
-fn view_config_git(state: &App) -> Element<'_, Message> {
-    use iced::widget::{checkbox, column, pick_list, row, text, text_input};
-    use crate::config::{BranchMode, GitAutonomy};
-    use crate::ui::{components, design};
-    let app_theme = super::app_theme(state);
-    let dim = design::ink_2(&app_theme);
-    let ts = state.config.appearance.text_size.scale();
-    let cx = state.config.appearance.compact();
-    let git = &state.config.git;
-
-    let repo_card = settings_card(
-        &app_theme,
-        cx,
-        "Repositorio",
-        column![
-            checkbox("Iniciar Git en cada workspace", git.enabled)
-                .on_toggle(Message::GitEnabledToggled),
-            checkbox("Hacer `git init` si el workspace no es repo", git.auto_init)
-                .on_toggle(Message::GitAutoInitToggled),
-            components::field(app_theme.clone(), "Rama base (protegida)", None),
-            text_input("main", &state.git_base_branch)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::GitBaseBranchChanged)
-                .on_submit(Message::GitSave)
-                .width(iced::Fill),
-            components::field(app_theme.clone(), "Rama de trabajo del agente", None),
-            text_input("ARQHIA", &state.git_work_branch)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::GitWorkBranchChanged)
-                .on_submit(Message::GitSave)
-                .width(iced::Fill),
-            components::field(app_theme.clone(), "Modo de rama", None),
-            pick_list(BranchMode::ALL.to_vec(), Some(git.branch_mode), Message::GitBranchModePicked)
-                .style(|t: &Theme, s| design::field_pick(t, s)),
-            components::field(app_theme.clone(), "Remoto", None),
-            text_input("origin", &state.git_remote)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::GitRemoteChanged)
-                .on_submit(Message::GitSave)
-                .width(iced::Fill),
-            components::field(app_theme.clone(), "Rama de push (vacío = rama de trabajo)", None),
-            text_input("ARQHIA", &state.git_push_branch)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::GitPushBranchChanged)
-                .on_submit(Message::GitSave)
-                .width(iced::Fill),
-        ]
-        .spacing(6),
-    );
-
-    let autonomy_card = settings_card(
-        &app_theme,
-        cx,
-        "Autonomía del agente",
-        column![
-            components::field(
-                app_theme.clone(),
-                "Acciones git permitidas",
-                Some("Por encima de lo elegido, lo destructivo siempre se bloquea.".to_string())
-            ),
-            pick_list(GitAutonomy::ALL.to_vec(), Some(git.autonomy), Message::GitAutonomyPicked)
-                .style(|t: &Theme, s| design::field_pick(t, s)),
-            checkbox("Permitir push a GitHub (pide aprobación al activarse)", git.push_enabled)
-                .on_toggle(Message::GitPushToggled),
-            components::field(app_theme.clone(), "Autor de commits (opcional)", Some("Vacío = identidad global de git.".to_string())),
-            text_input("Nombre", &state.git_author_name)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::GitAuthorNameChanged)
-                .on_submit(Message::GitSave)
-                .width(iced::Fill),
-            text_input("Email", &state.git_author_email)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::GitAuthorEmailChanged)
-                .on_submit(Message::GitSave)
-                .width(iced::Fill),
-            text("Las ramas protegidas (main/master) nunca se tocan y la rama de trabajo no puede estar en la lista.")
-                .size(design::fs(ts, 11))
-                .color(dim),
-            row![components::primary_btn("Guardar".to_string(), 13).on_press(Message::GitSave)].spacing(8),
-        ]
-        .spacing(6),
-    );
-
-    let status = &state.git_status;
-    let status_body: Element<'_, Message> = match state.active_workspace() {
-        None => text("Sin workspace activo. Abre un proyecto para ver su estado git.")
-            .size(design::fs(ts, 12))
-            .color(dim)
-            .into(),
-        Some(_) if !status.is_repo => column![
-            text("El workspace activo no es un repo git.").size(design::fs(ts, 12)).color(dim),
-            row![components::primary_btn("Inicializar git".to_string(), 13).on_press(Message::GitInitWorkspace)]
-                .spacing(8),
-        ]
-        .spacing(6)
-        .into(),
-        Some(_) => {
-            let remotes = if status.remotes.is_empty() {
-                "(sin remotos)".to_string()
-            } else {
-                status.remotes.join(", ")
-            };
-            column![
-                row![
-                    text("Rama actual").size(design::fs(ts, 12)).color(dim).width(140),
-                    text(if status.branch.is_empty() { "(desconocida)" } else { &status.branch })
-                        .size(design::fs(ts, 13)),
-                ]
-                .align_y(iced::Alignment::Center),
-                row![
-                    text("Remotos").size(design::fs(ts, 12)).color(dim).width(140),
-                    text(remotes).size(design::fs(ts, 13)),
-                ]
-                .align_y(iced::Alignment::Center),
-                row![
-                    text("Cambios").size(design::fs(ts, 12)).color(dim).width(140),
-                    text(format!("{} archivo(s)", status.changes)).size(design::fs(ts, 13)),
-                ]
-                .align_y(iced::Alignment::Center),
-                row![
-                    components::quiet_btn("Refrescar".to_string()).on_press(Message::GitRefreshStatus),
-                ]
-                .spacing(8),
-            ]
-            .spacing(4)
-            .into()
-        }
-    };
-    let status_card = settings_card(&app_theme, cx, "Estado del workspace activo", status_body);
-
-    column![
-        row![repo_card, autonomy_card]
-            .spacing(12)
-            .align_y(iced::Alignment::Start),
-        status_card,
-        text(&state.status).size(design::fs(ts, 12)).color(dim),
-    ]
-    .spacing(12)
-    .max_width(1200)
-    .into()
-}
-
-fn view_config_proyectos(state: &App) -> Element<'_, Message> {    use iced::widget::{column, container, row, text};
-    use crate::ui::{components, design};
+fn view_config_proyectos(state: &App) -> Element<'_, Message> {
     use crate::ui::design::type_scale;
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, row, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -797,7 +377,8 @@ fn view_config_proyectos(state: &App) -> Element<'_, Message> {    use iced::wid
     ]
     .spacing(4);
     if state.projects.is_empty() {
-        list = list.push(components::empty_state(app_theme.clone(),
+        list = list.push(components::empty_state(
+            app_theme.clone(),
             "Sin proyectos todavía",
             "Crea uno desde Inicio para empezar.",
         ));
@@ -827,19 +408,27 @@ fn view_config_proyectos(state: &App) -> Element<'_, Message> {    use iced::wid
         .spacing(4);
         match ws_path {
             Some(ws) => {
-                let uploads = workspace::list_uploads(std::path::Path::new(&ws));
+                let empty = Vec::new();
+                let uploads = state.config_uploads.get(&project.id).unwrap_or(&empty);
                 card = card.push(text(ws).size(design::fs(ts, 11)).color(dim));
                 if uploads.is_empty() {
-                    card = card.push(text("Sin archivos subidos.").size(design::fs(ts, 12)).color(dim));
+                    card = card.push(
+                        text("Sin archivos subidos.")
+                            .size(design::fs(ts, 12))
+                            .color(dim),
+                    );
                 } else {
-                    let mut files = column![text("Subidos").size(design::fs(ts, 11)).color(dim)].spacing(2);
+                    let mut files =
+                        column![text("Subidos").size(design::fs(ts, 11)).color(dim)].spacing(2);
                     for up in uploads {
-                        let kb = up.size / 1024;
+                        let kb = up.size.div_ceil(1024);
                         let pid = project.id;
                         let uname = up.name.clone();
                         files = files.push(
                             row![
-                                text(format!("{} · {} KB", up.name, kb.max(1))).size(design::fs(ts, 12)).width(iced::Fill),
+                                text(format!("{} · {} KB", up.name, kb.max(1)))
+                                    .size(design::fs(ts, 12))
+                                    .width(iced::Fill),
                                 components::head_btn("Quitar".to_string())
                                     .on_press(Message::DeleteUpload(pid, uname)),
                             ]
@@ -851,14 +440,19 @@ fn view_config_proyectos(state: &App) -> Element<'_, Message> {    use iced::wid
                 }
             }
             None => {
-                card = card.push(text("Sin workspace asignado.").size(design::fs(ts, 12)).color(dim));
+                card = card.push(
+                    text("Sin workspace asignado.")
+                        .size(design::fs(ts, 12))
+                        .color(dim),
+                );
             }
         }
         if state.config_pending_delete == Some(project.id) {
             card = card.push(
                 row![
                     text("Borrar el proyecto? Va a la papelera.").size(design::fs(ts, 12)),
-                    components::head_btn("Cancelar".to_string()).on_press(Message::CancelConfigDelete),
+                    components::head_btn("Cancelar".to_string())
+                        .on_press(Message::CancelConfigDelete),
                 ]
                 .spacing(8),
             );
@@ -880,8 +474,8 @@ fn view_config_proyectos(state: &App) -> Element<'_, Message> {    use iced::wid
 /// Apartado Atajos (v0.7.1): lista de solo lectura. Sin Tab para modos
 /// (colisiona con el foco de los inputs).
 fn view_config_atajos(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, row, text};
     use crate::ui::design;
+    use iced::widget::{column, row, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -911,14 +505,19 @@ fn view_config_atajos(state: &App) -> Element<'_, Message> {
             .spacing(8),
         );
     }
-    settings_card(&app_theme, state.config.appearance.compact(), "Atajos", list)
+    settings_card(
+        &app_theme,
+        state.config.appearance.compact(),
+        "Atajos",
+        list,
+    )
 }
 
 /// Pestaña STACK (v0.9 Track B): consentimiento triple (todo OFF por
 /// defecto), identidad local y contadores de uso por proyecto.
 fn view_config_stack(state: &App) -> Element<'_, Message> {
-    use iced::widget::{checkbox, column, row, text, text_input};
     use crate::ui::{components, design};
+    use iced::widget::{checkbox, column, row, text, text_input};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -936,11 +535,8 @@ fn view_config_stack(state: &App) -> Element<'_, Message> {
                 consent.use_stack
             )
             .on_toggle(Message::StackUseToggled),
-            checkbox(
-                "Guardar mi código en el STACK local",
-                consent.share_local
-            )
-            .on_toggle(Message::StackShareLocalToggled),
+            checkbox("Guardar mi código en el STACK local", consent.share_local)
+                .on_toggle(Message::StackShareLocalToggled),
             checkbox(
                 "Subir mi código a la nube (requiere sesión v1.0)",
                 consent.share_cloud
@@ -979,11 +575,10 @@ fn view_config_stack(state: &App) -> Element<'_, Message> {
         ]
         .spacing(6),
     );
-    let usage: Vec<crate::db::UsageStats> = crate::db::list_usage().unwrap_or_default();
-    // Fila destacada del proyecto del chat activo (lectura puntual).
-    let here = crate::app::handlers::chat::project_key(state);
-    let here_stats = crate::db::get_usage(&here).unwrap_or_default();
-    let cats = crate::db::list_usage_tools(&here).unwrap_or_default();
+    let usage = &state.config_usage;
+    // Fila destacada del proyecto del chat activo (ya precargada en estado).
+    let here_stats = &state.config_usage_here;
+    let cats = &state.config_usage_cats;
     let cats_md = if cats.is_empty() {
         String::new()
     } else {
@@ -999,8 +594,7 @@ fn view_config_stack(state: &App) -> Element<'_, Message> {
     let mut rows = column![
         text(format!(
             "Este proyecto ({}): {} turnos · {} tools · {} 429s.{}",
-            here_stats.project, here_stats.turns, here_stats.tool_calls, here_stats.err429,
-            cats_md
+            here_stats.project, here_stats.turns, here_stats.tool_calls, here_stats.err429, cats_md
         ))
         .size(design::fs(ts, 12)),
         text("Contadores locales: turnos, tool calls y errores 429 por proyecto.")
@@ -1024,20 +618,21 @@ fn view_config_stack(state: &App) -> Element<'_, Message> {
             .size(design::fs(ts, 12)),
         );
     }
-    let usage_card =
-        settings_card(&app_theme, state.config.appearance.compact(), "Uso", rows);
-    column![consent_card, identity_card, usage_card].spacing(10).into()
+    let usage_card = settings_card(&app_theme, state.config.appearance.compact(), "Uso", rows);
+    column![consent_card, identity_card, usage_card]
+        .spacing(10)
+        .into()
 }
 
 /// Pestaña Skills (v0.9 Track C): lista con origen, recarga y borrado.
 /// Las embebidas no se borran de verdad: se restauran desde el binario.
 fn view_config_skills(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, row, scrollable, text};
     use crate::ui::{components, design};
+    use iced::widget::{column, row, scrollable, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
-    let skills = crate::skills::list();
+    let skills = &state.config_skills;
     let mut list = column![
         text("Skills instalables con /skill nombre en el chat.")
             .size(design::fs(ts, 12))
@@ -1047,7 +642,7 @@ fn view_config_skills(state: &App) -> Element<'_, Message> {
             .color(dim),
     ]
     .spacing(4);
-    for sk in &skills {
+    for sk in skills {
         let name = sk.name.clone();
         let badge = sk.origin.badge();
         list = list.push(
@@ -1055,7 +650,9 @@ fn view_config_skills(state: &App) -> Element<'_, Message> {
                 text(format!("{} ({}) — {}", sk.name, sk.version, sk.description))
                     .size(design::fs(ts, 13))
                     .width(iced::Fill),
-                text(format!("[{badge}]")).size(design::fs(ts, 11)).color(dim),
+                text(format!("[{badge}]"))
+                    .size(design::fs(ts, 11))
+                    .color(dim),
                 components::icon_btn("Borrar".to_string()).on_press(Message::SkillsDelete(name)),
             ]
             .align_y(iced::Alignment::Center)
@@ -1132,15 +729,23 @@ fn model_row<'a>(
     tool: bool,
     reasoning: bool,
 ) -> Element<'a, Message> {
-    use iced::widget::{column, container, row, text};
     use crate::ui::{components, design};
+    use iced::widget::{column, container, row, text};
     let dim = design::ink_2(app_theme);
     let mut badges = row![].spacing(4);
     if tool {
-        badges = badges.push(components::badge(app_theme.clone(), design::Tone::Ok, "tools"));
+        badges = badges.push(components::badge(
+            app_theme.clone(),
+            design::Tone::Ok,
+            "tools",
+        ));
     }
     if reasoning {
-        badges = badges.push(components::badge(app_theme.clone(), design::Tone::Accent, "razona"));
+        badges = badges.push(components::badge(
+            app_theme.clone(),
+            design::Tone::Accent,
+            "razona",
+        ));
     }
     let pick = id.clone();
     // Sin scroll horizontal: los textos ocupan el ancho disponible (con wrap)
@@ -1152,13 +757,20 @@ fn model_row<'a>(
                 row![
                     text(name).size(design::fs(ts, 14)).width(iced::Fill),
                     badges,
-                    text(price_line(cost.as_ref())).size(design::fs(ts, 12)).color(dim),
+                    text(price_line(cost.as_ref()))
+                        .size(design::fs(ts, 12))
+                        .color(dim),
                 ]
                 .spacing(6)
                 .align_y(iced::Alignment::Center),
                 row![
-                    text(id_short).size(design::fs(ts, 11)).color(dim).width(iced::Fill),
-                    text(context_label(context)).size(design::fs(ts, 11)).color(dim),
+                    text(id_short)
+                        .size(design::fs(ts, 11))
+                        .color(dim)
+                        .width(iced::Fill),
+                    text(context_label(context))
+                        .size(design::fs(ts, 11))
+                        .color(dim),
                 ]
                 .spacing(6)
                 .align_y(iced::Alignment::Center),
@@ -1176,11 +788,18 @@ fn model_row<'a>(
 }
 
 /// id, name, coste, contexto, tools, razona.
-type BrowserRow = (String, String, Option<crate::pricing::Cost>, Option<u64>, bool, bool);
+type BrowserRow = (
+    String,
+    String,
+    Option<crate::pricing::Cost>,
+    Option<u64>,
+    bool,
+    bool,
+);
 
-fn model_browser(state: &App) -> Element<'_, Message> {
-    use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text, text_input};
+pub(crate) fn model_browser(state: &App) -> Element<'_, Message> {
     use crate::ui::{components, design};
+    use iced::widget::{checkbox, column, container, pick_list, row, scrollable, text, text_input};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -1215,14 +834,20 @@ fn model_browser(state: &App) -> Element<'_, Message> {
     let hint_line: Element<'_, Message> = if hints.is_empty() {
         iced::widget::vertical_space().height(0).into()
     } else {
-        text(hints.join("  ·  ")).size(design::fs(ts, 11)).color(dim).into()
+        text(hints.join("  ·  "))
+            .size(design::fs(ts, 11))
+            .color(dim)
+            .into()
     };
 
-    let search = text_input("Buscar modelo (id, nombre, familia)...", &state.model_search)
-        .size(design::fs(ts, 13))
-        .style(|t: &Theme, s| design::field(t, s))
-        .on_input(Message::ModelSearchChanged)
-        .width(iced::Fill);
+    let search = text_input(
+        "Buscar modelo (id, nombre, familia)...",
+        &state.model_search,
+    )
+    .size(design::fs(ts, 13))
+    .style(|t: &Theme, s| design::field(t, s))
+    .on_input(Message::ModelSearchChanged)
+    .width(iced::Fill);
 
     let price_filters: Vec<String> = ["Todos", "Gratis", "≤ $1", "≤ $5", "≤ $15"]
         .iter()
@@ -1246,7 +871,10 @@ fn model_browser(state: &App) -> Element<'_, Message> {
     let status_line: Element<'_, Message> = if state.model_status.is_empty() {
         iced::widget::vertical_space().height(0).into()
     } else {
-        text(&state.model_status).size(design::fs(ts, 12)).color(dim).into()
+        text(&state.model_status)
+            .size(design::fs(ts, 12))
+            .color(dim)
+            .into()
     };
 
     let ql = state.model_search.to_lowercase();
@@ -1254,7 +882,10 @@ fn model_browser(state: &App) -> Element<'_, Message> {
         ql.is_empty()
             || id.to_lowercase().contains(&ql)
             || name.to_lowercase().contains(&ql)
-            || family.as_deref().map(|f| f.to_lowercase().contains(&ql)).unwrap_or(false)
+            || family
+                .as_deref()
+                .map(|f| f.to_lowercase().contains(&ql))
+                .unwrap_or(false)
     };
 
     let mut rows: Vec<BrowserRow> = Vec::new();
@@ -1288,7 +919,9 @@ fn model_browser(state: &App) -> Element<'_, Message> {
     rows.retain(|r| {
         let c = r.2;
         match pf {
-            "Gratis" => c.map(|c| c.input <= 0.0 && c.output <= 0.0).unwrap_or(false),
+            "Gratis" => c
+                .map(|c| c.input <= 0.0 && c.output <= 0.0)
+                .unwrap_or(false),
             "≤ $1" => c.map(|c| c.input <= 1.0).unwrap_or(false),
             "≤ $5" => c.map(|c| c.input <= 5.0).unwrap_or(false),
             "≤ $15" => c.map(|c| c.input <= 15.0).unwrap_or(false),
@@ -1326,7 +959,10 @@ fn model_browser(state: &App) -> Element<'_, Message> {
     }
 
     let body: Element<'_, Message> = if state.models_loading {
-        text("Cargando...").size(design::fs(ts, 13)).color(dim).into()
+        text("Cargando...")
+            .size(design::fs(ts, 13))
+            .color(dim)
+            .into()
     } else if count == 0 {
         text("Sin resultados. Ajusta la búsqueda/filtros o pulsa Actualizar.")
             .size(design::fs(ts, 12))
@@ -1336,20 +972,29 @@ fn model_browser(state: &App) -> Element<'_, Message> {
         // Aire a la derecha para que la barra vertical no tape los datos
         // de la última columna (precio/contexto). Con anchos Fill + id
         // truncado ya no hay desborde horizontal.
-        scrollable(
-            container(list.width(iced::Fill)).padding(iced::Padding {
-                top: 0.0,
-                right: 20.0,
-                bottom: 12.0,
-                left: 0.0,
-            }),
-        )
+        scrollable(container(list.width(iced::Fill)).padding(iced::Padding {
+            top: 0.0,
+            right: 20.0,
+            bottom: 12.0,
+            left: 0.0,
+        }))
         .height(360)
         .into()
     };
 
-    container(column![header, search, filter_row, total_line, hint_line, status_line, body].spacing(8))
-        .padding(12)
-        .style(|t: &Theme| design::well_box(t))
-        .into()
+    container(
+        column![
+            header,
+            search,
+            filter_row,
+            total_line,
+            hint_line,
+            status_line,
+            body
+        ]
+        .spacing(8),
+    )
+    .padding(12)
+    .style(|t: &Theme| design::well_box(t))
+    .into()
 }

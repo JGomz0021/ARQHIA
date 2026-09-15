@@ -5,11 +5,14 @@
 
 use iced::Task;
 
-use crate::app::state::App;
 use crate::app::Message;
-use crate::app::projects::{create_project_with_dir, enter_questionnaire, remove_project_everywhere, resolve_project_dir};
-use crate::app::state::clear_turn_state;
 use crate::app::View;
+use crate::app::projects::{
+    create_project_with_dir, enter_questionnaire, finish_remove_project, project_workspace,
+    resolve_project_dir, trash_workspace_async,
+};
+use crate::app::state::App;
+use crate::app::state::clear_turn_state;
 use crate::db;
 use crate::questionnaire::Answers;
 use crate::workspace;
@@ -95,14 +98,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
         }
         Message::OpenProject => {
             // rfd bloquea: va en hilo aparte, nunca en el update directo
-            state.status = "Elige una carpeta…".to_string();            Task::perform(
+            state.status = "Elige una carpeta…".to_string();
+            Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(|| {
-                        rfd::FileDialog::new().pick_folder()
-                    })
-                    .await
-                    .ok()
-                    .flatten()
+                    tokio::task::spawn_blocking(|| rfd::FileDialog::new().pick_folder())
+                        .await
+                        .ok()
+                        .flatten()
                 },
                 Message::FolderPicked,
             )
@@ -135,7 +137,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .unwrap_or_else(|| "Proyecto".to_string());
             let path_str = canon.to_string_lossy().to_string();
             // Reutiliza el proyecto si la ruta ya está registrada
-            let (pid, is_new) = match state.projects.iter().find(|p| p.path.as_deref() == Some(&path_str)) {
+            let (pid, is_new) = match state
+                .projects
+                .iter()
+                .find(|p| p.path.as_deref() == Some(&path_str))
+            {
                 Some(p) => (p.id, false),
                 None => {
                     // El nombre viene de la carpeta: si choca, auto-sufijo " (2)"
@@ -200,12 +206,16 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 if has_code {
                     let scan = crate::questionnaire::import::scan(&canon);
                     crate::questionnaire::import::prefill_answers(&mut answers, &shown, &scan);
-                    state.q_import_note = crate::questionnaire::import::import_banner(&shown, &scan);
+                    state.q_import_note =
+                        crate::questionnaire::import::import_banner(&shown, &scan);
                     // Preguntas de huecos precargadas (fallback sin provider).
                     let gaps = crate::questionnaire::import::gap_fallback(&scan);
                     state.q_ai_questions = gaps;
                     state.q_ai_answers = vec![String::new(); state.q_ai_questions.len()];
-                    state.push_log(format!("📥 import: {} (merge sin borrar)", state.q_import_note));
+                    state.push_log(format!(
+                        "📥 import: {} (merge sin borrar)",
+                        state.q_import_note
+                    ));
                 } else {
                     state.q_import_note.clear();
                     state.q_ai_questions.clear();
@@ -340,10 +350,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .and_then(|p| p.path.clone())
                 .unwrap_or_default();
             let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-                format!(
-                    "{}/{rest}",
-                    std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string())
-                )
+                crate::paths::home_dir()
+                    .join(rest)
+                    .to_string_lossy()
+                    .to_string()
             } else {
                 raw.clone()
             };
@@ -369,15 +379,12 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 Some(id) => id,
                 None => return Task::none(),
             };
-            state.pending_project_delete = None;
-            match remove_project_everywhere(state, id) {
-                Ok(line) => {
-                    state.push_log(line);
-                    state.status.clear();
-                }
-                Err(e) => state.status = e,
+            if turn_active_on_project(state, id) {
+                state.status = "Espera a que termine el turno antes de borrar.".to_string();
+                return Task::none();
             }
-            Task::none()
+            state.pending_project_delete = None;
+            start_remove_project(state, id)
         }
         Message::CancelDeleteProject => {
             state.pending_project_delete = None;
@@ -418,6 +425,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 }
                 Err(e) => state.status = format!("Workspace inválido: {e}"),
             }
+            state.reload_config_data();
             Task::none()
         }
         Message::ClearWorkspace(pid) => {
@@ -432,6 +440,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 }
                 Err(e) => state.status = format!("No se pudo quitar: {e}"),
             }
+            state.reload_config_data();
             Task::none()
         }
         Message::UploadFiles(pid) => {
@@ -441,13 +450,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.status = "Elige archivos…".to_string();
             Task::perform(
                 async move {
-                    tokio::task::spawn_blocking(|| {
-                        rfd::FileDialog::new().pick_files()
-                    })
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default()
+                    tokio::task::spawn_blocking(|| rfd::FileDialog::new().pick_files())
+                        .await
+                        .ok()
+                        .flatten()
+                        .unwrap_or_default()
                 },
                 move |files| Message::FilesPicked(pid, files),
             )
@@ -465,10 +472,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             {
                 Some(raw) => {
                     let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-                        format!(
-                            "{}/{rest}",
-                            std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string())
-                        )
+                        crate::paths::home_dir()
+                            .join(rest)
+                            .to_string_lossy()
+                            .to_string()
                     } else {
                         raw
                     };
@@ -480,15 +487,39 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 }
             };
             let max_bytes = state.config.limits.clamped().max_upload_mb * 1024 * 1024;
-            let (oks, errs) = workspace::upload_files(&ws, &files, max_bytes);
-            for name in &oks {
-                state.push_log(format!("📤 {name} -> uploads/"));
+            state.status = "Subiendo archivos…".to_string();
+            // v0.9.5: la copia de archivos va a `spawn_blocking` (no congela UI).
+            Task::perform(
+                async move {
+                    tokio::task::spawn_blocking(move || {
+                        workspace::upload_files(&ws, &files, max_bytes)
+                    })
+                    .await
+                    .map_err(|e| format!("Tarea de subida cancelada: {e}"))
+                },
+                move |res| Message::UploadsDone(pid, res),
+            )
+        }
+        Message::UploadsDone(_pid, res) => {
+            match res {
+                Ok((oks, errs)) => {
+                    for name in &oks {
+                        state.push_log(format!("📤 {name} -> uploads/"));
+                    }
+                    state.status = if errs.is_empty() {
+                        format!("{} archivo(s) subidos a uploads/.", oks.len())
+                    } else {
+                        format!(
+                            "{} ok, {} con error: {}",
+                            oks.len(),
+                            errs.len(),
+                            errs.join(" | ")
+                        )
+                    };
+                }
+                Err(e) => state.status = e,
             }
-            state.status = if errs.is_empty() {
-                format!("{} archivo(s) subidos a uploads/.", oks.len())
-            } else {
-                format!("{} ok, {} con error: {}", oks.len(), errs.len(), errs.join(" | "))
-            };
+            state.reload_config_data();
             Task::none()
         }
         Message::DeleteUpload(pid, name) => {
@@ -511,6 +542,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 }
                 Err(e) => state.status = format!("No se pudo borrar: {e}"),
             }
+            state.reload_config_data();
             Task::none()
         }
         Message::ConfigDeleteProject(id) => {
@@ -522,14 +554,22 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 Some(id) => id,
                 None => return Task::none(),
             };
+            if turn_active_on_project(state, id) {
+                state.status = "Espera a que termine el turno antes de borrar.".to_string();
+                return Task::none();
+            }
             state.config_pending_delete = None;
-            match remove_project_everywhere(state, id) {
+            start_remove_project(state, id)
+        }
+        Message::ProjectTrashed(id, res) => {
+            match finish_remove_project(state, id, res) {
                 Ok(line) => {
                     state.push_log(line);
-                    state.status = "Proyecto borrado (ver Log).".to_string();
+                    state.status.clear();
                 }
                 Err(e) => state.status = e,
             }
+            state.reload_config_data();
             Task::none()
         }
         Message::CancelConfigDelete => {
@@ -539,6 +579,31 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
         // Inalcanzable si el dispatch exterior está al día (es total).
         _ => Task::none(),
     }
+}
+
+/// Lanza el borrado de un proyecto: papelera en background, cierre al volver
+/// `Message::ProjectTrashed`. Sin bloquear el hilo de UI (v0.9.5).
+fn start_remove_project(state: &mut App, id: i64) -> Task<Message> {
+    let dir = project_workspace(state, id);
+    state.status = "Moviendo a la papelera…".to_string();
+    Task::perform(
+        async move { trash_workspace_async(dir).await },
+        move |res| Message::ProjectTrashed(id, res),
+    )
+}
+
+/// true si hay un turno en curso (streaming/agente) cuyo chat activo
+/// pertenece al proyecto `id`. Evita borrar el proyecto y dejar la respuesta
+/// en vuelo escribiendo en otro chat (v0.9.5).
+fn turn_active_on_project(state: &App, id: i64) -> bool {
+    if !(state.streaming || state.agent_running) {
+        return false;
+    }
+    state
+        .active_chat
+        .and_then(|c| state.chats.iter().find(|x| x.id == c))
+        .map(|c| c.project_id == Some(id))
+        .unwrap_or(false)
 }
 
 /// Navega a un proyecto (o a sueltos con None): último chat visible o

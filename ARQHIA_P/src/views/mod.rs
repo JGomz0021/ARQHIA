@@ -1,6 +1,8 @@
 use iced::Theme;
 
 pub mod chat;
+pub mod config_api;
+pub mod config_git;
 pub mod config_view;
 pub mod home;
 pub mod questionnaire;
@@ -61,7 +63,12 @@ mod tests {
         let _ = chat::view_chat(&app);
         // Menú ⋯ abierto en cada proyecto con workspace.
         for p in app.projects.clone() {
-            if p.path.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some() {
+            if p.path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some()
+            {
                 app.project_menu = Some(p.id);
                 let _ = sidebar::view_sidebar(&app);
             }
@@ -101,7 +108,10 @@ mod tests {
         app.stack_selected = Some(crate::stack::FullItem {
             id: 1,
             title: "demo".to_string(),
-            code: (0..30).map(|i| format!("línea {i}")).collect::<Vec<_>>().join("\n"),
+            code: (0..30)
+                .map(|i| format!("línea {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
             tags: "rust, demo".to_string(),
             lang: "rust".to_string(),
             rating: 4.5,
@@ -164,9 +174,9 @@ mod tests {
         let _ = crate::view(&app);
     }
 
-    #[test]
+    #[tokio::test]
     #[allow(clippy::field_reassign_with_default)]
-    fn git_tab_builds_with_workspace_and_repo() {
+    async fn git_tab_builds_with_workspace_and_repo() {
         // Workspace real con repo git: cubre la rama "es repo" del card de estado.
         let ws = std::env::temp_dir().join("arqhia-view-git-ws");
         let _ = std::fs::remove_dir_all(&ws);
@@ -175,7 +185,11 @@ mod tests {
         let path = ws.to_string_lossy().to_string();
         let mut app = App::default();
         app.config_tab = ConfigTab::Git;
-        app.projects.push(crate::db::Project { id: -7, name: "T".to_string(), path: Some(path) });
+        app.projects.push(crate::db::Project {
+            id: -7,
+            name: "T".to_string(),
+            path: Some(path),
+        });
         app.chats.push(crate::db::ChatMeta {
             id: -7,
             title: "T".to_string(),
@@ -185,12 +199,19 @@ mod tests {
             session_id: None,
         });
         app.active_chat = Some(-7);
-        app.refresh_git_status();
+        let ws_path = std::path::PathBuf::from(
+            app.projects
+                .iter()
+                .find(|p| p.id == -7)
+                .and_then(|p| p.path.clone())
+                .unwrap(),
+        );
+        app.git_status = crate::git::workspace_status_async(&ws_path).await;
         assert!(app.git_status.is_repo);
         let _ = config_view::view_config(&app);
         // Y sin repo (misma ruta, borrando .git): rama "Inicializar git".
-        let _ = std::fs::remove_dir_all(ws.join(".git"));
-        app.refresh_git_status();
+        let _ = std::fs::remove_dir_all(ws_path.join(".git"));
+        app.git_status = crate::git::workspace_status_async(&ws_path).await;
         assert!(!app.git_status.is_repo);
         let _ = config_view::view_config(&app);
         let _ = std::fs::remove_dir_all(&ws);
@@ -247,10 +268,22 @@ mod tests {
         // Panel Plan con checklist: no panica y no exige workspace real.
         app.show_plan = true;
         app.plan_md = "# PLAN".to_string();
-        app.orch_tasks = vec![OrchTask { desc: "Crear a.txt".to_string(), files: vec!["a.txt".to_string()], done: false, active: false }];
+        app.orch_tasks = vec![OrchTask {
+            desc: "Crear a.txt".to_string(),
+            files: vec!["a.txt".to_string()],
+            done: false,
+            active: false,
+        }];
         let _ = chat::view_chat(&app);
         // Badge de modo Plan en un chat en memoria (sin tocar la DB).
-        app.chats.push(crate::db::ChatMeta { id: -1, title: "T".to_string(), project_id: None, archived: false, mode: Mode::Plan, session_id: None });
+        app.chats.push(crate::db::ChatMeta {
+            id: -1,
+            title: "T".to_string(),
+            project_id: None,
+            archived: false,
+            mode: Mode::Plan,
+            session_id: None,
+        });
         app.active_chat = Some(-1);
         let _ = chat::view_chat(&app);
         assert_eq!(app.active_mode(), Mode::Plan);

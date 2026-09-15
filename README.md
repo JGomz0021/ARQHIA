@@ -1,28 +1,70 @@
-# Proyecto ARQHIA
+# ARQHIA
 
-ARQHIA es un agente de IA nativo que acompaña al usuario desde la definición de la idea hasta la resolución estable del proyecto. A diferencia de otros asistentes que solo generan código, ARQHIA ayuda a diseñar el proyecto, sus especificaciones, funcionalidades y stack, adaptándose al nivel de experiencia del usuario y trabajando de forma delegable y estable paso a paso.
+ARQHIA es un agente de IA nativo que acompaña al usuario desde la definición
+de la idea hasta la resolución estable del proyecto. A diferencia de otros
+asistentes que solo generan código, ARQHIA ayuda a diseñar el proyecto, sus
+especificaciones, funcionalidades y stack, adaptándose al nivel de experiencia
+del usuario y trabajando de forma delegable y estable paso a paso.
 
-## Características principales
+## Quickstart
 
-- **Orquestación completa**: Desde la idea hasta la implementación real del proyecto
-- **Multi-provider LLM**: Soporte para OpenAI, Anthropic, OpenRouter y LM Studio
-- **Agente autónomo**: Capaz de ejecutar tareas en un workspace estructurado
-- **Seguridad y permisos**: Control detallado de accesos y herramientas disponibles
-- **Workspace gestionado**: Cada proyecto tiene un espacio de trabajo dedicado con archivos y herramientas
-- **Flujo guiado**: Cuestionario para definir especificaciones y planes de acción
+Requisitos: Rust estable (1.85+; el crate usa `edition = "2024"`) y, en Linux,
+las dependencias de Iced (`pkg-config`, `libxkbcommon`, Wayland/X11 u OpenGL
+según tu sesión).
 
-## Stack tecnológico
+```sh
+git clone <este-repo>
+cd ARQHIA/ARQHIA_P
+cargo run
+```
 
-- **Frontend**: Iced 0.13 (Rust puro, sin WebView)
-- **Backend**: Rust + Tokio + SQLite para persistencia
-- **LLM**: Clientes nativos para múltiples proveedores con streaming
-- **Herramientas**: CRUD de archivos, ejecución de comandos con allowlist, búsqueda de archivos
+La app abre en Home. Si es tu primer arranque verás el aviso de bienvenida:
 
-## Funcionalidades
+1. Ve a **Configuración → API** (o pulsa el aviso).
+2. **Opción nube:** elige provider (OpenAI, Anthropic u OpenRouter), pega tu
+   API key y elige modelo (botón `Buscar modelo` para ver precios de
+   models.dev). Pulsa **Guardar perfil** y **Probar conexión**.
+3. **Opción local (sin key):** abre [LM Studio](https://lmstudio.ai), carga un
+   modelo y anota su id exacto. En ARQHIA elige provider `Local (LM Studio)`
+   con `http://localhost:1234` y ese id como modelo.
+4. Crea un proyecto en Home y chatea. Los modos **Chat / Plan / Work** están
+   en el composer (`Ctrl+1/2/3`).
 
-1. **Creación de proyectos**: Con espacio de trabajo dedicado
-2. **Chat IA**: Conversaciones con múltiples proveedores LLM
-3. **Agente de código**: Ejecución de tareas en el workspace con permisos controlados
-4. **Cuestionario guiado**: Definición de especificaciones del proyecto
-5. **Gestión de permisos**: Control de acceso a herramientas peligrosas
-6. **STACK local**: Base de conocimiento para reutilización de código# ARQHIA
+## Rutas de datos
+
+| Qué | Dónde |
+|---|---|
+| Config (`config.toml`, API keys, tema, permisos, git) | `~/.config/arqhia/` (o `$ARQHIA_CONFIG`) |
+| Base de datos (`arqhia.db`: chats, proyectos, STACK, uso) | `~/.local/share/arqhia/` (o `$ARQHIA_DB` / `$ARQHIA_HOME`) |
+| Catálogo de modelos/precios (cache models.dev) | `~/.local/share/arqhia/models.dev.json` |
+| Skills locales | `~/.local/share/arqhia/skills/` |
+| Papelera de proyectos borrados | `~/.local/share/arqhia/papelera/` |
+
+La config se guarda con permisos `600` en Unix. No hay telemetría ni cuentas:
+todo vive en tu equipo (ver `CONTEXT/POLICIES.md`).
+
+## Desarrollo
+
+```sh
+cd ARQHIA_P
+cargo test        # 190+ tests (3 ignorados: E2E manuales con API real)
+cargo clippy --all-targets   # debe quedar a 0 warnings
+cargo fmt --check # formato verificado
+```
+
+Los tests no tocan tu DB real: usan `ARQHIA_TEST_DIR` en temporales
+(`db::test_guard`). Los E2E con API real están ignorados por defecto:
+
+```sh
+cargo test agent_e2e_groq -- --ignored --nocapture
+```
+
+## Documentación
+
+- `CONTEXT/PROJECT.md` — visión, stack, arquitectura y versiones.
+- `CONTEXT/ROADMAP.md` — tabla de versiones v0.1 → v1.2.
+- `CONTEXT/VERSIONS/` — spec detallada de cada versión.
+- `CONTEXT/POLICIES.md` — uso, privacidad, propiedad, licencias, git.
+- `ARQHIA_P/docs/` — arquitectura, config, seguridad y ADRs del código.
+
+Estado actual: ver `HECHO.md` (journal) y `CONTEXT/VERSIONS.md` (índice).

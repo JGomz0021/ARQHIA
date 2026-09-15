@@ -3,7 +3,7 @@
 //! 10 snippets curados (autor ARQHIA, MIT) que se instalan una sola vez si
 //! la tabla está vacía. Sirven de base para buscar/probar desde el día 1.
 
-use super::{save, NewItem};
+use super::{NewItem, save};
 
 pub const SEED_COUNT: usize = 14;
 
@@ -171,8 +171,8 @@ mod tests {
 
     #[test]
     fn seeds_install_once_and_are_searchable() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("seed");
         assert_eq!(seeds().len(), SEED_COUNT, "SEED_COUNT sigue al vector");
-        assert!(crate::db::init().is_ok());
         // Instala los que falten (por título) y la segunda vez no toca nada.
         let done = seed_missing().expect("seed");
         assert!(done <= SEED_COUNT, "nunca más que los definidos");

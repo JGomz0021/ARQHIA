@@ -62,7 +62,10 @@ pub fn parse_ai_questions(raw: &str) -> Vec<String> {
         let mut chars = t.chars();
         let digits: String = chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
         if !digits.is_empty() {
-            t = chars.as_str().trim_start_matches(['.', ')', ':', '-']).trim();
+            t = chars
+                .as_str()
+                .trim_start_matches(['.', ')', ':', '-'])
+                .trim();
         }
         if t.chars().count() >= 4 && !out.contains(&t.to_string()) {
             out.push(t.to_string());
@@ -90,7 +93,10 @@ mod tests {
 
     #[test]
     fn caps_at_ten_and_skips_short_and_dedups() {
-        let raw = (1..=12).map(|i| format!("{i}. Pregunta número {i}")).collect::<Vec<_>>().join("\n");
+        let raw = (1..=12)
+            .map(|i| format!("{i}. Pregunta número {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(parse_ai_questions(&raw).len(), 10);
         assert!(!parse_ai_questions("hola\n\n  \nok, ¿y el logo?").is_empty());
         // duplicadas no se cuentan dos veces

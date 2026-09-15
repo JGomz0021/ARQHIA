@@ -7,10 +7,12 @@ use iced::widget::markdown;
 use crate::agent;
 use crate::config::{AccentChoice, Density, Provider, TextSize, ThemeMode};
 use crate::db::Mode;
-use crate::questionnaire::{ApiStyle, ArchOpt, AuthKind, Categoria, EstiloPreset, Facturacion, Level, Licencia, Plataforma, SemverOpt, StackOpt, SysType, Trigger};
+use crate::questionnaire::{
+    ApiStyle, ArchOpt, AuthKind, Categoria, EstiloPreset, Facturacion, Level, Licencia, Plataforma,
+    SemverOpt, StackOpt, SysType, Trigger,
+};
 
-#[derive(Debug, Clone, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum View {
     #[default]
     Home,
@@ -22,7 +24,6 @@ pub enum View {
     /// v0.9: panel del STACK local (búsqueda + preview + guardar/valorar).
     Stack,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigTab {
@@ -153,7 +154,12 @@ pub enum Message {
     /// del auditor antes de lanzar el worker de fixes.
     AgentReanalyze(u64, Result<String, String>),
     AgentLlm(u64, Result<agent::StepOutcome, String>),
-    AgentExecDone(u64, Vec<agent::PendingCall>, Vec<serde_json::Value>, Vec<String>),
+    AgentExecDone(
+        u64,
+        Vec<agent::PendingCall>,
+        Vec<serde_json::Value>,
+        Vec<String>,
+    ),
     AgentAudit(u64, Result<(String, Vec<String>, bool), String>),
     ApproveTools,
     DenyTools,
@@ -228,12 +234,20 @@ pub enum Message {
     GitInitWorkspace,
     GitInitDone(Result<String, String>),
     GitPushDone(Result<String, String>),
+    /// Estado git resuelto en background (v0.9.5): la UI no se congela.
+    GitStatusFetched(crate::git::WorkspaceStatus),
+    /// Commit de cierre resuelto en background (v0.9.5).
+    GitCommitDone(Result<Option<String>, String>),
     ConfigDeleteProject(i64),
     ConfirmConfigDelete,
     CancelConfigDelete,
     UploadFiles(i64),
     FilesPicked(i64, Vec<std::path::PathBuf>),
     DeleteUpload(i64, String),
+    /// Resultado de copiar uploads en background (v0.9.5): (pid, ok, errs).
+    UploadsDone(i64, Result<(Vec<String>, Vec<String>), String>),
+    /// Resultado de mandar el workspace a la papelera en background (v0.9.5).
+    ProjectTrashed(i64, Result<Option<String>, String>),
     // Entrada del chat
     QuickSwitchModel(String),
     /// Nivel de razonamiento elegido desde el composer (persistencia inmediata).

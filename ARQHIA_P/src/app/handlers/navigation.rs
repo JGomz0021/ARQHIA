@@ -5,9 +5,9 @@
 
 use iced::Task;
 
-use crate::app::state::App;
 use crate::app::Message;
 use crate::app::View;
+use crate::app::state::App;
 
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     match message {

@@ -3,11 +3,13 @@
 //! `update_inner` (main) solo enruta; cada módulo posee sus brazos.
 //! El compilador verifica exhaustividad en ambos niveles.
 
-pub mod navigation;
-pub mod chat;
-pub mod projects;
 pub mod agent;
+pub mod chat;
+pub mod chat_history;
+pub mod chat_stream;
 pub mod config;
+pub mod navigation;
+pub mod projects;
 pub mod questionnaire;
 pub mod stack;
 
@@ -21,6 +23,7 @@ mod tests {
     /// en el wildcard y el estado no cambiaría).
     #[test]
     fn dispatch_routes_every_group() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-dispatch_route");
         use crate::db::Mode;
         let mut app = App::default();
 
@@ -51,10 +54,7 @@ mod tests {
         let _ = projects::handle(&mut app, Message::ToggleProjectForm);
         assert_eq!(app.show_project_form, !before);
 
-        let _ = config::handle(
-            &mut app,
-            Message::ConfigTab(ConfigTab::Apariencia),
-        );
+        let _ = config::handle(&mut app, Message::ConfigTab(ConfigTab::Apariencia));
         assert_eq!(app.config_tab, ConfigTab::Apariencia);
 
         let _ = questionnaire::handle(&mut app, Message::QCancel);
@@ -95,6 +95,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn dispatch_routes_v08_messages() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-dispatch_route");
         use crate::questionnaire::Level;
         let mut app = App::default();
         // Sin chat activo, reiniciar sesión avisa (no panica ni toca DB).
@@ -109,7 +110,14 @@ mod tests {
         let _ = questionnaire::handle(&mut app, Message::QLevelPicked(Level::Avanzado));
         assert_eq!(app.q_level, Level::Avanzado);
         let (cat, sys) = (app.q_answers.cat, app.q_answers.sys);
-        assert!(crate::questionnaire::levels::total_steps(Level::Avanzado, cat, sys, app.q_answers.nombre_locked) > 8);
+        assert!(
+            crate::questionnaire::levels::total_steps(
+                Level::Avanzado,
+                cat,
+                sys,
+                app.q_answers.nombre_locked
+            ) > 8
+        );
         // IA sin API configurada no cuelga: error visible y paso saltable.
         app.q_ai_loading = false;
         let _ = questionnaire::handle(&mut app, Message::QAiGenerate);
@@ -118,8 +126,16 @@ mod tests {
         }
         // Navegar el wizard no panica en ningún paso de cada familia.
         for (level, cat, sys) in [
-            (Level::Principiante, crate::questionnaire::Categoria::Aplicacion, crate::questionnaire::SysType::AppWeb),
-            (Level::Avanzado, crate::questionnaire::Categoria::Sistema, crate::questionnaire::SysType::DriverFirmware),
+            (
+                Level::Principiante,
+                crate::questionnaire::Categoria::Aplicacion,
+                crate::questionnaire::SysType::AppWeb,
+            ),
+            (
+                Level::Avanzado,
+                crate::questionnaire::Categoria::Sistema,
+                crate::questionnaire::SysType::DriverFirmware,
+            ),
         ] {
             let skip = app.q_answers.nombre_locked;
             let total = crate::questionnaire::levels::total_steps(level, cat, sys, skip);
@@ -134,6 +150,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn questionnaire_cancel_rolls_back_unfinished_project() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-questionnaire_");
         let mut app = App::default();
         app.view = View::Questionnaire;
         // Caso 1: carpeta vacía recién creada -> se retira + fila fuera.
@@ -144,7 +161,11 @@ mod tests {
         let path = dir.to_string_lossy().to_string();
         let pid = crate::db::create_project("qcancel-tmp-xyz").unwrap();
         crate::db::set_project_path(pid, Some(&path)).unwrap();
-        app.projects.push(crate::db::Project { id: pid, name: "qcancel-tmp-xyz".to_string(), path: Some(path) });
+        app.projects.push(crate::db::Project {
+            id: pid,
+            name: "qcancel-tmp-xyz".to_string(),
+            path: Some(path),
+        });
         app.q_project = Some(pid);
         app.q_owns_project = true;
         let _ = questionnaire::handle(&mut app, Message::QCancel);
@@ -160,13 +181,20 @@ mod tests {
         let path2 = dir2.to_string_lossy().to_string();
         let pid2 = crate::db::create_project("qcancel-tmp-xyz2").unwrap();
         crate::db::set_project_path(pid2, Some(&path2)).unwrap();
-        app.projects.push(crate::db::Project { id: pid2, name: "qcancel-tmp-xyz2".to_string(), path: Some(path2) });
+        app.projects.push(crate::db::Project {
+            id: pid2,
+            name: "qcancel-tmp-xyz2".to_string(),
+            path: Some(path2),
+        });
         app.q_project = Some(pid2);
         app.q_owns_project = true;
         app.view = View::Questionnaire;
         let _ = questionnaire::handle(&mut app, Message::QCancel);
         assert!(app.projects.iter().all(|p| p.id != pid2));
-        assert_eq!(std::fs::read_to_string(dir2.join("mio.txt")).unwrap(), "no borrar");
+        assert_eq!(
+            std::fs::read_to_string(dir2.join("mio.txt")).unwrap(),
+            "no borrar"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -175,6 +203,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn questionnaire_finish_writes_docs_and_enters_plan() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-questionnaire_");
         use crate::questionnaire::Answers;
         let mut app = App::default();
         // API configurada: el futuro Task::perform no se ejecuta en el test,
@@ -189,7 +218,11 @@ mod tests {
         let path = dir.to_string_lossy().to_string();
         let pid = crate::db::create_project("qfinish-tmp-xyz").unwrap();
         crate::db::set_project_path(pid, Some(&path)).unwrap();
-        app.projects.push(crate::db::Project { id: pid, name: "qfinish-tmp-xyz".to_string(), path: Some(path) });
+        app.projects.push(crate::db::Project {
+            id: pid,
+            name: "qfinish-tmp-xyz".to_string(),
+            path: Some(path),
+        });
         app.q_project = Some(pid);
         app.q_owns_project = true;
         app.q_level = crate::questionnaire::Level::Principiante;
@@ -230,7 +263,13 @@ mod tests {
         assert_eq!(meta.mode, crate::db::Mode::Plan);
         assert!(!app.agent_running, "sin turno automático en el chat");
         for ver in ["v0.1", "v0.2", "v0.3", "v1.0"] {
-            assert!(dir.join("CONTEXT").join("VERSIONS").join(format!("{ver}.md")).is_file(), "{ver} existe");
+            assert!(
+                dir.join("CONTEXT")
+                    .join("VERSIONS")
+                    .join(format!("{ver}.md"))
+                    .is_file(),
+                "{ver} existe"
+            );
         }
         assert!(dir.join("CONTEXT").join("ROADMAP.md").is_file());
         // Limpieza para no contaminar la DB del dev.
@@ -244,6 +283,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn generation_cancel_and_offline_fallback() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-generation_can");
         use crate::questionnaire::Answers;
         fn setup(name: &str) -> (App, i64, std::path::PathBuf) {
             let mut app = App::default();
@@ -254,7 +294,11 @@ mod tests {
             let path = dir.to_string_lossy().to_string();
             let pid = crate::db::create_project(name).unwrap();
             crate::db::set_project_path(pid, Some(&path)).unwrap();
-            app.projects.push(crate::db::Project { id: pid, name: name.to_string(), path: Some(path) });
+            app.projects.push(crate::db::Project {
+                id: pid,
+                name: name.to_string(),
+                path: Some(path),
+            });
             app.q_project = Some(pid);
             app.q_owns_project = true;
             app.q_level = crate::questionnaire::Level::Intermedio;
@@ -296,7 +340,12 @@ mod tests {
         let _ = questionnaire::handle(&mut app2, Message::FinishQuestionnaire);
         assert_eq!(app2.view, View::Chat);
         assert!(!app2.gen_active);
-        assert!(dir2.join("CONTEXT").join("VERSIONS").join("v1.0.md").is_file());
+        assert!(
+            dir2.join("CONTEXT")
+                .join("VERSIONS")
+                .join("v1.0.md")
+                .is_file()
+        );
         let cid2 = app2.active_chat.unwrap();
         crate::db::delete_chat(cid2).unwrap();
         crate::db::delete_project(pid2).unwrap();
@@ -308,6 +357,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn skill_message_resolves_or_lists_without_turn() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-skill_message_");
         let mut app = App::default();
         // Inexistente: error amable con la lista, sin turno ni DB.
         app.input = "/skill noexiste-xyz123 hola".to_string();
@@ -315,7 +365,11 @@ mod tests {
         let _ = chat::handle(&mut app, Message::SendPressed);
         assert!(app.status.contains("no encontrada") && app.status.contains("Instaladas"));
         assert!(!app.agent_running && !app.streaming);
-        assert_eq!(app.messages.len(), n_msgs, "sin turno no hay mensajes nuevos");
+        assert_eq!(
+            app.messages.len(),
+            n_msgs,
+            "sin turno no hay mensajes nuevos"
+        );
         // Existente: inyecta UNA vez como contexto y arranca el turno Chat.
         let cid = crate::db::create_chat("v0.9-skill-tmp").unwrap();
         app.chats.push(crate::db::ChatMeta {
@@ -341,7 +395,10 @@ mod tests {
         // usuario + contexto de skill + placeholder del stream.
         assert_eq!(app.messages.len(), 3, "usuario + skill + placeholder");
         assert!(app.messages[0].content.contains("/skill commit-msg"));
-        assert!(app.messages[1].content.contains("commit-msg"), "contexto inyectado");
+        assert!(
+            app.messages[1].content.contains("commit-msg"),
+            "contexto inyectado"
+        );
         assert!(app.tool_logs.iter().any(|l| l.contains("skill commit-msg")));
         crate::db::delete_chat(cid).unwrap();
     }
@@ -351,6 +408,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn domain_skill_injects_once_and_continues_turn() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-domain_skill_i");
         let mut app = App::default();
         let cid = crate::db::create_chat("v092-skill-tmp").unwrap();
         app.chats.push(crate::db::ChatMeta {
@@ -372,10 +430,16 @@ mod tests {
         app.config.openai.model = "gpt-test".to_string();
         app.input = "/skill ui-ux revisa el chat".to_string();
         let _ = chat::handle(&mut app, Message::SendPressed);
-        assert!(app.streaming, "el turno sigue normal tras /skill de dominio");
+        assert!(
+            app.streaming,
+            "el turno sigue normal tras /skill de dominio"
+        );
         assert_eq!(app.messages.len(), 3, "usuario + skill + placeholder");
         assert!(app.messages[1].content.contains("ui-ux"));
-        assert!(app.messages[1].content.contains("UI-REVIEW.md"), "la skill pide su reporte");
+        assert!(
+            app.messages[1].content.contains("UI-REVIEW.md"),
+            "la skill pide su reporte"
+        );
         assert!(app.tool_logs.iter().any(|l| l.contains("skill ui-ux")));
         crate::db::delete_chat(cid).unwrap();
     }
@@ -385,6 +449,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn invalid_plan_message_never_reaches_db_or_context() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-invalid_plan_m");
         let mut app = App::default();
         let cid = crate::db::create_chat("v09x-invalid-plan-tmp").unwrap();
         crate::db::set_chat_mode(cid, crate::db::Mode::Plan).unwrap();
@@ -410,7 +475,11 @@ mod tests {
         assert!(!app.agent_running && !app.streaming, "sin turno");
         assert!(app.status.contains("workspace"), "aviso: {}", app.status);
         assert!(app.messages.is_empty(), "nada en contexto");
-        assert_eq!(crate::db::count_messages(cid).unwrap_or(99), 0, "nada en DB");
+        assert_eq!(
+            crate::db::count_messages(cid).unwrap_or(99),
+            0,
+            "nada en DB"
+        );
         assert_eq!(app.input, "planifica sin workspace", "input conservado");
         assert!(app.undo.is_none(), "sin snapshot de undo");
         crate::db::delete_chat(cid).unwrap();
@@ -421,6 +490,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn qai_tab_cycles_focus_with_wrap() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-qai_tab_cycles");
         use crate::app::View;
         let mut app = App::default();
         app.view = View::Questionnaire;
@@ -440,10 +510,7 @@ mod tests {
         let _ = questionnaire::handle(&mut app, Message::QAiFocusCycle(false));
         assert_eq!(app.q_ai_focus, 2);
         // Escribir fija el foco en ese campo.
-        let _ = questionnaire::handle(
-            &mut app,
-            Message::QAiAnswerChanged(1, "x".to_string()),
-        );
+        let _ = questionnaire::handle(&mut app, Message::QAiAnswerChanged(1, "x".to_string()));
         assert_eq!(app.q_ai_focus, 1);
         // Fuera del cuestionario: nada.
         app.view = View::Chat;
@@ -454,6 +521,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn slash_suggests_and_completes_unique_prefix() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-slash_suggests");
         let mut app = App::default();
         // Escribir `/code` puebla sugerencias con contenido.
         let _ = chat::handle(&mut app, Message::InputChanged("/code".to_string()));
@@ -462,7 +530,11 @@ mod tests {
             app.skill_suggest.iter().any(|s| s.name == "code-review"),
             "sugiere por prefijo"
         );
-        let rev = app.skill_suggest.iter().find(|s| s.name == "code-review").unwrap();
+        let rev = app
+            .skill_suggest
+            .iter()
+            .find(|s| s.name == "code-review")
+            .unwrap();
         assert!(!rev.description.is_empty() && !rev.preview.is_empty());
         // Sin `/` no hay sugerencias.
         let _ = chat::handle(&mut app, Message::InputChanged("hola".to_string()));
@@ -490,7 +562,11 @@ mod tests {
         let _ = chat::handle(&mut app, Message::SendPressed);
         assert!(app.streaming, "el prefijo único arranca el turno");
         assert!(app.messages[1].content.contains("code-review"));
-        assert!(app.tool_logs.iter().any(|l| l.contains("skill code-review")));
+        assert!(
+            app.tool_logs
+                .iter()
+                .any(|l| l.contains("skill code-review"))
+        );
         // Ambiguo: no hay turno y pide completar (con skills temporales).
         app.streaming = false;
         app.stream_gen += 1;
@@ -520,6 +596,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn mode_change_animates_by_ticks_and_generation() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-mode_change_an");
         let mut app = App::default();
         let cid = crate::db::create_chat("v0.8.1-anim-tmp").unwrap();
         app.chats.push(crate::db::ChatMeta {

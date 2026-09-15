@@ -3,8 +3,8 @@ use iced::{Element, Length, Theme};
 use crate::app::Message;
 use crate::config::AppConfig;
 use crate::db::{ChatMeta, Project};
-use crate::ui::{components, design};
 use crate::ui::design::Tone;
+use crate::ui::{components, design};
 
 /// Home: project launcher for a development environment, not a hero page.
 ///
@@ -48,11 +48,16 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
     let active_model = config.active_config().model.clone();
     // Rail izquierdo: identidad + acciones globales (siempre visible).
     let rail = column![
-        text("ARQHIA").size(design::fs(ts, 26)).color(design::ink(&app_theme)),
-        text("Entorno de desarrollo con agente IA.").size(design::fs(ts, 13)).color(dim),
+        text("ARQHIA")
+            .size(design::fs(ts, 26))
+            .color(design::ink(&app_theme)),
+        text("Entorno de desarrollo con agente IA.")
+            .size(design::fs(ts, 13))
+            .color(dim),
         row![
             components::badge(app_theme.clone(), Tone::Accent, config.active.to_string()),
-            components::badge(app_theme.clone(),
+            components::badge(
+                app_theme.clone(),
                 Tone::Neutral,
                 if active_model.trim().is_empty() {
                     "sin modelo"
@@ -89,8 +94,7 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
             container(
                 column![
                     components::section_label(app_theme.clone(), "Configurar API"),
-                    text("Añade provider, key y modelo en Config.")
-                        .size(design::fs(ts, 14)),
+                    text("Añade provider, key y modelo en Config.").size(design::fs(ts, 14)),
                     row![
                         components::primary_btn("Configurar API".to_string(), 14)
                             .on_press(Message::OpenConfig),
@@ -162,11 +166,9 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
             container(
                 column![
                     text("Sin proyectos todavía").size(design::fs(ts, 19)),
-                    text(
-                        "Define PROJECT.md + SPECS.md; el agente genera estructura."
-                    )
-                    .size(design::fs(ts, 14))
-                    .color(dim),
+                    text("Define PROJECT.md + SPECS.md; el agente genera estructura.")
+                        .size(design::fs(ts, 14))
+                        .color(dim),
                     row![
                         components::primary_btn("Crear proyecto".to_string(), 14)
                             .on_press(Message::ShowCreateModal),
@@ -213,12 +215,16 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
                 .next()
                 .map(|c| c.to_uppercase().to_string())
                 .unwrap_or_else(|| "•".to_string());
-            let avatar = container(text(initial).size(design::fs(ts, 18)).color(design::accent(&app_theme)))
-                .width(40)
-                .height(40)
-                .center_x(40)
-                .center_y(40)
-                .style(|t: &Theme| design::avatar(t));
+            let avatar = container(
+                text(initial)
+                    .size(design::fs(ts, 18))
+                    .color(design::accent(&app_theme)),
+            )
+            .width(40)
+            .height(40)
+            .center_x(40)
+            .center_y(40)
+            .style(|t: &Theme| design::avatar(t));
             center = center.push(
                 iced::widget::button(
                     container(
@@ -227,7 +233,8 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
                             column![
                                 row![
                                     text(&p.name).size(design::fs(ts, 16)),
-                                    components::badge(app_theme.clone(),
+                                    components::badge(
+                                        app_theme.clone(),
                                         if has_ws { Tone::Ok } else { Tone::Neutral },
                                         if has_ws { "agente" } else { "chat" }
                                     ),
@@ -240,7 +247,9 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
                                     ))
                                     .size(design::fs(ts, 12))
                                     .color(dim),
-                                    text("Abrir").size(design::fs(ts, 13)).color(design::accent(&app_theme)),
+                                    text("Abrir")
+                                        .size(design::fs(ts, 13))
+                                        .color(design::accent(&app_theme)),
                                 ]
                                 .spacing(8)
                                 .align_y(iced::Alignment::Center),

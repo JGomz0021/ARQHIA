@@ -5,11 +5,12 @@
 use iced::{Element, Theme};
 
 use crate::app::{App, Message};
-use crate::questionnaire::{self, levels, Categoria, QKind, SysType};
+use crate::questionnaire::{self, Categoria, QKind, SysType, levels};
 
-pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {    use iced::widget::{column, container, pick_list, progress_bar, row, text};
-    use crate::ui::{components, design};
+pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {
     use crate::ui::design::{Tone, type_scale};
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, pick_list, progress_bar, row, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -30,7 +31,8 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {    use i
         .width(280)
         .into();
         let mut col = column![
-            text("¿Cuánta experiencia tienes con este tipo de proyecto?").size(design::fs(ts, type_scale::HEADLINE)),
+            text("¿Cuánta experiencia tienes con este tipo de proyecto?")
+                .size(design::fs(ts, type_scale::HEADLINE)),
             text("Las preguntas se adaptan: diseño y decisiones, sin código si empiezas.")
                 .size(design::fs(ts, 12))
                 .color(dim),
@@ -62,40 +64,61 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {    use i
     nav = nav.push(components::head_btn("Cancelar".to_string()).on_press(Message::QCancel));
     nav = nav.push(iced::widget::horizontal_space());
     if levels::is_ai_step(level, cat, sys, skip_nombre, step) {
-        nav = nav.push(components::primary_btn("Generar documentos".to_string(), 13).on_press(Message::FinishQuestionnaire));
+        nav = nav.push(
+            components::primary_btn("Generar documentos".to_string(), 13)
+                .on_press(Message::FinishQuestionnaire),
+        );
     } else {
-        nav = nav.push(components::primary_btn("Siguiente".to_string(), 13).on_press(Message::QNext));
+        nav =
+            nav.push(components::primary_btn("Siguiente".to_string(), 13).on_press(Message::QNext));
     }
 
-    let rail = row(
-        (0..total)
-            .map(|s| {
-                let past = s < step;
-                let current = s == step;
-                container(text(format!("{}", s + 1)).size(design::fs(ts, 11)).color(
-                    if past || current {
-                        design::accent(&app_theme)
-                    } else {
-                        dim
-                    }
-                ))
-                .padding([1, 7])
-                .style(move |t: &Theme| design::badge(
+    let rail = row((0..total)
+        .map(|s| {
+            let past = s < step;
+            let current = s == step;
+            container(text(format!("{}", s + 1)).size(design::fs(ts, 11)).color(
+                if past || current {
+                    design::accent(&app_theme)
+                } else {
+                    dim
+                },
+            ))
+            .padding([1, 7])
+            .style(move |t: &Theme| {
+                design::badge(
                     t,
-                    if past || current { Tone::Accent } else { Tone::Neutral }
-                ))
-                .into()
+                    if past || current {
+                        Tone::Accent
+                    } else {
+                        Tone::Neutral
+                    },
+                )
             })
-            .collect::<Vec<_>>(),
-    )
+            .into()
+        })
+        .collect::<Vec<_>>())
     .spacing(6);
 
     let mut col = column![
-        components::section_label(app_theme.clone(),
-            format!("{} · {level} · {cat} · {sys} · paso {} de {total}", state.q_answers.nombre.trim(), step + 1)
+        components::section_label(
+            app_theme.clone(),
+            format!(
+                "{} · {level} · {cat} · {sys} · paso {} de {total}",
+                state.q_answers.nombre.trim(),
+                step + 1
+            )
         ),
         rail,
-        text(questionnaire::step_title(level, cat, sys, skip_nombre, step)).size(design::fs(ts, 11)).color(dim),
+        text(questionnaire::step_title(
+            level,
+            cat,
+            sys,
+            skip_nombre,
+            step
+        ))
+        .size(design::fs(ts, 11))
+        .color(dim),
         progress_bar(0.0..=1.0, progress)
             .height(4)
             .style(|t: &Theme| design::progress(t)),
@@ -105,7 +128,9 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {    use i
     .max_width(640);
     if !state.q_import_note.is_empty() {
         col = col.push(
-            text(&state.q_import_note).size(design::fs(ts, 12)).color(design::accent(&app_theme)),
+            text(&state.q_import_note)
+                .size(design::fs(ts, 12))
+                .color(design::accent(&app_theme)),
         );
     }
     col = col.push(body);
@@ -141,8 +166,8 @@ pub(crate) fn view_questionnaire(state: &App) -> Element<'_, Message> {    use i
 }
 
 fn view_ai_list(state: &App, ts: f32) -> Element<'_, Message> {
-    use iced::widget::{column, text, text_input};
     use crate::ui::{components, design};
+    use iced::widget::{column, text, text_input};
     let mut col = column![].spacing(4);
     for (i, q) in state.q_ai_questions.iter().enumerate() {
         let ans: &str = state.q_ai_answers.get(i).map(String::as_str).unwrap_or("");
@@ -158,16 +183,15 @@ fn view_ai_list(state: &App, ts: f32) -> Element<'_, Message> {
         );
     }
     if !state.q_ai_loading {
-        col = col.push(
-            components::quiet_btn("Regenerar".to_string()).on_press(Message::QAiGenerate),
-        );
+        col =
+            col.push(components::quiet_btn("Regenerar".to_string()).on_press(Message::QAiGenerate));
     }
     col.into()
 }
 
 fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Element<'a, Message> {
-    use iced::widget::{checkbox, column, pick_list, text, text_input};
     use crate::ui::design;
+    use iced::widget::{checkbox, column, pick_list, text, text_input};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let a = &state.q_answers;
@@ -214,14 +238,10 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
                 .on_submit(Message::QNext)
                 .into()
         }
-        QKind::PickCat => pick_list(
-            Categoria::ALL.to_vec(),
-            Some(a.cat),
-            Message::QCatPicked,
-        )
-        .style(|t: &Theme, s| design::field_pick(t, s))
-        .width(280)
-        .into(),
+        QKind::PickCat => pick_list(Categoria::ALL.to_vec(), Some(a.cat), Message::QCatPicked)
+            .style(|t: &Theme, s| design::field_pick(t, s))
+            .width(280)
+            .into(),
         QKind::PickSys => {
             let opts = SysType::for_cat(a.cat).to_vec();
             pick_list(opts, Some(a.sys), Message::QSysPicked)
@@ -240,10 +260,13 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
             .into();
             column![
                 pick,
-                text_input("Referencia (opcional, ej. web, app, color...)", &a.estilo_free)
-                    .style(|t: &Theme, s| design::field(t, s))
-                    .on_input(Message::QEstiloFreeChanged)
-                    .on_submit(Message::QNext),
+                text_input(
+                    "Referencia (opcional, ej. web, app, color...)",
+                    &a.estilo_free
+                )
+                .style(|t: &Theme, s| design::field(t, s))
+                .on_input(Message::QEstiloFreeChanged)
+                .on_submit(Message::QNext),
             ]
             .spacing(8)
             .into()
@@ -253,7 +276,8 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
             for p in questionnaire::Plataforma::ALL {
                 let checked = a.plataformas.contains(&p);
                 opts = opts.push(
-                    checkbox(p.to_string(), checked).on_toggle(move |_| Message::QPlataformaToggled(p)),
+                    checkbox(p.to_string(), checked)
+                        .on_toggle(move |_| Message::QPlataformaToggled(p)),
                 );
             }
             opts.into()
@@ -267,10 +291,13 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
                 );
             }
             opts = opts.push(
-                text_input("Detalle (opcional, ej. versión, framework...)", &a.stack_free)
-                    .style(|t: &Theme, s| design::field(t, s))
-                    .on_input(Message::QStackFreeChanged)
-                    .on_submit(Message::QNext),
+                text_input(
+                    "Detalle (opcional, ej. versión, framework...)",
+                    &a.stack_free,
+                )
+                .style(|t: &Theme, s| design::field(t, s))
+                .on_input(Message::QStackFreeChanged)
+                .on_submit(Message::QNext),
             );
             opts.into()
         }
@@ -327,16 +354,16 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
             for arch in questionnaire::ArchOpt::ALL {
                 let checked = a.archs.contains(&arch);
                 opts = opts.push(
-                    checkbox(arch.to_string(), checked).on_toggle(move |_| Message::QArchToggled(arch)),
+                    checkbox(arch.to_string(), checked)
+                        .on_toggle(move |_| Message::QArchToggled(arch)),
                 );
             }
             opts.into()
         }
     };
-    let mut col = column![
-        text(q.title).size(design::fs(ts, crate::ui::design::type_scale::HEADLINE)),
-    ]
-    .spacing(10);
+    let mut col =
+        column![text(q.title).size(design::fs(ts, crate::ui::design::type_scale::HEADLINE)),]
+            .spacing(10);
     if let Some(hint) = q.hint {
         col = col.push(text(hint).size(design::fs(ts, 12)).color(dim));
     }
@@ -345,19 +372,21 @@ fn view_question_field<'a>(state: &'a App, q: &levels::Question, ts: f32) -> Ele
 }
 
 fn view_ai_step(state: &App, ts: f32) -> Element<'_, Message> {
-    use iced::widget::{column, row, text};
-    use crate::ui::{components, design};
     use crate::ui::design::{Tone, type_scale};
+    use crate::ui::{components, design};
+    use iced::widget::{column, row, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let provider = state.config.active;
     let has_api = state.config.active_config().is_configured_for(provider);
     let mut col = column![
         text("¿Afinamos con la IA? (opcional)").size(design::fs(ts, type_scale::HEADLINE)),
-        text("El provider activo propone 5–10 preguntas adaptadas a lo respondido. \
-            Puedes responderlas o saltar este paso: los documentos se generan igual.")
-            .size(design::fs(ts, 12))
-            .color(dim),
+        text(
+            "El provider activo propone 5–10 preguntas adaptadas a lo respondido. \
+            Puedes responderlas o saltar este paso: los documentos se generan igual."
+        )
+        .size(design::fs(ts, 12))
+        .color(dim),
     ]
     .spacing(10);
     if !has_api && state.q_source == questionnaire::QSource::New {
@@ -398,9 +427,9 @@ fn view_ai_step(state: &App, ts: f32) -> Element<'_, Message> {
 /// Pantalla de carga MVP (v0.8.2): la IA genera CONTEXT + serie v0.1→v1.0
 /// sin pasar por el chat. Solo progreso + Detener.
 pub(crate) fn view_generating(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, progress_bar, text};
-    use crate::ui::{components, design};
     use crate::ui::design::type_scale;
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, progress_bar, text};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();

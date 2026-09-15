@@ -3,8 +3,8 @@
 //! Puro salvo `scan` (lee el filesystem con topes, ignora
 //! `target/.git/node_modules/*.lock`).
 
-use super::levels::{Categoria, Plataforma, StackOpt, SysType};
 use super::Answers;
+use super::levels::{Categoria, Plataforma, StackOpt, SysType};
 
 /// Resultado del escaneo de una carpeta con posible código.
 #[derive(Debug, Clone, Default)]
@@ -16,6 +16,8 @@ pub struct ImportScan {
     pub has_readme: bool,
     pub has_specs: bool,
     pub has_tests: bool,
+    /// `build.rs` presente: compilar puede ejecutar código arbitrario.
+    pub has_build_rs: bool,
 }
 
 const MANIFESTS: [(&str, StackOpt, &str); 6] = [
@@ -85,6 +87,7 @@ pub fn scan(dir: &std::path::Path) -> ImportScan {
         }
     }
     out.has_tests = names.iter().any(|n| n == "tests" || n.contains("test"));
+    out.has_build_rs = names.iter().any(|n| n == "build.rs");
     out
 }
 
@@ -134,7 +137,10 @@ pub fn prefill_answers(base: &mut Answers, folder_name: &str, scan: &ImportScan)
         }
     }
     if !scan.languages.is_empty() && base.descripcion.trim().is_empty() {
-        base.descripcion = format!("Proyecto importado (detectado: {}).", scan.languages.join(", "));
+        base.descripcion = format!(
+            "Proyecto importado (detectado: {}).",
+            scan.languages.join(", ")
+        );
     }
     // Plataforma por defecto según lo detectado (editable).
     if base.plataformas.is_empty() {
@@ -151,12 +157,17 @@ pub fn import_banner(folder: &str, scan: &ImportScan) -> String {
     } else {
         scan.languages.join(" + ")
     };
-    format!(
+    let mut s = format!(
         "Detectamos {lang} + {} archivos en {folder}; README {} / SPECS {}. Solo preguntamos lo que falta.",
         scan.files,
         if scan.has_readme { "sí" } else { "no" },
         if scan.has_specs { "sí" } else { "no" },
-    )
+    );
+    // v0.9.4: aviso explícito de `build.rs` (puede ejecutar código al compilar).
+    if scan.has_build_rs {
+        s.push_str(" Ojo: este proyecto trae `build.rs` y puede ejecutar código al hacer `cargo build/test`; revísalo antes de Work con `auto_bash`.");
+    }
+    s
 }
 
 #[cfg(test)]
@@ -191,6 +202,19 @@ mod tests {
         let scan = scan(&base);
         assert!(scan.stacks.is_empty());
         assert!(!gap_fields(&scan).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn build_rs_warns_in_banner() {
+        let base = std::env::temp_dir().join("arqhia-import-buildrs");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("Cargo.toml"), "[package]\nname = \"x\"").unwrap();
+        std::fs::write(base.join("build.rs"), "fn main() {}").unwrap();
+        let scan = scan(&base);
+        assert!(scan.has_build_rs);
+        assert!(import_banner("x", &scan).contains("build.rs"));
         let _ = std::fs::remove_dir_all(&base);
     }
 }

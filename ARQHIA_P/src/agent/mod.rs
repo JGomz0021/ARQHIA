@@ -36,9 +36,9 @@ mod live_tests {
         let res = super::run_turn(cfg_all.active, history, cfg, ws.clone())
             .await
             .expect("run_turn falló");
-        eprintln!("ANSWER: {}", res.answer);
+        tracing::info!("ANSWER: {}", res.answer);
         for l in &res.logs {
-            eprintln!("LOG: {l}");
+            tracing::info!("LOG: {l}");
         }
         let content = std::fs::read_to_string(ws.join("hola.txt")).expect("hola.txt no creado");
         assert!(content.contains("HOLA-AGENTE"), "contenido: {content}");
@@ -72,26 +72,41 @@ mod live_tests {
         )
         .await
         .expect("planner falló");
-        eprintln!("TASKS: {tasks:?}");
+        tracing::info!("TASKS: {tasks:?}");
         assert!(!tasks.is_empty() && tasks.len() <= 3);
 
         // 2) Workers secuenciales (todo auto, como la UI con permisos full)
         for (i, task) in tasks.iter().take(2).enumerate() {
             let system = super::worker_system(&ws, task);
-            let seed = serde_json::json!({"role": "user", "content": format!("TAREA: {}", task.desc)});
+            let seed =
+                serde_json::json!({"role": "user", "content": format!("TAREA: {}", task.desc)});
             let mut raw = vec![seed];
             for step in 1..=super::MAX_ITERS {
-                match super::llm_step(provider, &cfg, &system, &raw).await.expect("llm_step") {
+                match super::llm_step(provider, &cfg, &system, &raw)
+                    .await
+                    .expect("llm_step")
+                {
                     super::StepOutcome::Final(a) => {
-                        eprintln!("WORKER{i} ANSWER: {a}");
+                        tracing::info!("WORKER{i} ANSWER: {a}");
                         break;
                     }
-                    super::StepOutcome::Calls { calls, assistant_msg } => {
+                    super::StepOutcome::Calls {
+                        calls,
+                        assistant_msg,
+                    } => {
                         raw.push(assistant_msg);
-                        let (append, logs) =
-                            super::exec_calls(provider, &ws, &[], step, &calls, &super::tools::ExecPolicy::default(), super::roles::Role::Worker).await;
+                        let (append, logs) = super::exec_calls(
+                            provider,
+                            &ws,
+                            &[],
+                            step,
+                            &calls,
+                            &super::tools::ExecPolicy::default(),
+                            super::roles::Role::Worker,
+                        )
+                        .await;
                         for l in &logs {
-                            eprintln!("WORKER{i} LOG: {l}");
+                            tracing::info!("WORKER{i} LOG: {l}");
                         }
                         raw.extend(append);
                     }
@@ -106,10 +121,10 @@ mod live_tests {
             .await
             .expect("auditor falló");
         for l in &logs {
-            eprintln!("AUDIT LOG: {l}");
+            tracing::info!("AUDIT LOG: {l}");
         }
-        eprintln!("VERIFY_OK: {verify_ok}");
-        eprintln!("TEMP:\n{temp}");
+        tracing::info!("VERIFY_OK: {verify_ok}");
+        tracing::info!("TEMP:\n{temp}");
         assert!(temp.contains("## Auditoría"), "TEMP.md sin formato");
         let _ = std::fs::remove_dir_all(&ws);
     }
@@ -164,7 +179,9 @@ pub fn worker_context_block(workspace: &Path, agents_md: Option<&str>) -> Option
         parts.push(format!("Especificación del proyecto (SPECS.md):\n{espec}"));
     }
     if let Some(brief) = read_analysis_md(workspace) {
-        parts.push(format!("Brief del analista (CONTEXT/ANALYSIS.md):\n{brief}"));
+        parts.push(format!(
+            "Brief del analista (CONTEXT/ANALYSIS.md):\n{brief}"
+        ));
     }
     if parts.is_empty() {
         None
@@ -275,9 +292,27 @@ pub fn code_outlines(workspace: &Path) -> String {
     }
 }
 
+/// `code_outlines` en background (v0.9.5): el walk de 6 niveles no bloquea
+/// ni al executor ni a la UI.
+pub async fn code_outlines_async(workspace: &Path) -> String {
+    let ws = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || code_outlines(&ws))
+        .await
+        .unwrap_or_else(|_| "(outlines no disponibles)".to_string())
+}
+
+/// `read_context_docs` en background (v0.9.5).
+pub async fn read_context_docs_async(workspace: &Path) -> String {
+    let ws = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || read_context_docs(&ws))
+        .await
+        .unwrap_or_else(|_| "(sin docs en CONTEXT/)".to_string())
+}
+
 /// Analista dedicado (v0.7.3): UNA llamada sin tools que produce un brief
 /// (estado, restricciones, archivos, riesgos) a partir de CONTEXT/, outlines
 /// y el pedido. El llamador decide el fallback si falla.
+/// v0.9.5: las lecturas de FS van por `spawn_blocking` (no bloquean workers).
 pub async fn analyze_workspace(
     provider: Provider,
     cfg: &ProviderConfig,
@@ -285,11 +320,15 @@ pub async fn analyze_workspace(
     pedido: &str,
 ) -> Result<String, String> {
     let system = roles::Role::Analista.system_prompt();
+    let ws = workspace.to_path_buf();
+    // FS bloqueante fuera del executor: las 3 lecturas en background.
+    let (tree, docs, outlines) = tokio::join!(
+        crate::workspace::context_block_async(&ws),
+        read_context_docs_async(&ws),
+        code_outlines_async(&ws),
+    );
     let user = format!(
-        "Pedido del usuario:\n{pedido}\n\n## Árbol del workspace\n{}\n\n## Docs de CONTEXT/\n{}\n\n## Firmas del código\n{}",
-        crate::workspace::context_block(workspace),
-        read_context_docs(workspace),
-        code_outlines(workspace),
+        "Pedido del usuario:\n{pedido}\n\n## Árbol del workspace\n{tree}\n\n## Docs de CONTEXT/\n{docs}\n\n## Firmas del código\n{outlines}",
     );
     simple_chat(provider, system, &user, cfg).await
 }
@@ -356,9 +395,10 @@ pub fn collapse_old_tool_outputs(raw: &mut [Value], keep: usize) {
             idx.push(i);
         } else if role == "user"
             && let Some(blocks) = m["content"].as_array()
-            && blocks.iter().any(|b| b["type"] == "tool_result") {
-                idx.push(i);
-            }
+            && blocks.iter().any(|b| b["type"] == "tool_result")
+        {
+            idx.push(i);
+        }
     }
     if idx.len() <= keep {
         return;
@@ -366,7 +406,8 @@ pub fn collapse_old_tool_outputs(raw: &mut [Value], keep: usize) {
     let collapse_until = idx.len() - keep;
     for &i in &idx[..collapse_until] {
         if raw[i]["role"] == "tool" {
-            raw[i]["content"] = json!("[omitido: resultado anterior colapsado para ahorrar contexto]");
+            raw[i]["content"] =
+                json!("[omitido: resultado anterior colapsado para ahorrar contexto]");
         } else if let Some(blocks) = raw[i]["content"].as_array_mut() {
             for b in blocks.iter_mut() {
                 if b["type"] == "tool_result" {
@@ -394,13 +435,29 @@ pub fn calls_signature(calls: &[PendingCall]) -> String {
 pub fn read_cache_key(call: &PendingCall) -> Option<String> {
     match call.name.as_str() {
         "read_file" => {
-            let p = call.args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-            let o = call.args.get("offset").and_then(|v| v.as_u64()).unwrap_or(1);
-            let l = call.args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200);
+            let p = call
+                .args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let o = call
+                .args
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1);
+            let l = call
+                .args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200);
             Some(format!("read:{p}:{o}:{l}"))
         }
         "get_file_outline" => {
-            let p = call.args.get("path").and_then(|v| v.as_str()).unwrap_or("?");
+            let p = call
+                .args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             Some(format!("outline:{p}"))
         }
         _ => None,
@@ -480,7 +537,11 @@ pub(crate) fn history_to_anthropic(history: &[ChatMsg]) -> Vec<Value> {
         })
         .collect();
     // Anthropic exige primer mensaje user
-    while messages.first().map(|m| m["role"] == "assistant").unwrap_or(false) {
+    while messages
+        .first()
+        .map(|m| m["role"] == "assistant")
+        .unwrap_or(false)
+    {
         messages.remove(0);
     }
     messages
@@ -494,7 +555,9 @@ pub async fn llm_step(
     raw: &[Value],
 ) -> Result<StepOutcome, String> {
     match provider {
-        Provider::OpenAI | Provider::OpenRouter | Provider::Local => llm_step_openai(cfg, system, raw).await,
+        Provider::OpenAI | Provider::OpenRouter | Provider::Local => {
+            llm_step_openai(cfg, system, raw).await
+        }
         Provider::Anthropic => llm_step_anthropic(cfg, system, raw).await,
     }
 }
@@ -504,6 +567,7 @@ async fn llm_step_openai(
     system: &str,
     raw: &[Value],
 ) -> Result<StepOutcome, String> {
+    crate::llm::ensure_secure_endpoint(cfg)?;
     let url = openai_chat_url(cfg);
     let client = crate::llm::http_client();
     let mut messages = vec![json!({"role": "system", "content": system})];
@@ -550,7 +614,10 @@ async fn llm_step_openai(
         }
         return Err(format!("{}: {}", status, short(&text, 300)));
     }
-    let v: Value = resp.json().await.map_err(|e| format!("Respuesta inválida: {e}"))?;
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida: {e}"))?;
     let msg = &v["choices"][0]["message"];
     let content = msg["content"].as_str().unwrap_or("").to_string();
     let raw_calls = msg["tool_calls"].as_array().cloned().unwrap_or_default();
@@ -618,17 +685,22 @@ async fn plain_chat_openai(
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("{}: {}", status, short(&text, 300)));
     }
-    let v: Value = resp.json().await.map_err(|e| format!("Respuesta inválida: {e}"))?;
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida: {e}"))?;
     Ok(v["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or("(sin respuesta)")
         .to_string())
 }
 
-async fn llm_step_anthropic(    cfg: &ProviderConfig,
+async fn llm_step_anthropic(
+    cfg: &ProviderConfig,
     system: &str,
     raw: &[Value],
 ) -> Result<StepOutcome, String> {
+    crate::llm::ensure_secure_endpoint(cfg)?;
     let base = crate::llm::normalize_base_url(&cfg.base_url);
     let url = format!("{base}/v1/messages");
     let client = crate::llm::http_client();
@@ -664,7 +736,10 @@ async fn llm_step_anthropic(    cfg: &ProviderConfig,
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("Anthropic {status}: {}", short(&text, 300)));
     }
-    let v: Value = resp.json().await.map_err(|e| format!("Respuesta inválida: {e}"))?;
+    let v: Value = resp
+        .json()
+        .await
+        .map_err(|e| format!("Respuesta inválida: {e}"))?;
     let blocks = v["content"].as_array().cloned().unwrap_or_default();
     let mut text_out = String::new();
     let mut calls = Vec::new();
@@ -717,7 +792,11 @@ pub async fn exec_calls(
         if role.allows_tool(&call.name, &call.args) {
             allowed.push(call);
         } else {
-            logs.push(format!("⛔ {} denegado por rol {}", call.name, role.label()));
+            logs.push(format!(
+                "⛔ {} denegado por rol {}",
+                call.name,
+                role.label()
+            ));
             append.push(role_denial_msg(provider, call, role));
         }
     }
@@ -725,7 +804,8 @@ pub async fn exec_calls(
     match provider {
         Provider::OpenAI | Provider::OpenRouter | Provider::Local => {
             for call in calls {
-                let outcome = tools::execute(workspace, extra, &call.name, &call.args, policy).await;
+                let outcome =
+                    tools::execute(workspace, extra, &call.name, &call.args, policy).await;
                 logs.push(format!(
                     "🔧 [paso {step}/{MAX_ITERS}] {} {} -> {}",
                     call.name,
@@ -742,7 +822,8 @@ pub async fn exec_calls(
         Provider::Anthropic => {
             let mut results = Vec::new();
             for call in calls {
-                let outcome = tools::execute(workspace, extra, &call.name, &call.args, policy).await;
+                let outcome =
+                    tools::execute(workspace, extra, &call.name, &call.args, policy).await;
                 logs.push(format!(
                     "🔧 [paso {step}/{MAX_ITERS}] {} {} -> {}",
                     call.name,
@@ -838,16 +919,30 @@ pub async fn run_turn(
     for step in 1..=MAX_ITERS {
         match llm_step(provider, &cfg, &system, &raw).await? {
             StepOutcome::Final(answer) => return Ok(AgentResult { answer, logs }),
-            StepOutcome::Calls { calls, assistant_msg } => {
+            StepOutcome::Calls {
+                calls,
+                assistant_msg,
+            } => {
                 raw.push(assistant_msg);
-                let (append, step_logs) = exec_calls(provider, &workspace, &[], step, &calls, &tools::ExecPolicy::default(), roles::Role::Worker).await;
+                let (append, step_logs) = exec_calls(
+                    provider,
+                    &workspace,
+                    &[],
+                    step,
+                    &calls,
+                    &tools::ExecPolicy::default(),
+                    roles::Role::Worker,
+                )
+                .await;
                 logs.extend(step_logs);
                 raw.extend(append);
             }
         }
     }
     Ok(AgentResult {
-        answer: format!("Hice cambios pero llegué al límite de {MAX_ITERS} pasos. Revisa el Log y pídeme que continúe."),
+        answer: format!(
+            "Hice cambios pero llegué al límite de {MAX_ITERS} pasos. Revisa el Log y pídeme que continúe."
+        ),
         logs,
     })
 }
@@ -898,20 +993,25 @@ pub async fn plan_tasks(
         "{}\n\nDivide el pedido del usuario en 2 o 3 subtareas de código DISJUNTAS (archivos distintos, sin solaparse), cada una con 1 criterio de aceptación verificable. Responde SOLO con un array JSON, sin markdown ni texto extra, con este formato exacto: [{{\"desc\": \"...\", \"files\": [\"src/a.rs\"], \"accept\": \"...\"}}]. Si el pedido es trivial, responde con 1 sola tarea. Modo actual: {mode_label} (solo planificas: nunca ejecutas herramientas).",
         roles::Role::Planner.system_prompt()
     );
-    let mut user = format!("Contexto del workspace:\n{context}\n\nPedido del usuario:\n{user_text}");
+    let mut user =
+        format!("Contexto del workspace:\n{context}\n\nPedido del usuario:\n{user_text}");
     if let Some(b) = brief {
         let cut: String = b.chars().take(2000).collect();
         user.push_str(&format!("\n\nBrief del analista (v0.7.3):\n{cut}"));
     }
     if let Some(e) = espec {
         let cut: String = e.chars().take(2000).collect();
-        user.push_str(&format!("\n\nEspecificación del proyecto (SPECS.md):\n{cut}"));
+        user.push_str(&format!(
+            "\n\nEspecificación del proyecto (SPECS.md):\n{cut}"
+        ));
     }
     // v0.9.1: contexto Net+Read del planner (docs externos + rutas extra).
     if let Some(x) = extra_ctx {
         let cut: String = x.chars().take(9000).collect();
         if !cut.trim().is_empty() {
-            user.push_str(&format!("\n\nContexto extra del planner (Net+Read):\n{cut}"));
+            user.push_str(&format!(
+                "\n\nContexto extra del planner (Net+Read):\n{cut}"
+            ));
         }
     }
     // El body OpenAI-compat sale del constructor auditado; Anthropic va por
@@ -923,9 +1023,10 @@ pub async fn plan_tasks(
         simple_chat_with_body(provider, &body, &system, &user, cfg).await?
     };
     if let Some(tasks) = parse_tasks(&answer)
-        && !tasks.is_empty() {
-            return Ok(tasks.into_iter().take(3).collect());
-        }
+        && !tasks.is_empty()
+    {
+        return Ok(tasks.into_iter().take(3).collect());
+    }
     Ok(vec![WTask {
         desc: user_text.to_string(),
         files: Vec::new(),
@@ -975,11 +1076,7 @@ fn parse_tasks(answer: &str) -> Option<Vec<WTask>> {
             accept,
         });
     }
-    if out.is_empty() {
-        None
-    } else {
-        Some(out)
-    }
+    if out.is_empty() { None } else { Some(out) }
 }
 
 /// Chat simple sin tools (planner, auditor).
@@ -1003,6 +1100,7 @@ async fn simple_chat_with_body(
     user: &str,
     cfg: &ProviderConfig,
 ) -> Result<String, String> {
+    crate::llm::ensure_secure_endpoint(cfg)?;
     let client = crate::llm::http_client();
     match provider {
         Provider::OpenAI | Provider::OpenRouter | Provider::Local => {
@@ -1021,7 +1119,10 @@ async fn simple_chat_with_body(
                 let text = resp.text().await.unwrap_or_default();
                 return Err(format!("{}: {}", status, short(&text, 300)));
             }
-            let v: Value = resp.json().await.map_err(|e| format!("Respuesta inválida: {e}"))?;
+            let v: Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Respuesta inválida: {e}"))?;
             Ok(v["choices"][0]["message"]["content"]
                 .as_str()
                 .unwrap_or("")
@@ -1049,7 +1150,10 @@ async fn simple_chat_with_body(
                 let text = resp.text().await.unwrap_or_default();
                 return Err(format!("Anthropic {status}: {}", short(&text, 300)));
             }
-            let v: Value = resp.json().await.map_err(|e| format!("Respuesta inválida: {e}"))?;
+            let v: Value = resp
+                .json()
+                .await
+                .map_err(|e| format!("Respuesta inválida: {e}"))?;
             Ok(v["content"]
                 .as_array()
                 .map(|blocks| {
@@ -1091,7 +1195,10 @@ pub async fn ai_title(
 /// y las recorta a `roles::PLANNER_FETCH_CAP` chars cada una. El llamador
 /// decide el permiso ANTES (ver `roles::planner_urls_needing_permission`):
 /// aquí solo se sale a la red con permiso concedido.
-pub async fn fetch_planner_net_block(urls: &[String], policy: &tools::ExecPolicy) -> Option<String> {
+pub async fn fetch_planner_net_block(
+    urls: &[String],
+    policy: &tools::ExecPolicy,
+) -> Option<String> {
     let mut parts = Vec::new();
     for u in urls.iter().take(3) {
         match tools::fetch_url(u, policy).await {
@@ -1114,7 +1221,10 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for tok in text.split_whitespace() {
         let t = tok.trim_matches(|c: char| "<>()[]{}\"'.,;:!?".contains(c));
-        if (t.starts_with("http://") || t.starts_with("https://")) && t.len() > 10 && !out.contains(&t.to_string()) {
+        if (t.starts_with("http://") || t.starts_with("https://"))
+            && t.len() > 10
+            && !out.contains(&t.to_string())
+        {
             out.push(t.to_string());
         }
         if out.len() >= 10 {
@@ -1198,14 +1308,23 @@ pub async fn audit_workspace(
         review
     };
     let clean = verify_ok && review_clean;
-    let diff = crate::git::diff_stat(workspace);
+    // v0.9.5: diff async (no bloquea al auditor en repos grandes).
+    let diff = crate::git::diff_stat_async(workspace).await;
     let diff_block = if diff.is_empty() {
         "(sin cambios detectados)".to_string()
     } else {
         format!("```\n{diff}\n```")
     };
-    let verdict = if clean { "VERDICT: CLEAN" } else { "VERDICT: ISSUES" };
-    let verify_line = if verify_ok { "VERIFY: OK" } else { "VERIFY: FAIL" };
+    let verdict = if clean {
+        "VERDICT: CLEAN"
+    } else {
+        "VERDICT: ISSUES"
+    };
+    let verify_line = if verify_ok {
+        "VERIFY: OK"
+    } else {
+        "VERIFY: FAIL"
+    };
     let temp = format!(
         "## Auditoría ARQHIA\n\n{review_final}\n\n## Verificación\n\n{check_block}\n## git diff --stat\n\n{diff_block}\n\n## Ciclo y estado\n\n- Ciclo: {cycle}\n- {verify_line}\n- {verdict}\n"
     );
@@ -1279,6 +1398,27 @@ pub fn read_agents_md(workspace: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// v0.9.5: los wrappers `spawn_blocking` devuelven lo mismo que las sync.
+    #[tokio::test]
+    async fn blocking_wrappers_match_sync() {
+        let dir = std::env::temp_dir().join("arqhia-blocking-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("CONTEXT")).unwrap();
+        std::fs::write(dir.join("CONTEXT").join("SPECS.md"), "# Demo").unwrap();
+        std::fs::write(dir.join("a.rs"), "pub fn f() {}\n").unwrap();
+        assert_eq!(code_outlines_async(&dir).await, code_outlines(&dir));
+        assert_eq!(read_context_docs_async(&dir).await, read_context_docs(&dir));
+        assert_eq!(
+            crate::workspace::context_block_async(&dir).await,
+            crate::workspace::context_block(&dir)
+        );
+        assert_eq!(
+            crate::workspace::scan_import_async(&dir).await,
+            crate::workspace::scan_import(&dir)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn planner_body_declares_no_tools() {
         // v0.7 Track B: el planner es solo-lectura por construcción.
@@ -1289,7 +1429,10 @@ mod tests {
             reasoning_effort: String::new(),
         };
         let body = super::planner_request_body(&cfg, "sys", "haz X");
-        assert!(body.get("tools").is_none(), "el planner no debe declarar tools");
+        assert!(
+            body.get("tools").is_none(),
+            "el planner no debe declarar tools"
+        );
         assert!(body.get("tool_choice").is_none());
         assert_eq!(body["model"], serde_json::json!("m"));
     }
@@ -1311,10 +1454,16 @@ mod tests {
     #[test]
     fn temp_issue_detection() {
         assert!(!temp_has_issues("## Auditoría\n\nSIN ISSUES\n"));
-        assert!(temp_has_issues("## Auditoría\n\n- src/main.rs línea 3: falta punto y coma, el binario no compila por el módulo roto"));
+        assert!(temp_has_issues(
+            "## Auditoría\n\n- src/main.rs línea 3: falta punto y coma, el binario no compila por el módulo roto"
+        ));
         // v0.7.3: marcador explícito manda sobre el texto.
-        assert!(!temp_has_issues("## Auditoría\n\nrevisión\n\nVERDICT: CLEAN\n"));
-        assert!(temp_has_issues("## Auditoría\n\nrevisión\n\nVERDICT: ISSUES\n"));
+        assert!(!temp_has_issues(
+            "## Auditoría\n\nrevisión\n\nVERDICT: CLEAN\n"
+        ));
+        assert!(temp_has_issues(
+            "## Auditoría\n\nrevisión\n\nVERDICT: ISSUES\n"
+        ));
     }
 
     #[test]
@@ -1324,7 +1473,11 @@ mod tests {
         std::fs::create_dir_all(dir.join("CONTEXT")).unwrap();
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("CONTEXT").join("PROJECT.md"), "# MiApp\nVisión X").unwrap();
-        std::fs::write(dir.join("src").join("main.rs"), "pub fn arranque() {}\nstruct Motor {}\n").unwrap();
+        std::fs::write(
+            dir.join("src").join("main.rs"),
+            "pub fn arranque() {}\nstruct Motor {}\n",
+        )
+        .unwrap();
         let docs = read_context_docs(&dir);
         assert!(docs.contains("PROJECT.md"), "{docs}");
         assert!(docs.contains("MiApp"), "{docs}");
@@ -1371,7 +1524,8 @@ mod tests {
     }
 
     #[test]
-    fn worker_system_mentions_task() {        let t = WTask {
+    fn worker_system_mentions_task() {
+        let t = WTask {
             desc: "Crear hola".to_string(),
             files: vec!["hola.txt".to_string()],
             accept: "hola.txt existe con el texto".to_string(),
@@ -1397,18 +1551,35 @@ mod tests {
         };
         let policy = tools::ExecPolicy::default();
         // Worker: ejecuta.
-        let (append, logs) =
-            exec_calls(Provider::OpenAI, &dir, &[], 1, std::slice::from_ref(&call), &policy, roles::Role::Worker)
-                .await;
+        let (append, logs) = exec_calls(
+            Provider::OpenAI,
+            &dir,
+            &[],
+            1,
+            std::slice::from_ref(&call),
+            &policy,
+            roles::Role::Worker,
+        )
+        .await;
         assert!(dir.join("nota.txt").exists(), "el worker debe escribir");
         assert!(logs.iter().any(|l| l.contains("write_file")), "{logs:?}");
         assert_eq!(append.len(), 1);
         let _ = std::fs::remove_file(dir.join("nota.txt"));
         // Planner: denegado por rol, sin tocar el disco.
-        let (append2, logs2) =
-            exec_calls(Provider::OpenAI, &dir, &[], 1, &[call], &policy, roles::Role::Planner)
-                .await;
-        assert!(!dir.join("nota.txt").exists(), "el planner no debe escribir");
+        let (append2, logs2) = exec_calls(
+            Provider::OpenAI,
+            &dir,
+            &[],
+            1,
+            &[call],
+            &policy,
+            roles::Role::Planner,
+        )
+        .await;
+        assert!(
+            !dir.join("nota.txt").exists(),
+            "el planner no debe escribir"
+        );
         assert!(
             logs2.iter().any(|l| l.contains("denegado por rol Planner")),
             "{logs2:?}"
@@ -1422,7 +1593,11 @@ mod tests {
         let dir = std::env::temp_dir().join("arqhia-espec-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("CONTEXT")).unwrap();
-        std::fs::write(dir.join("CONTEXT").join("ESPEC.md"), "# MiApp\n\n## Objetivo\nX").unwrap();
+        std::fs::write(
+            dir.join("CONTEXT").join("ESPEC.md"),
+            "# MiApp\n\n## Objetivo\nX",
+        )
+        .unwrap();
         let ctx = worker_context_block(&dir, None).expect("debería haber contexto");
         assert!(ctx.contains("MiApp"), "ESPEC no inyectado");
         // Sin ESPEC ni AGENTS no hay bloque (el worker arranca sin lastre).
@@ -1480,13 +1655,25 @@ mod tests {
     #[test]
     fn early_stop_signature_is_order_stable() {
         let a = vec![
-            PendingCall { id: "1".to_string(), name: "read_file".to_string(), args: json!({"path": "a.rs"}) },
-            PendingCall { id: "2".to_string(), name: "bash".to_string(), args: json!({"cmd": "ls"}) },
+            PendingCall {
+                id: "1".to_string(),
+                name: "read_file".to_string(),
+                args: json!({"path": "a.rs"}),
+            },
+            PendingCall {
+                id: "2".to_string(),
+                name: "bash".to_string(),
+                args: json!({"cmd": "ls"}),
+            },
         ];
         let mut b = a.clone();
         b.reverse();
         assert_eq!(calls_signature(&a), calls_signature(&b));
-        let c = vec![PendingCall { id: "1".to_string(), name: "read_file".to_string(), args: json!({"path": "b.rs"}) }];
+        let c = vec![PendingCall {
+            id: "1".to_string(),
+            name: "read_file".to_string(),
+            args: json!({"path": "b.rs"}),
+        }];
         assert_ne!(calls_signature(&a), calls_signature(&c));
     }
 
@@ -1494,22 +1681,49 @@ mod tests {
     fn extract_urls_finds_http_links_once() {
         let t = "Mira https://example.com/a y (https://docs.rs/crate,) más http://x.test/q.";
         let urls = extract_urls(t);
-        assert_eq!(urls, vec!["https://example.com/a", "https://docs.rs/crate", "http://x.test/q"]);
+        assert_eq!(
+            urls,
+            vec![
+                "https://example.com/a",
+                "https://docs.rs/crate",
+                "http://x.test/q"
+            ]
+        );
         assert!(extract_urls("sin enlaces").is_empty());
         assert!(extract_urls("https://a.test https://a.test").len() == 1);
     }
 
     #[test]
     fn read_cache_keys_only_pure_reads() {
-        let read = PendingCall { id: "1".to_string(), name: "read_file".to_string(), args: json!({"path": "a.rs"}) };
+        let read = PendingCall {
+            id: "1".to_string(),
+            name: "read_file".to_string(),
+            args: json!({"path": "a.rs"}),
+        };
         assert_eq!(read_cache_key(&read).as_deref(), Some("read:a.rs:1:200"));
-        let paged = PendingCall { id: "2".to_string(), name: "read_file".to_string(), args: json!({"path": "a.rs", "offset": 201, "limit": 200}) };
+        let paged = PendingCall {
+            id: "2".to_string(),
+            name: "read_file".to_string(),
+            args: json!({"path": "a.rs", "offset": 201, "limit": 200}),
+        };
         assert_ne!(read_cache_key(&read), read_cache_key(&paged));
-        let outline = PendingCall { id: "3".to_string(), name: "get_file_outline".to_string(), args: json!({"path": "a.rs"}) };
+        let outline = PendingCall {
+            id: "3".to_string(),
+            name: "get_file_outline".to_string(),
+            args: json!({"path": "a.rs"}),
+        };
         assert!(read_cache_key(&outline).is_some());
-        let write = PendingCall { id: "4".to_string(), name: "write_file".to_string(), args: json!({"path": "a.rs"}) };
+        let write = PendingCall {
+            id: "4".to_string(),
+            name: "write_file".to_string(),
+            args: json!({"path": "a.rs"}),
+        };
         assert!(read_cache_key(&write).is_none());
-        let search = PendingCall { id: "5".to_string(), name: "search_files".to_string(), args: json!({"query": "x"}) };
+        let search = PendingCall {
+            id: "5".to_string(),
+            name: "search_files".to_string(),
+            args: json!({"query": "x"}),
+        };
         assert!(read_cache_key(&search).is_none());
     }
 }

@@ -8,9 +8,9 @@ use iced::{Element, Theme};
 use crate::app::{App, Message};
 
 pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, row, scrollable, text, text_input};
-    use crate::ui::{components, design};
     use crate::ui::design::type_scale;
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, row, scrollable, text, text_input};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -35,16 +35,22 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
         compact,
         "Buscar",
         column![
-            text_input("buscar en título, código o etiquetas...", &state.stack_query)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::StackQueryChanged)
-                .on_submit(Message::StackSearch),
-            text_input("etiquetas (separadas por comas o espacios)...", &state.stack_tags)
-                .size(design::fs(ts, 13))
-                .style(|t: &Theme, s| design::field(t, s))
-                .on_input(Message::StackTagsChanged)
-                .on_submit(Message::StackSearch),
+            text_input(
+                "buscar en título, código o etiquetas...",
+                &state.stack_query
+            )
+            .size(design::fs(ts, 13))
+            .style(|t: &Theme, s| design::field(t, s))
+            .on_input(Message::StackQueryChanged)
+            .on_submit(Message::StackSearch),
+            text_input(
+                "etiquetas (separadas por comas o espacios)...",
+                &state.stack_tags
+            )
+            .size(design::fs(ts, 13))
+            .style(|t: &Theme, s| design::field(t, s))
+            .on_input(Message::StackTagsChanged)
+            .on_submit(Message::StackSearch),
             row![
                 components::primary_btn("Buscar".to_string(), 13).on_press(Message::StackSearch),
                 text(if state.stack_searched {
@@ -73,7 +79,11 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
             "#{} {} [{}] ★{:.1}",
             hit.id,
             hit.title,
-            if hit.tags.is_empty() { hit.lang.clone() } else { hit.tags.clone() },
+            if hit.tags.is_empty() {
+                hit.lang.clone()
+            } else {
+                hit.tags.clone()
+            },
             hit.rating
         );
         results = results.push(
@@ -92,7 +102,12 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
             .into(),
         Some(full) => {
             let lines: Vec<&str> = full.code.lines().collect();
-            let shown: String = lines.iter().take(15).copied().collect::<Vec<_>>().join("\n");
+            let shown: String = lines
+                .iter()
+                .take(15)
+                .copied()
+                .collect::<Vec<_>>()
+                .join("\n");
             let rest = lines.len().saturating_sub(15);
             let code_md = if rest > 0 {
                 format!("{shown}\n… ({rest} líneas más)")
@@ -102,20 +117,36 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
             let mut meta = column![
                 text(format!(
                     "{} · {} · {} · ★{:.1} ({} votos) · {} ejecuciones ({} ok) · fuente {}",
-                    if full.author.is_empty() { "(sin autor)".to_string() } else { full.author.clone() },
+                    if full.author.is_empty() {
+                        "(sin autor)".to_string()
+                    } else {
+                        full.author.clone()
+                    },
                     full.license,
-                    if full.lang.is_empty() { "?".to_string() } else { full.lang.clone() },
+                    if full.lang.is_empty() {
+                        "?".to_string()
+                    } else {
+                        full.lang.clone()
+                    },
                     full.rating,
                     full.ratings,
                     full.executions,
                     full.ok_runs,
-                    if full.source.is_empty() { "local".to_string() } else { full.source.clone() },
+                    if full.source.is_empty() {
+                        "local".to_string()
+                    } else {
+                        full.source.clone()
+                    },
                 ))
                 .size(design::fs(ts, 12))
                 .color(dim),
                 text(format!(
                     "etiquetas: {}",
-                    if full.tags.is_empty() { "(sin etiquetas)".to_string() } else { full.tags.clone() }
+                    if full.tags.is_empty() {
+                        "(sin etiquetas)".to_string()
+                    } else {
+                        full.tags.clone()
+                    }
                 ))
                 .size(design::fs(ts, 12))
                 .color(dim),
@@ -127,17 +158,20 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
             }
             let mut stars = row![].spacing(4);
             for n in 1u8..=5 {
-                stars = stars.push(
-                    components::icon_btn(format!("{n}★")).on_press(Message::StackRate(n)),
-                );
+                stars = stars
+                    .push(components::icon_btn(format!("{n}★")).on_press(Message::StackRate(n)));
             }
             column![
                 text(format!("#{} {}", full.id, full.title))
                     .size(design::fs(ts, type_scale::TITLE)),
                 meta,
                 container(
-                    scrollable(text(code_md).size(design::fs(ts, 12)).font(iced::Font::MONOSPACE))
-                        .height(200)
+                    scrollable(
+                        text(code_md)
+                            .size(design::fs(ts, 12))
+                            .font(iced::Font::MONOSPACE)
+                    )
+                    .height(200)
                 )
                 .padding(8)
                 .style(|t: &Theme| design::card(t)),
@@ -184,7 +218,9 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
             text(if state.config.stack_consent.share_local {
                 match state.config.identity.validate() {
                     Ok(()) => format!("Se firmará como {}.", state.config.identity.author_line()),
-                    Err(_) => "Sin identidad válida: el autor quedará vacío (Config → STACK).".to_string(),
+                    Err(_) => {
+                        "Sin identidad válida: el autor quedará vacío (Config → STACK).".to_string()
+                    }
                 }
             } else {
                 "Desactivado: permite «Guardar en local» en Config → STACK.".to_string()
@@ -225,7 +261,9 @@ pub(crate) fn view_stack(state: &App) -> Element<'_, Message> {
                 .width(iced::Fill),
             row![
                 components::primary_btn("Guardar".to_string(), 13).on_press(Message::StackSave),
-                text(&state.stack_status).size(design::fs(ts, 12)).color(dim),
+                text(&state.stack_status)
+                    .size(design::fs(ts, 12))
+                    .color(dim),
             ]
             .align_y(iced::Alignment::Center)
             .spacing(8),
@@ -257,11 +295,14 @@ fn stack_card<'a>(
     label: &str,
     body: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    use iced::widget::{column, container};
     use crate::ui::{components, design};
+    use iced::widget::{column, container};
     container(
-        column![components::section_label(app_theme.clone(), label), body.into()]
-            .spacing(design::gap(compact, 8)),
+        column![
+            components::section_label(app_theme.clone(), label),
+            body.into()
+        ]
+        .spacing(design::gap(compact, 8)),
     )
     .width(iced::Length::Fill)
     .padding(design::pad(compact, 12))
