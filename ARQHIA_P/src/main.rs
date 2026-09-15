@@ -7,6 +7,7 @@ mod db;
 mod git;
 mod llm;
 mod mcp;
+mod paths;
 mod pricing;
 mod questionnaire;
 mod skills;
@@ -16,8 +17,7 @@ mod ui;
 mod views;
 mod workspace;
 
-use app::{handlers, App, Message, View};
-
+use app::{App, Message, View, handlers};
 
 /// Wrapper de fiabilidad: un panic en cualquier handler se convierte en
 /// mensaje de error visible en vez de cerrar el proceso de golpe.
@@ -32,7 +32,7 @@ fn update(state: &mut App, message: Message) -> Task<Message> {
                 .map(|s| s.to_string())
                 .or_else(|| payload.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "panic desconocido".to_string());
-            eprintln!("ARQHIA: panic capturado en update: {detail}");
+            tracing::warn!("panic capturado en update: {detail}");
             state.streaming = false;
             state.agent_running = false;
             state.driver = None;
@@ -45,16 +45,246 @@ fn update(state: &mut App, message: Message) -> Task<Message> {
 
 fn update_inner(state: &mut App, message: Message) -> Task<Message> {
     match message {
-        Message::GoChat | Message::GoHome | Message::ExitApp | Message::DismissOnboarding => handlers::navigation::handle(state, message),
-        Message::InputChanged(..) | Message::SendPressed | Message::StreamChunk(..) | Message::StreamUsage(..) | Message::StreamDone(..) | Message::StreamError(..) | Message::NewChat | Message::NewChatInProject(..) | Message::SelectChat(..) | Message::DeleteChat(..) | Message::ConfirmDeleteChat | Message::CancelDelete | Message::ToggleChatMenu(..) | Message::ToggleMovePick(..) | Message::AssignChatProject { .. } | Message::ArchiveChat(..) | Message::UnarchiveChat(..) | Message::ToggleArchived | Message::NavigateProject(..) | Message::QuickSwitchModel(..) | Message::QuickReasoningPicked(..) | Message::LinkClicked(..) | Message::ModePicked(..) | Message::CloseOverlays | Message::RetryLast | Message::ToggleLogExpand | Message::UndoChat | Message::BranchChatFrom(..) | Message::ChatTitleFetched(..) | Message::ChatMsgMenu(..) | Message::CopyMsg(..) | Message::TruncateRequest(..) | Message::ConfirmTruncate | Message::CancelTruncate | Message::ResetSession | Message::ModeAnimTick(..) => handlers::chat::handle(state, message),
-        Message::ShowCreateModal | Message::HideCreateModal | Message::CreateNameChanged(..) | Message::CreatePathChanged(..) | Message::SubmitCreateProject | Message::SubmitCreateProjectSkip | Message::OpenProject | Message::EnterProject(..) | Message::FolderPicked(..) | Message::NewProjectNameChanged(..) | Message::NewProjectPathChanged(..) | Message::CreateProject | Message::CreateProjectSkip | Message::ToggleProjectForm | Message::ToggleProject(..) | Message::ToggleProjectsSection | Message::ToggleLooseChats | Message::ToggleProjectMenu(..) | Message::OpenWorkspaceFolder(..) | Message::DeleteProject(..) | Message::ConfirmDeleteProject | Message::CancelDeleteProject | Message::WorkspacePathChanged(..) | Message::AssignWorkspace(..) | Message::ClearWorkspace(..) | Message::UploadFiles(..) | Message::FilesPicked(..) | Message::DeleteUpload(..) | Message::ConfigDeleteProject(..) | Message::ConfirmConfigDelete | Message::CancelConfigDelete => handlers::projects::handle(state, message),
-        Message::AgentPlan(..) | Message::AgentAnalyze(..) | Message::AgentReanalyze(..) | Message::AgentLlm(..) | Message::AgentExecDone(..) | Message::ApproveTools | Message::DenyTools | Message::DenyToolsRemember | Message::StopAgent | Message::AgentAudit(..) | Message::PlanDone(..) | Message::ExecutePlan | Message::DismissPlan => handlers::agent::handle(state, message),
-        Message::OpenConfig | Message::ConfigBack | Message::ProviderPicked(..) | Message::ApiKeyChanged(..) | Message::BaseUrlChanged(..) | Message::ModelChanged(..) | Message::EditReasoningPicked(..) | Message::TestConnection | Message::TestResult(..) | Message::UseDefaultBaseUrl | Message::UseDefaultModel | Message::ThemePicked(..) | Message::AccentPicked(..) | Message::TextSizePicked(..) | Message::DensityPicked(..) | Message::PermReadToggled(..) | Message::PermWriteToggled(..) | Message::PermBashToggled(..) | Message::PermNetToggled(..) | Message::PermPlannerNetToggled(..) | Message::PermInstallToggled(..) | Message::PermDomainsChanged(..) | Message::PermExtraChanged(..) | Message::SavePermLists | Message::LimitItersPicked(..) | Message::LimitTasksPicked(..) | Message::LimitTimeoutPicked(..) | Message::LimitUploadPicked(..) | Message::LimitReadPicked(..) | Message::LimitTokensPicked(..) | Message::LimitHistoryPicked(..) | Message::LimitFixCyclesPicked(..) | Message::ConfigTab(..) | Message::OpenModelBrowser | Message::CloseModelBrowser | Message::InitPricing | Message::ModelSearchChanged(..) | Message::ModelPriceFilterPicked(..) | Message::ModelOnlyToolsToggled(..) | Message::ModelSortPriceToggled(..) | Message::RefreshPricing | Message::PricingFetched(..) | Message::LocalModelsFetched(..) | Message::PickModel(..) | Message::ProfilePicked(..) | Message::ProfileNameChanged(..) | Message::ProfileSave | Message::ProfileDelete(..) | Message::ProfileMenuToggled(..) | Message::ProfileEdit(..) | Message::ProfileEditCancel | Message::ProfileEditNameChanged(..) | Message::ProfileEditProviderPicked(..) | Message::ProfileEditApiChanged(..) | Message::ProfileEditBaseChanged(..) | Message::ProfileEditModelChanged(..) | Message::ProfileEditReasoningPicked(..) | Message::ProfileUpdate | Message::StackUseToggled(..) | Message::StackShareLocalToggled(..) | Message::StackShareCloudToggled(..) | Message::IdentityNameChanged(..) | Message::IdentityEmailChanged(..) | Message::IdentitySave | Message::SkillsReload | Message::SkillsDelete(..) | Message::GitEnabledToggled(..) | Message::GitAutoInitToggled(..) | Message::GitBranchModePicked(..) | Message::GitAutonomyPicked(..) | Message::GitPushToggled(..) | Message::GitBaseBranchChanged(..) | Message::GitWorkBranchChanged(..) | Message::GitRemoteChanged(..) | Message::GitPushBranchChanged(..) | Message::GitAuthorNameChanged(..) | Message::GitAuthorEmailChanged(..) | Message::GitSave | Message::GitRefreshStatus | Message::GitInitWorkspace | Message::GitInitDone(..) | Message::GitPushDone(..) => handlers::config::handle(state, message),
-        Message::QNext | Message::QBack | Message::QCancel | Message::QLevelPicked(..) | Message::QLevelConfirm | Message::QNombreChanged(..) | Message::QDescChanged(..) | Message::QObjChanged(..) | Message::QUsoPrevistoChanged(..) | Message::QPublicoChanged(..) | Message::QFuncChanged(..) | Message::QEstiloPicked(..) | Message::QEstiloFreeChanged(..) | Message::QUiUxChanged(..) | Message::QCatPicked(..) | Message::QSysPicked(..) | Message::QPlataformaToggled(..) | Message::QFacturacionPicked(..) | Message::QLicenciaPicked(..) | Message::QApiStylePicked(..) | Message::QAuthPicked(..) | Message::QTriggerPicked(..) | Message::QSemverPicked(..) | Message::QArchToggled(..) | Message::QStackToggled(..) | Message::QStackFreeChanged(..) | Message::QEndpointsChanged(..) | Message::QEscalaChanged(..) | Message::QApiPublicaChanged(..) |         Message::QEjemplosChanged(..) | Message::QArranqueChanged(..) | Message::QCompatChanged(..) | Message::QInputsChanged(..) | Message::QIdempotenciaChanged(..) | Message::QDatasetChanged(..) | Message::QPipelineChanged(..) |         Message::QModeloEvalChanged(..) | Message::QSintaxisChanged(..) | Message::QToolchainChanged(..) | Message::QSyscallsChanged(..) | Message::QHostApiChanged(..) | Message::QOssRepoChanged(..) | Message::QOssGobiernoChanged(..) | Message::QOssContribChanged(..) |         Message::QAiAnswerChanged(..) | Message::QAiGenerate | Message::QAiGenerated(..) | Message::QAiFocusCycle(..) | Message::FinishQuestionnaire | Message::GenDone(..) | Message::GenCancel => handlers::questionnaire::handle(state, message),
-        Message::OpenStack | Message::StackBack | Message::StackQueryChanged(..) | Message::StackTagsChanged(..) | Message::StackSearch | Message::StackSelect(..) | Message::StackSaveTitleChanged(..) | Message::StackSaveTagsChanged(..) | Message::StackSaveLangChanged(..) | Message::StackSaveLicensePicked(..) | Message::StackSaveCodeChanged(..) | Message::StackSave | Message::StackOpinionChanged(..) | Message::StackRate(..) | Message::StackCopyToWs | Message::StackAskAgent | Message::StackBugChanged(..) | Message::StackReportBug => handlers::stack::handle(state, message),
+        Message::GoChat | Message::GoHome | Message::ExitApp | Message::DismissOnboarding => {
+            handlers::navigation::handle(state, message)
+        }
+        Message::InputChanged(..)
+        | Message::SendPressed
+        | Message::StreamChunk(..)
+        | Message::StreamUsage(..)
+        | Message::StreamDone(..)
+        | Message::StreamError(..)
+        | Message::NewChat
+        | Message::NewChatInProject(..)
+        | Message::SelectChat(..)
+        | Message::DeleteChat(..)
+        | Message::ConfirmDeleteChat
+        | Message::CancelDelete
+        | Message::ToggleChatMenu(..)
+        | Message::ToggleMovePick(..)
+        | Message::AssignChatProject { .. }
+        | Message::ArchiveChat(..)
+        | Message::UnarchiveChat(..)
+        | Message::ToggleArchived
+        | Message::NavigateProject(..)
+        | Message::QuickSwitchModel(..)
+        | Message::QuickReasoningPicked(..)
+        | Message::LinkClicked(..)
+        | Message::ModePicked(..)
+        | Message::CloseOverlays
+        | Message::RetryLast
+        | Message::ToggleLogExpand
+        | Message::UndoChat
+        | Message::BranchChatFrom(..)
+        | Message::ChatTitleFetched(..)
+        | Message::ChatMsgMenu(..)
+        | Message::CopyMsg(..)
+        | Message::TruncateRequest(..)
+        | Message::ConfirmTruncate
+        | Message::CancelTruncate
+        | Message::ResetSession
+        | Message::ModeAnimTick(..) => handlers::chat::handle(state, message),
+        Message::ShowCreateModal
+        | Message::HideCreateModal
+        | Message::CreateNameChanged(..)
+        | Message::CreatePathChanged(..)
+        | Message::SubmitCreateProject
+        | Message::SubmitCreateProjectSkip
+        | Message::OpenProject
+        | Message::EnterProject(..)
+        | Message::FolderPicked(..)
+        | Message::NewProjectNameChanged(..)
+        | Message::NewProjectPathChanged(..)
+        | Message::CreateProject
+        | Message::CreateProjectSkip
+        | Message::ToggleProjectForm
+        | Message::ToggleProject(..)
+        | Message::ToggleProjectsSection
+        | Message::ToggleLooseChats
+        | Message::ToggleProjectMenu(..)
+        | Message::OpenWorkspaceFolder(..)
+        | Message::DeleteProject(..)
+        | Message::ConfirmDeleteProject
+        | Message::CancelDeleteProject
+        | Message::WorkspacePathChanged(..)
+        | Message::AssignWorkspace(..)
+        | Message::ClearWorkspace(..)
+        | Message::UploadFiles(..)
+        | Message::FilesPicked(..)
+        | Message::DeleteUpload(..)
+        | Message::UploadsDone(..)
+        | Message::ProjectTrashed(..)
+        | Message::ConfigDeleteProject(..)
+        | Message::ConfirmConfigDelete
+        | Message::CancelConfigDelete => handlers::projects::handle(state, message),
+        Message::AgentPlan(..)
+        | Message::AgentAnalyze(..)
+        | Message::AgentReanalyze(..)
+        | Message::AgentLlm(..)
+        | Message::AgentExecDone(..)
+        | Message::ApproveTools
+        | Message::DenyTools
+        | Message::DenyToolsRemember
+        | Message::StopAgent
+        | Message::AgentAudit(..)
+        | Message::PlanDone(..)
+        | Message::ExecutePlan
+        | Message::DismissPlan => handlers::agent::handle(state, message),
+        Message::OpenConfig
+        | Message::ConfigBack
+        | Message::ProviderPicked(..)
+        | Message::ApiKeyChanged(..)
+        | Message::BaseUrlChanged(..)
+        | Message::ModelChanged(..)
+        | Message::EditReasoningPicked(..)
+        | Message::TestConnection
+        | Message::TestResult(..)
+        | Message::UseDefaultBaseUrl
+        | Message::UseDefaultModel
+        | Message::ThemePicked(..)
+        | Message::AccentPicked(..)
+        | Message::TextSizePicked(..)
+        | Message::DensityPicked(..)
+        | Message::PermReadToggled(..)
+        | Message::PermWriteToggled(..)
+        | Message::PermBashToggled(..)
+        | Message::PermNetToggled(..)
+        | Message::PermPlannerNetToggled(..)
+        | Message::PermInstallToggled(..)
+        | Message::PermDomainsChanged(..)
+        | Message::PermExtraChanged(..)
+        | Message::SavePermLists
+        | Message::LimitItersPicked(..)
+        | Message::LimitTasksPicked(..)
+        | Message::LimitTimeoutPicked(..)
+        | Message::LimitUploadPicked(..)
+        | Message::LimitReadPicked(..)
+        | Message::LimitTokensPicked(..)
+        | Message::LimitHistoryPicked(..)
+        | Message::LimitFixCyclesPicked(..)
+        | Message::ConfigTab(..)
+        | Message::OpenModelBrowser
+        | Message::CloseModelBrowser
+        | Message::InitPricing
+        | Message::ModelSearchChanged(..)
+        | Message::ModelPriceFilterPicked(..)
+        | Message::ModelOnlyToolsToggled(..)
+        | Message::ModelSortPriceToggled(..)
+        | Message::RefreshPricing
+        | Message::PricingFetched(..)
+        | Message::LocalModelsFetched(..)
+        | Message::PickModel(..)
+        | Message::ProfilePicked(..)
+        | Message::ProfileNameChanged(..)
+        | Message::ProfileSave
+        | Message::ProfileDelete(..)
+        | Message::ProfileMenuToggled(..)
+        | Message::ProfileEdit(..)
+        | Message::ProfileEditCancel
+        | Message::ProfileEditNameChanged(..)
+        | Message::ProfileEditProviderPicked(..)
+        | Message::ProfileEditApiChanged(..)
+        | Message::ProfileEditBaseChanged(..)
+        | Message::ProfileEditModelChanged(..)
+        | Message::ProfileEditReasoningPicked(..)
+        | Message::ProfileUpdate
+        | Message::StackUseToggled(..)
+        | Message::StackShareLocalToggled(..)
+        | Message::StackShareCloudToggled(..)
+        | Message::IdentityNameChanged(..)
+        | Message::IdentityEmailChanged(..)
+        | Message::IdentitySave
+        | Message::SkillsReload
+        | Message::SkillsDelete(..)
+        | Message::GitEnabledToggled(..)
+        | Message::GitAutoInitToggled(..)
+        | Message::GitBranchModePicked(..)
+        | Message::GitAutonomyPicked(..)
+        | Message::GitPushToggled(..)
+        | Message::GitBaseBranchChanged(..)
+        | Message::GitWorkBranchChanged(..)
+        | Message::GitRemoteChanged(..)
+        | Message::GitPushBranchChanged(..)
+        | Message::GitAuthorNameChanged(..)
+        | Message::GitAuthorEmailChanged(..)
+        | Message::GitSave
+        | Message::GitRefreshStatus
+        | Message::GitInitWorkspace
+        | Message::GitInitDone(..)
+        | Message::GitPushDone(..)
+        | Message::GitStatusFetched(..)
+        | Message::GitCommitDone(..) => handlers::config::handle(state, message),
+        Message::QNext
+        | Message::QBack
+        | Message::QCancel
+        | Message::QLevelPicked(..)
+        | Message::QLevelConfirm
+        | Message::QNombreChanged(..)
+        | Message::QDescChanged(..)
+        | Message::QObjChanged(..)
+        | Message::QUsoPrevistoChanged(..)
+        | Message::QPublicoChanged(..)
+        | Message::QFuncChanged(..)
+        | Message::QEstiloPicked(..)
+        | Message::QEstiloFreeChanged(..)
+        | Message::QUiUxChanged(..)
+        | Message::QCatPicked(..)
+        | Message::QSysPicked(..)
+        | Message::QPlataformaToggled(..)
+        | Message::QFacturacionPicked(..)
+        | Message::QLicenciaPicked(..)
+        | Message::QApiStylePicked(..)
+        | Message::QAuthPicked(..)
+        | Message::QTriggerPicked(..)
+        | Message::QSemverPicked(..)
+        | Message::QArchToggled(..)
+        | Message::QStackToggled(..)
+        | Message::QStackFreeChanged(..)
+        | Message::QEndpointsChanged(..)
+        | Message::QEscalaChanged(..)
+        | Message::QApiPublicaChanged(..)
+        | Message::QEjemplosChanged(..)
+        | Message::QArranqueChanged(..)
+        | Message::QCompatChanged(..)
+        | Message::QInputsChanged(..)
+        | Message::QIdempotenciaChanged(..)
+        | Message::QDatasetChanged(..)
+        | Message::QPipelineChanged(..)
+        | Message::QModeloEvalChanged(..)
+        | Message::QSintaxisChanged(..)
+        | Message::QToolchainChanged(..)
+        | Message::QSyscallsChanged(..)
+        | Message::QHostApiChanged(..)
+        | Message::QOssRepoChanged(..)
+        | Message::QOssGobiernoChanged(..)
+        | Message::QOssContribChanged(..)
+        | Message::QAiAnswerChanged(..)
+        | Message::QAiGenerate
+        | Message::QAiGenerated(..)
+        | Message::QAiFocusCycle(..)
+        | Message::FinishQuestionnaire
+        | Message::GenDone(..)
+        | Message::GenCancel => handlers::questionnaire::handle(state, message),
+        Message::OpenStack
+        | Message::StackBack
+        | Message::StackQueryChanged(..)
+        | Message::StackTagsChanged(..)
+        | Message::StackSearch
+        | Message::StackSelect(..)
+        | Message::StackSaveTitleChanged(..)
+        | Message::StackSaveTagsChanged(..)
+        | Message::StackSaveLangChanged(..)
+        | Message::StackSaveLicensePicked(..)
+        | Message::StackSaveCodeChanged(..)
+        | Message::StackSave
+        | Message::StackOpinionChanged(..)
+        | Message::StackRate(..)
+        | Message::StackCopyToWs
+        | Message::StackAskAgent
+        | Message::StackBugChanged(..)
+        | Message::StackReportBug => handlers::stack::handle(state, message),
     }
 }
-
 
 pub(crate) fn view(state: &App) -> Element<'_, Message> {
     // Red de seguridad: un panic al dibujar muestra un aviso en vez de
@@ -62,7 +292,8 @@ pub(crate) fn view(state: &App) -> Element<'_, Message> {
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| view_inner(state))) {
         Ok(el) => el,
         Err(_) => iced::widget::container(
-            iced::widget::text("Error al dibujar esta vista. Vuelve al Inicio o reinicia la app.").size(14),
+            iced::widget::text("Error al dibujar esta vista. Vuelve al Inicio o reinicia la app.")
+                .size(14),
         )
         .width(iced::Fill)
         .height(iced::Fill)
@@ -102,16 +333,28 @@ fn view_inner(state: &App) -> Element<'_, Message> {
 fn view_main(state: &App) -> Element<'_, Message> {
     use iced::widget::{container, row};
     row![
-        container(views::sidebar::view_sidebar(state)).width(330).height(iced::Fill).style(
-            |t: &Theme| crate::ui::design::sidebar(t)
-        ),
-        container(views::chat::view_chat(state)).width(iced::Fill).height(iced::Fill),
+        container(views::sidebar::view_sidebar(state))
+            .width(330)
+            .height(iced::Fill)
+            .style(|t: &Theme| crate::ui::design::sidebar(t)),
+        container(views::chat::view_chat(state))
+            .width(iced::Fill)
+            .height(iced::Fill),
     ]
     .spacing(0)
     .into()
 }
 
 fn main() -> iced::Result {
+    // Observabilidad mínima v0.9.5: `tracing` (stderr, nivel WARN por
+    // defecto, `RUST_LOG` lo ajusta). Sin telemetría ni backend.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .try_init();
+    tracing::info!("ARQHIA arranca");
     iced::application("ARQHIA", update, view)
         .theme(views::app_theme)
         .subscription(subscription)
@@ -124,10 +367,7 @@ fn main() -> iced::Result {
 /// `Ctrl+N` nuevo chat, `Ctrl+1/2/3` modos, `Ctrl+O` abrir proyecto,
 /// `Ctrl+,` configuración, `Esc` cerrar menús.
 fn subscription(_state: &App) -> iced::Subscription<Message> {
-    iced::Subscription::batch([
-        iced::keyboard::on_key_press(key_shortcut),
-        init_pricing(),
-    ])
+    iced::Subscription::batch([iced::keyboard::on_key_press(key_shortcut), init_pricing()])
 }
 
 /// One-shot al arrancar: si el catálogo de modelos está vacío, se descarga.
@@ -135,10 +375,7 @@ fn init_pricing() -> iced::Subscription<Message> {
     iced::Subscription::run(|| futures::stream::once(async { Message::InitPricing }))
 }
 
-fn key_shortcut(
-    key: iced::keyboard::Key,
-    mods: iced::keyboard::Modifiers,
-) -> Option<Message> {
+fn key_shortcut(key: iced::keyboard::Key, mods: iced::keyboard::Modifiers) -> Option<Message> {
     use iced::keyboard::{Key, key::Named};
     if key == Key::Named(Named::Escape) {
         return Some(Message::CloseOverlays);
@@ -168,7 +405,7 @@ fn key_shortcut(
 
 #[cfg(test)]
 mod tests {
-    use super::{key_shortcut, Message};
+    use super::{Message, key_shortcut};
     use crate::app::projects::trash_dir;
     #[test]
     fn trash_moves_dir_and_keeps_files() {
@@ -242,20 +479,36 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_shortcuts_map_to_messages() {        use iced::keyboard::{Key, Modifiers, key::Named};
+    fn keyboard_shortcuts_map_to_messages() {
         use crate::db::Mode;
+        use iced::keyboard::{Key, Modifiers, key::Named};
         let ctrl = Modifiers::CTRL;
         let none = Modifiers::empty();
         // Los 5 atajos v0.7.1 (sin Tab: colisiona con el foco).
-        assert!(matches!(key_shortcut(Key::Character("n".into()), ctrl), Some(Message::NewChat)));
-        assert!(matches!(key_shortcut(Key::Character("o".into()), ctrl), Some(Message::OpenProject)));
-        assert!(matches!(key_shortcut(Key::Character(",".into()), ctrl), Some(Message::OpenConfig)));
+        assert!(matches!(
+            key_shortcut(Key::Character("n".into()), ctrl),
+            Some(Message::NewChat)
+        ));
+        assert!(matches!(
+            key_shortcut(Key::Character("o".into()), ctrl),
+            Some(Message::OpenProject)
+        ));
+        assert!(matches!(
+            key_shortcut(Key::Character(",".into()), ctrl),
+            Some(Message::OpenConfig)
+        ));
         assert!(matches!(
             key_shortcut(Key::Character("2".into()), ctrl),
             Some(Message::ModePicked(Mode::Plan))
         ));
-        assert!(matches!(key_shortcut(Key::Character("1".into()), ctrl), Some(Message::ModePicked(Mode::Chat))));
-        assert!(matches!(key_shortcut(Key::Character("3".into()), ctrl), Some(Message::ModePicked(Mode::Work))));
+        assert!(matches!(
+            key_shortcut(Key::Character("1".into()), ctrl),
+            Some(Message::ModePicked(Mode::Chat))
+        ));
+        assert!(matches!(
+            key_shortcut(Key::Character("3".into()), ctrl),
+            Some(Message::ModePicked(Mode::Work))
+        ));
         assert!(matches!(
             key_shortcut(Key::Named(Named::Escape), none),
             Some(Message::CloseOverlays)

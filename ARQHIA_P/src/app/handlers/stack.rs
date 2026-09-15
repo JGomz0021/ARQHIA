@@ -5,9 +5,9 @@
 
 use iced::Task;
 
-use crate::app::state::App;
 use crate::app::Message;
 use crate::app::View;
+use crate::app::state::App;
 use crate::stack;
 
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
@@ -171,7 +171,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join("-");
-            let slug = if slug.is_empty() { "snippet".to_string() } else { slug };
+            let slug = if slug.is_empty() {
+                "snippet".to_string()
+            } else {
+                slug
+            };
             let ext = match sel.lang.trim().to_lowercase().as_str() {
                 "rust" => "rs",
                 "python" => "py",
@@ -182,7 +186,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             };
             let dest = ws.join(format!("{slug}.{ext}"));
             if dest.exists() {
-                state.stack_status = format!("Ya existe {}: cámbiale el nombre primero.", dest.display());
+                state.stack_status =
+                    format!("Ya existe {}: cámbiale el nombre primero.", dest.display());
                 return Task::none();
             }
             match std::fs::write(&dest, &sel.code) {
@@ -244,6 +249,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn stack_panel_opens_searches_and_returns() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-stack_panel_op");
         let mut app = App::default();
         // Abrir guarda el origen y Volver lo restaura.
         app.view = View::Chat;
@@ -275,6 +281,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn stack_save_rate_bug_cycle_with_consent() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-stack_save_rat");
         let mut app = App::default();
         app.config.stack_consent.share_local = true;
         app.view = View::Stack;
@@ -314,6 +321,7 @@ mod tests {
     #[test]
     #[allow(clippy::field_reassign_with_default)]
     fn ask_agent_prefills_call_with_stack_mention() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-ask_agent_pref");
         let mut app = App::default();
         // Sin selección avisa y no toca el input.
         app.stack_selected = None;

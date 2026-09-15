@@ -347,3 +347,69 @@ Flujo pre-STACK acordado: `petición → orquestador → analista (contexto/spec
 - `agent/mod.rs`: `llm_step_openai/anthropic` anexan schemas MCP si hay servidores (collect con cache, fallback a nativos si cae); `AGENTS_TEMPLATE` menciona `mcp__*`.
 - `app/orchestrator.rs`: `call_needs_approval` para MCP (Read auto, Install → auto_install, Net → pide) + `spawn_exec_calls` usa `policy_for_with_mcp`.
 - `cargo test` 172/172 OK (3 ignorados), `cargo clippy --all-targets` 0 warnings.
+
+# v0.9.4 — Hardening crítico (🟢 Done)
+
+- `agent/tools.rs`: `resolve` anti-symlink (canonical + ancestro, externo → `⛔ Fuera del workspace (symlink)`); `search` salta symlinks fugados; `bash` sin shell (`split_argv` + `contains_shell_metachars`, `exec` directo por argv[0]); `fetch_url` anti-SSRF + redirects máx 3; tests de symlink/inyección/SSRF.
+- `db.rs`: `PRAGMA foreign_keys=ON`, FKs en DDL nuevo, `idx_messages_chat/idx_chats_project/idx_projects_name_unique NOCASE` (dedup previo), `meta.schema_version='1'`, limpieza de huérfanos, `delete_project` = suelta (SET NULL), `add_column` tolerante a carreras.
+- `stack/mod.rs::save` en tx IMMEDIATE.
+- `paths.rs` nuevo (`directories::ProjectDirs` + `ARQHIA_HOME` override); migran `db/config/pricing/skills/papelera/projects_base` + `~/`; `config.save()` con `600` en Unix (test).
+- `import.rs`: `has_build_rs` + aviso en banner + test.
+- Tests aislados: `db::test_guard::with_test_db` (lock + tempdir); migrados `db/stack/skills/seed/handlers`; guarda `tests_do_not_touch_real_db`.
+- `cargo test` 189/189 OK (3 ignorados) ×2 seguidas, `cargo clippy --all-targets` 0 warnings.
+- Docs: `VERSIONS.md` v0.9.4 🟢, `VERSIONS/v0.9.4.md` (Estado Done), `PROJECT.md` (§3 `paths.rs`, §13 siguiente v0.9.5).
+
+# Fix fantasmas de tests + borrado imborrable (sin cambio de versión)
+
+- Causa: ~20 tests llamaban a `App::default()` (→ `db::init/connect`) sin
+  guarda; con `ARQHIA_HOME` sin fijar caían en la DB real y dejaban filas
+  (`qgen-tmp-cancel`, `qcancel-tmp-xyz`). Además `remove_project_everywhere`
+  abortaba si la papelera fallaba (carpeta de `/tmp` ya borrada) y el
+  fantasma no se podía borrar desde la UI.
+- Arreglo:
+  - `paths.rs`: en builds de test, sin override, todo va a
+    `temp/arqhia-cargo-test-{pid}` (`data/config/projects_base/home_dir`);
+    ningún test —con o sin guarda— toca el home real. Verificado: `cargo
+    test` deja `projects` de la DB real intacta (3 filas antes y después).
+  - `app/projects.rs`: si la carpeta no existe, la DB se borra igual
+    (`sin carpeta`); `trash_dir` avisa `ya no existe`. Los 2 fantasmas
+    actuales ya se pueden borrar desde la UI con este binario.
+  - Tests: `ghost_project_without_folder_deletes_from_db` +
+    `trash_missing_dir_reports_clearly`; `test_guard::lock()` compartido
+    con el test de `paths`.
+- `cargo test` 192/192 OK (3 ignorados) ×2, `cargo clippy --all-targets` 0 warnings.
+
+# v0.9.5 — Calidad estructural (🟢 Done)
+
+- `app/history.rs` (nuevo): `ChatHistory` puro con push/pop/clear/truncate
+  atómicos + tests (10 ciclos undo/rama alineados); `App::history_*`
+  delegan (push del turno, placeholder y ExecutePlan migrados).
+- `orchestrator.rs`: `run_fix_cycle`/`count_temp_issues`/`reanalyze_prompt`/
+  `fix_task_desc` puros + test CLEAN/Fix/CapReached; `handlers/agent.rs`
+  solo despacha (TEMP rotativo con test: dos auditorías, solo queda la última).
+- Split sin comportamiento: `handlers/chat.rs` → `chat_stream.rs` +
+  `chat_history.rs`; `views/config_view.rs` → `config_api.rs` + `config_git.rs`.
+  `dispatch_routes_every_group` verde.
+- Git async: `workspace_status_async`/`commit_all_async`/`diff_stat_async`/
+  `current_branch_async` (`tokio::process`); `GitStatusFetched`/`GitCommitDone`
+  en background (cierre encadena push); auditor y policy usan async; sync
+  redundantes eliminados. Test repo 1000 archivos async==sync acotado.
+- Uso: `usage_stats_id`/`usage_tools_id` + backfill + vista compat
+  `usage_stats_names`; `record_tool_call_cat` y `usage_bump` en tx (nombre+id).
+- FS pesado a `spawn_blocking`: `code_outlines_async`,
+  `read_context_docs_async`, `context_block_async` (analista con `join!`),
+  `scan_import_async` + test de equivalencia.
+- Docs: `README.md` útil (quickstart, rutas, `cargo test`), `ARQHIA_P/docs/`
+  (ARCHITECTURE/CONFIG/SECURITY + 4 ADRs); `PROJECT.md §3` solo archivos
+  reales (futuros a ROADMAP).
+- `tracing` mínimo (panic guard + E2E a `info/warn`, subscriber en `main`);
+  `tokio` slim (`rt-multi-thread, macros, fs, process, time, sync, io-*`).
+- `cargo test` 200/200 OK (3 ignorados), `cargo clippy --all-targets` 0
+  warnings, `cargo fmt --check` OK.
+- Pendiente en GUI: Work con repo grande responde durante status/commit;
+  `/skill code-review` cita ChatHistory/symlink (test de inyección).
+
+# Siguiente paso (actualizado)
+
+- **v0.9.5 🟢 Done.** Siguiente: **v0.9.6** (revisión + icono + instalador,
+  puerta de v1.0) → WEB → v1.0 → v1.0.1 → v1.1 → v1.2.

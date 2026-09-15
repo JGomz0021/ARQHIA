@@ -71,34 +71,39 @@ Código fuente de ARQHIA vive en `ARQHIA_P/` en la raíz del repo:
 
 ```
 ARQHIA_P/
-├── Cargo.toml
+├── Cargo.toml           # tokio slim + tracing (v0.9.5)
+├── README.md → ver raíz  # quickstart en /README.md (v0.9.5)
+├── docs/                # ARCHITECTURE.md, CONFIG.md, SECURITY.md, adr/ (v0.9.5)
 └── src/
     ├── main.rs            # shell: update/view guards + iced::application
     ├── app/
     │   ├── events.rs      # Message / View / ConfigTab (solo datos)
-    │   ├── state.rs       # App + carga inicial + helpers puros
+    │   ├── state.rs       # App + carga inicial + history_* atómicos (v0.9.5)
+    │   ├── history.rs     # ChatHistory alineado + tests (v0.9.5)
     │   ├── projects.rs    # crear / papelera / borrado total (SQLite + FS)
-    │   ├── orchestrator.rs# driver planner → workers → auditor
+    │   ├── orchestrator.rs# driver planner → workers → auditor + run_fix_cycle (v0.9.5)
     │   └── handlers/      # brazos de update por dominio
-    │       └── {navigation,chat,projects,agent,config,questionnaire}.rs
-    ├── views/             # render puro (home, sidebar, chat, questionnaire, config_view, stack)
+    │       └── {navigation,chat,chat_stream,chat_history,projects,agent,config,questionnaire,stack}.rs  # splits v0.9.5
+    ├── views/             # render puro (home, sidebar, chat, questionnaire, config_view, config_api, config_git, stack)
     ├── ui/                # design tokens + componentes (design.rs, components.rs)
     ├── config.rs          # providers + tema + permisos + git + cuenta/licencia (toml)
-    ├── db.rs              # SQLite (chats + archived, projects, messages, stack)
+    ├── db.rs              # SQLite (chats, projects, messages, stack, uso por project_id v0.9.5)
     ├── titles.rs          # helpers de títulos (puro)
-    ├── workspace.rs       # guards + uploads + context_block + snapshot (v1.1)
-    ├── git.rs             # repo/rama/commit/push por workspace (v0.7.2)
-    ├── updates.rs         # updater embebido (v1.0): latest.json + semver + banner
-    ├── stack/{mod.rs, seed.rs}   # STACK local: FTS5 + seed + legal (v0.9; cloud.rs/mock_cloud.rs en v1.0)
+    ├── workspace.rs       # guards + uploads + context_block (+ async v0.9.5)
+    ├── paths.rs           # datos/config/home vía `directories` (v0.9.4)
+    ├── git.rs             # repo/rama/commit/push async (v0.7.2, async v0.9.5)
+    ├── stack/{mod.rs, seed.rs}   # STACK local: FTS5 + seed + legal (v0.9)
     ├── skills.rs + skills/embebidas/  # skills locales: SKILL.md + /skill + pestaña Config (v0.9 Track C)
     ├── mcp.rs             # cliente MCP stdio/HTTP + tools `mcp__*` (mínimo v0.9.3, resources/prompts en v1.0.1)
-    ├── license.rs         # licencias ed25519 + planes (v1.1)
-    ├── custom.rs          # agentes y flujos custom (v1.1)
-    ├── questionnaire/{mod.rs, levels.rs, ai.rs, templates.rs, planning.rs}  # PROJECT.md + SPECS.md + contexto auto (planning.rs v0.9 Track D)
+    ├── questionnaire/{mod.rs, levels.rs, ai.rs, feature.rs, import.rs, templates.rs, planning.rs}  # PROJECT.md + SPECS.md + contexto auto (planning.rs v0.9 Track D)
     ├── llm/{mod.rs, openai.rs, anthropic.rs, openrouter.rs, local.rs}
     ├── pricing.rs         # catálogo de modelos/precios (models.dev) + cache
-    └── agent/{mod.rs, tools.rs, merge.rs}   # merge.rs en v1.1
+    └── agent/{mod.rs, tools.rs, roles.rs}   # 5 roles explícitos (v0.9.1)
 ```
+
+> Solo archivos reales (v0.9.5): lo futuro (`updates.rs`, `license.rs`,
+> `custom.rs`, `agent/merge.rs`, `stack/cloud.rs`, snapshot v1.1, MCP
+> resources/prompts v1.0.1) vive en `ROADMAP.md`, no en este árbol.
 
 Regla de capas: `views/` no toca DB ni red; `handlers/` coordina vía
 `app/` + dominio (`db`, `llm`, `agent`, `workspace`); los providers y las
@@ -421,4 +426,4 @@ Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en
 
 ## 13. Próximo Paso
 
-**v0.9.1 y v0.9.2 🟢 Done** (ver `CONTEXT/VERSIONS/`). Siguiente, en orden: **v0.9.3** (MCP mínimo) → **v0.9.4** (hardening crítico, auditoría) → **v0.9.5** (calidad estructural, auditoría) → **v0.9.6** (revisión + icono + instalador, puerta de v1.0) → WEB → **v1.0** (incluye **workers async §F**) → **v1.0.1** (MCP avanzado) → v1.1 (sandboxes + merge sobre el paralelo v1.0) → v1.2. Ver `HECHO.md` para estado actual.
+**v0.9.1 – v0.9.5 🟢 Done** (ver `CONTEXT/VERSIONS/`). Siguiente, en orden: **v0.9.6** (revisión + icono + instalador, puerta de v1.0) → WEB → **v1.0** (incluye **workers async §F**) → **v1.0.1** (MCP avanzado) → v1.1 (sandboxes + merge sobre el paralelo v1.0) → v1.2. Ver `HECHO.md` para estado actual.

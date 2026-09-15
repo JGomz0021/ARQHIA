@@ -23,7 +23,13 @@ pub fn mcp_tool_name(server: &str, tool: &str) -> String {
 
 fn sanitize_server(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -54,7 +60,8 @@ pub fn tool_to_openai_schema(server: &str, tool: &McpTool) -> Value {
     if size > SCHEMA_CAP {
         desc.push_str(&format!(" (schema truncado: {size} > 4096)"));
         // Trunca a objeto vacío con aviso para no tragar contexto.
-        schema = json!({"type":"object","properties":{},"description":"schema truncado por tamaño"});
+        schema =
+            json!({"type":"object","properties":{},"description":"schema truncado por tamaño"});
     }
     // Anthropic/OpenAI both need properties.
     let params = if schema.is_object() && schema.get("type").is_some() {
@@ -104,14 +111,21 @@ fn cache_lock() -> &'static Mutex<HashMap<String, CacheEntry>> {
 fn cache_get(server: &str) -> Option<Vec<McpTool>> {
     let m = cache_lock().lock().ok()?;
     if let Some(e) = m.get(server)
-        && e.at.elapsed() < Duration::from_secs(300) {
-            return Some(e.tools.clone());
-        }
+        && e.at.elapsed() < Duration::from_secs(300)
+    {
+        return Some(e.tools.clone());
+    }
     None
 }
 fn cache_put(server: &str, tools: Vec<McpTool>) {
     if let Ok(mut m) = cache_lock().lock() {
-        m.insert(server.to_string(), CacheEntry { tools, at: Instant::now() });
+        m.insert(
+            server.to_string(),
+            CacheEntry {
+                tools,
+                at: Instant::now(),
+            },
+        );
     }
 }
 #[cfg(test)]
@@ -132,16 +146,32 @@ fn rpc_notify(method: &str, params: Value) -> String {
 }
 
 fn parse_tools_from_result(v: &Value) -> Vec<McpTool> {
-    let arr = v.get("tools").and_then(|x| x.as_array()).cloned().unwrap_or_default();
+    let arr = v
+        .get("tools")
+        .and_then(|x| x.as_array())
+        .cloned()
+        .unwrap_or_default();
     arr.into_iter()
         .filter_map(|t| {
             let name = t.get("name")?.as_str()?.to_string();
             if name.trim().is_empty() {
                 return None;
             }
-            let desc = t.get("description").and_then(|d| d.as_str()).unwrap_or("").to_string();
-            let schema = t.get("inputSchema").or_else(|| t.get("input_schema")).cloned().unwrap_or(json!({"type":"object"}));
-            Some(McpTool { name, description: desc, input_schema: schema })
+            let desc = t
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("")
+                .to_string();
+            let schema = t
+                .get("inputSchema")
+                .or_else(|| t.get("input_schema"))
+                .cloned()
+                .unwrap_or(json!({"type":"object"}));
+            Some(McpTool {
+                name,
+                description: desc,
+                input_schema: schema,
+            })
         })
         .collect()
 }
@@ -151,7 +181,16 @@ fn parse_call_result(v: &Value) -> String {
     if let Some(content) = v.get("content").and_then(|c| c.as_array()) {
         let parts: Vec<String> = content
             .iter()
-            .filter_map(|b| b.get("text").and_then(|t| t.as_str()).map(|s| s.to_string()).or_else(|| b.get("content").and_then(|c| c.as_str()).map(|s| s.to_string())))
+            .filter_map(|b| {
+                b.get("text")
+                    .and_then(|t| t.as_str())
+                    .map(|s| s.to_string())
+                    .or_else(|| {
+                        b.get("content")
+                            .and_then(|c| c.as_str())
+                            .map(|s| s.to_string())
+                    })
+            })
             .collect();
         if !parts.is_empty() {
             return parts.join("\n");
@@ -180,7 +219,10 @@ pub async fn list_tools_stdio(server: &str, cfg: &McpServerConfig) -> Result<Vec
             Ok(tools)
         }
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!("MCP {server}: timeout tras {}s (tools/list)", cfg.timeout_s)),
+        Err(_) => Err(format!(
+            "MCP {server}: timeout tras {}s (tools/list)",
+            cfg.timeout_s
+        )),
     }
 }
 
@@ -219,7 +261,8 @@ async fn list_tools_stdio_inner(cfg: &McpServerConfig) -> Result<Vec<McpTool>, S
             .map_err(|_| "timeout initialize".to_string())?
             .map_err(|e| e.to_string())?
             .ok_or("MCP cerró stdout en initialize")?;
-        let cand: Value = serde_json::from_str(&line).map_err(|e| format!("JSON initialize: {e}"))?;
+        let cand: Value =
+            serde_json::from_str(&line).map_err(|e| format!("JSON initialize: {e}"))?;
         if cand.get("id").and_then(|x| x.as_u64()) == Some(1) {
             v = cand;
             break;
@@ -234,7 +277,9 @@ async fn list_tools_stdio_inner(cfg: &McpServerConfig) -> Result<Vec<McpTool>, S
         return Err(format!("MCP initialize error: {}", v["error"]));
     }
     // notifications/initialized
-    let _ = stdin.write_all(rpc_notify("notifications/initialized", json!({})).as_bytes()).await;
+    let _ = stdin
+        .write_all(rpc_notify("notifications/initialized", json!({})).as_bytes())
+        .await;
     let _ = stdin.flush().await;
 
     // tools/list
@@ -251,7 +296,8 @@ async fn list_tools_stdio_inner(cfg: &McpServerConfig) -> Result<Vec<McpTool>, S
             .map_err(|_| "timeout tools/list".to_string())?
             .map_err(|e| e.to_string())?
             .ok_or("MCP cerró stdout en tools/list")?;
-        let cand: Value = serde_json::from_str(&line2).map_err(|e| format!("JSON tools/list: {e}"))?;
+        let cand: Value =
+            serde_json::from_str(&line2).map_err(|e| format!("JSON tools/list: {e}"))?;
         if cand.get("id").and_then(|x| x.as_u64()) == Some(2) {
             v2 = cand;
             break;
@@ -274,7 +320,11 @@ async fn list_tools_stdio_inner(cfg: &McpServerConfig) -> Result<Vec<McpTool>, S
 }
 
 /// Llama a una tool vía stdio.
-pub async fn call_tool_stdio(cfg: &McpServerConfig, tool: &str, args: Value) -> Result<String, String> {
+pub async fn call_tool_stdio(
+    cfg: &McpServerConfig,
+    tool: &str,
+    args: Value,
+) -> Result<String, String> {
     if cfg.command.trim().is_empty() {
         return Err("MCP stdio: command vacío".to_string());
     }
@@ -286,7 +336,11 @@ pub async fn call_tool_stdio(cfg: &McpServerConfig, tool: &str, args: Value) -> 
     }
 }
 
-async fn call_tool_stdio_inner(cfg: &McpServerConfig, tool: &str, args: Value) -> Result<String, String> {
+async fn call_tool_stdio_inner(
+    cfg: &McpServerConfig,
+    tool: &str,
+    args: Value,
+) -> Result<String, String> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 
     // Para tools/call repetimos initialize (stateless per call para simplicidad).
@@ -315,16 +369,21 @@ async fn call_tool_stdio_inner(cfg: &McpServerConfig, tool: &str, args: Value) -
     stdin.flush().await.map_err(|e| e.to_string())?;
     // consume initialize response (id 1) ignoring others
     for _ in 0..5 {
-        if let Ok(Ok(Some(line))) = tokio::time::timeout(Duration::from_secs(8), reader.next_line()).await {
+        if let Ok(Ok(Some(line))) =
+            tokio::time::timeout(Duration::from_secs(8), reader.next_line()).await
+        {
             if let Ok(v) = serde_json::from_str::<Value>(&line)
-                && v.get("id").and_then(|x| x.as_u64()) == Some(1) {
-                    break;
-                }
+                && v.get("id").and_then(|x| x.as_u64()) == Some(1)
+            {
+                break;
+            }
         } else {
             break;
         }
     }
-    let _ = stdin.write_all(rpc_notify("notifications/initialized", json!({})).as_bytes()).await;
+    let _ = stdin
+        .write_all(rpc_notify("notifications/initialized", json!({})).as_bytes())
+        .await;
     let _ = stdin.flush().await;
 
     // tools/call
@@ -387,7 +446,10 @@ pub async fn list_tools_http(server: &str, cfg: &McpServerConfig) -> Result<Vec<
             Ok(tools)
         }
         Ok(Err(e)) => Err(e),
-        Err(_) => Err(format!("MCP {server} http: timeout tras {}s", cfg.timeout_s)),
+        Err(_) => Err(format!(
+            "MCP {server} http: timeout tras {}s",
+            cfg.timeout_s
+        )),
     }
 }
 
@@ -408,7 +470,10 @@ async fn list_tools_http_inner(cfg: &McpServerConfig) -> Result<Vec<McpTool>, St
     if !resp.status().is_success() {
         let st = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(format!("MCP http {st}: {}", txt.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "MCP http {st}: {}",
+            txt.chars().take(300).collect::<String>()
+        ));
     }
     let text = resp.text().await.map_err(|e| e.to_string())?;
     // Puede venir como JSON directo o SSE `data: {...}`
@@ -424,7 +489,11 @@ async fn list_tools_http_inner(cfg: &McpServerConfig) -> Result<Vec<McpTool>, St
     Ok(parse_tools_from_result(&result))
 }
 
-pub async fn call_tool_http(cfg: &McpServerConfig, tool: &str, args: Value) -> Result<String, String> {
+pub async fn call_tool_http(
+    cfg: &McpServerConfig,
+    tool: &str,
+    args: Value,
+) -> Result<String, String> {
     if cfg.url.trim().is_empty() {
         return Err("MCP http: url vacía".to_string());
     }
@@ -432,11 +501,18 @@ pub async fn call_tool_http(cfg: &McpServerConfig, tool: &str, args: Value) -> R
     let res = tokio::time::timeout(timeout, call_tool_http_inner(cfg, tool, args)).await;
     match res {
         Ok(r) => r,
-        Err(_) => Err(format!("MCP tool {tool} http: timeout tras {}s", cfg.timeout_s)),
+        Err(_) => Err(format!(
+            "MCP tool {tool} http: timeout tras {}s",
+            cfg.timeout_s
+        )),
     }
 }
 
-async fn call_tool_http_inner(cfg: &McpServerConfig, tool: &str, args: Value) -> Result<String, String> {
+async fn call_tool_http_inner(
+    cfg: &McpServerConfig,
+    tool: &str,
+    args: Value,
+) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(cfg.timeout_s.clamp(5, 120)))
         .build()
@@ -457,7 +533,10 @@ async fn call_tool_http_inner(cfg: &McpServerConfig, tool: &str, args: Value) ->
     if !resp.status().is_success() {
         let st = resp.status();
         let txt = resp.text().await.unwrap_or_default();
-        return Err(format!("MCP http {st}: {}", txt.chars().take(300).collect::<String>()));
+        return Err(format!(
+            "MCP http {st}: {}",
+            txt.chars().take(300).collect::<String>()
+        ));
     }
     let text = resp.text().await.map_err(|e| e.to_string())?;
     let json_str = extract_json_from_sse(&text);
@@ -511,7 +590,11 @@ pub async fn collect_mcp_tools(
 
 /// Busca un McpTool por nombre en el collect.
 #[allow(dead_code)]
-pub fn find_mcp_tool<'a>(collected: &'a HashMap<String, Vec<McpTool>>, server: &str, tool: &str) -> Option<&'a McpTool> {
+pub fn find_mcp_tool<'a>(
+    collected: &'a HashMap<String, Vec<McpTool>>,
+    server: &str,
+    tool: &str,
+) -> Option<&'a McpTool> {
     collected.get(server)?.iter().find(|t| t.name == tool)
 }
 
@@ -523,8 +606,14 @@ mod tests {
     #[test]
     fn mcp_names_parse_and_format() {
         assert_eq!(mcp_tool_name("mi-docs", "echo"), "mcp__mi-docs__echo");
-        assert_eq!(parse_mcp_tool("mcp__mi-docs__echo"), Some(("mi-docs".to_string(), "echo".to_string())));
-        assert_eq!(parse_mcp_tool("mcp__srv__a__b"), Some(("srv".to_string(), "a__b".to_string())));
+        assert_eq!(
+            parse_mcp_tool("mcp__mi-docs__echo"),
+            Some(("mi-docs".to_string(), "echo".to_string()))
+        );
+        assert_eq!(
+            parse_mcp_tool("mcp__srv__a__b"),
+            Some(("srv".to_string(), "a__b".to_string()))
+        );
         assert!(is_mcp_tool("mcp__x__y"));
         assert!(!is_mcp_tool("write_file"));
         assert!(parse_mcp_tool("mcp__x").is_none());
@@ -534,7 +623,11 @@ mod tests {
     #[test]
     fn schema_truncated_when_large() {
         let big = json!({"type":"object","properties": {"a": {"type":"string","description": "x".repeat(5000)}}});
-        let tool = McpTool { name: "big".to_string(), description: "desc".to_string(), input_schema: big };
+        let tool = McpTool {
+            name: "big".to_string(),
+            description: "desc".to_string(),
+            input_schema: big,
+        };
         let s = tool_to_openai_schema("srv", &tool);
         let desc = s["function"]["description"].as_str().unwrap();
         assert!(desc.contains("truncado"), "{desc}");
@@ -546,7 +639,11 @@ mod tests {
     #[test]
     fn small_schema_not_truncated() {
         let small = json!({"type":"object","properties":{"text":{"type":"string"}}});
-        let tool = McpTool { name: "echo".to_string(), description: "echo tool".to_string(), input_schema: small };
+        let tool = McpTool {
+            name: "echo".to_string(),
+            description: "echo tool".to_string(),
+            input_schema: small,
+        };
         let s = tool_to_openai_schema("srv", &tool);
         let desc = s["function"]["description"].as_str().unwrap();
         assert!(!desc.contains("truncado"), "{desc}");
@@ -615,7 +712,9 @@ for line in sys.stdin:
         let tools = list_tools_stdio("stub", &cfg).await.expect("list");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
-        let out = call_tool_stdio(&cfg, "echo", json!({"text":"hola"})).await.expect("call");
+        let out = call_tool_stdio(&cfg, "echo", json!({"text":"hola"}))
+            .await
+            .expect("call");
         assert_eq!(out, "echo:hola");
         // cache hit: second list should come from cache even if script deleted
         let _ = std::fs::remove_file(&script);
@@ -628,8 +727,8 @@ for line in sys.stdin:
     #[tokio::test]
     async fn http_stub_list_and_call() {
         clear_cache();
-        use std::net::TcpListener;
         use std::io::{Read, Write};
+        use std::net::TcpListener;
         use std::thread;
 
         // Tiny HTTP server stub (one thread, handles 2 requests)
@@ -672,7 +771,9 @@ for line in sys.stdin:
         let tools = list_tools_http("http-stub", &cfg).await.expect("list http");
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
-        let out = call_tool_http(&cfg, "echo", json!({"text":"hi"})).await.expect("call http");
+        let out = call_tool_http(&cfg, "echo", json!({"text":"hi"}))
+            .await
+            .expect("call http");
         assert_eq!(out, "echo:http-hola");
         clear_cache();
     }
@@ -689,7 +790,10 @@ for line in sys.stdin:
             timeout_s: 2,
         };
         let err = list_tools_http("down", &cfg).await.unwrap_err();
-        assert!(err.contains("http") || err.contains("timeout") || err.contains("MCP"), "{err}");
+        assert!(
+            err.contains("http") || err.contains("timeout") || err.contains("MCP"),
+            "{err}"
+        );
         clear_cache();
     }
 }

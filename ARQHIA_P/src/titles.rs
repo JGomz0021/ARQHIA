@@ -57,7 +57,10 @@ mod tests {
 
     #[test]
     fn ai_title_sanitizes_and_falls_back() {
-        assert_eq!(sanitize_ai_title("\"Mi proyecto web\"\nsegunda línea", "hola"), "Mi proyecto web");
+        assert_eq!(
+            sanitize_ai_title("\"Mi proyecto web\"\nsegunda línea", "hola"),
+            "Mi proyecto web"
+        );
         assert_eq!(sanitize_ai_title("   ", "hola mundo"), "hola mundo");
         assert_eq!(sanitize_ai_title("", ""), "Nuevo chat");
         let long = "a".repeat(100);

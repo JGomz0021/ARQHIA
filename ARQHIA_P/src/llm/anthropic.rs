@@ -26,31 +26,47 @@ pub async fn chat_stream(
         .sum();
     let client = crate::llm::http_stream_client();
     // System va en parámetro propio de Anthropic; el resto en messages.
-    // Anthropic exige turnos user/assistant alternados; colapsamos vacíos.
     let system: String = history
         .iter()
         .filter(|m| m.role == crate::llm::Role::System)
         .map(|m| m.content.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
-    let messages: Vec<_> = history
+    // Anthropic exige alternancia user/assistant: fusiona mensajes
+    // consecutivos del mismo rol; enviarlos sueltos devuelve 400 (v0.9.5).
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    for m in history
         .iter()
         .filter(|m| m.role != crate::llm::Role::System && !m.content.trim().is_empty())
-        .map(|m| {
-            let role = match m.role {
-                crate::llm::Role::Assistant => "assistant",
-                crate::llm::Role::System => "user", // inalcanzable por el filtro
-                crate::llm::Role::User => "user",
-            };
-            json!({"role": role, "content": m.content})
-        })
-        .collect();
+    {
+        let role = match m.role {
+            crate::llm::Role::Assistant => "assistant",
+            crate::llm::Role::System => "user", // inalcanzable por el filtro
+            crate::llm::Role::User => "user",
+        };
+        if let Some(last) = messages.last_mut()
+            && last["role"].as_str() == Some(role)
+        {
+            let prev = last["content"].as_str().unwrap_or("");
+            last["content"] = json!(format!("{prev}\n\n{}", m.content));
+            continue;
+        }
+        messages.push(json!({"role": role, "content": m.content}));
+    }
+    // El primer mensaje debe ser del usuario.
+    while messages
+        .first()
+        .map(|m| m["role"].as_str() == Some("assistant"))
+        .unwrap_or(false)
+    {
+        messages.remove(0);
+    }
     if messages.is_empty() {
         return Err("Mensaje vacío".to_string());
     }
     let mut body = json!({
         "model": cfg.model,
-        "max_tokens": 1024,
+        "max_tokens": 4096,
         "stream": true,
         "messages": messages,
     });
@@ -68,7 +84,7 @@ pub async fn chat_stream(
             _ => 8_000, // "on"
         };
         body["thinking"] = json!({ "type": "enabled", "budget_tokens": budget });
-        if body["max_tokens"].as_u64().unwrap_or(1024) < budget + 1024 {
+        if body["max_tokens"].as_u64().unwrap_or(4096) < budget + 1024 {
             body["max_tokens"] = json!(budget + 1024);
         }
     }
@@ -79,10 +95,9 @@ pub async fn chat_stream(
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json");
         // v0.8: id estable de sesión (trazabilidad).
-        if let Some((k, v)) = crate::llm::session_header(
-            crate::config::Provider::Anthropic,
-            session.unwrap_or(""),
-        ) {
+        if let Some((k, v)) =
+            crate::llm::session_header(crate::config::Provider::Anthropic, session.unwrap_or(""))
+        {
             req = req.header(k, v);
         }
         req.json(&body)
@@ -99,7 +114,7 @@ pub async fn chat_stream(
     }
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    let mut buf: Vec<u8> = Vec::new();
     let mut out_chars = 0usize;
     let mut input_tokens: Option<u32> = None;
     let mut output_tokens: Option<u32> = None;
@@ -116,9 +131,10 @@ pub async fn chat_stream(
                 break;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(pos) = buf.find('\n') {
-            let line: String = buf.drain(..=pos).collect();
+        buf.extend_from_slice(&bytes);
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim();
             if !line.starts_with("data:") {
                 continue;
@@ -132,10 +148,11 @@ pub async fn chat_stream(
                 output_tokens = Some(n);
             }
             if let Some(text) = parse_anthropic_chunk(data)
-                && !text.is_empty() {
-                    out_chars += text.chars().count();
-                    on_chunk(text);
-                }
+                && !text.is_empty()
+            {
+                out_chars += text.chars().count();
+                on_chunk(text);
+            }
         }
     }
     Ok(crate::llm::Usage {

@@ -270,7 +270,10 @@ pub fn default_plataformas(sys: SysType) -> Vec<Plataforma> {
         SysType::AppWeb => vec![Plataforma::Web],
         SysType::AppMovil => vec![Plataforma::MovilIos, Plataforma::MovilAndroid],
         SysType::AppEscritorio => vec![Plataforma::Windows, Plataforma::MacOs, Plataforma::Linux],
-        SysType::ApiBackend | SysType::Microservicio | SysType::ServidorDaemon | SysType::DbMiddleware => {
+        SysType::ApiBackend
+        | SysType::Microservicio
+        | SysType::ServidorDaemon
+        | SysType::DbMiddleware => {
             vec![Plataforma::ServidorNube]
         }
         SysType::DriverFirmware | SysType::KernelModulo | SysType::UtilidadSistema => {
@@ -372,7 +375,12 @@ impl fmt::Display for ApiStyle {
 }
 
 impl ApiStyle {
-    pub const ALL: [ApiStyle; 4] = [ApiStyle::Rest, ApiStyle::Grpc, ApiStyle::Graphql, ApiStyle::ADecidir];
+    pub const ALL: [ApiStyle; 4] = [
+        ApiStyle::Rest,
+        ApiStyle::Grpc,
+        ApiStyle::Graphql,
+        ApiStyle::ADecidir,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -396,7 +404,12 @@ impl fmt::Display for AuthKind {
 }
 
 impl AuthKind {
-    pub const ALL: [AuthKind; 4] = [AuthKind::Ninguna, AuthKind::Jwt, AuthKind::Oauth, AuthKind::ApiKey];
+    pub const ALL: [AuthKind; 4] = [
+        AuthKind::Ninguna,
+        AuthKind::Jwt,
+        AuthKind::Oauth,
+        AuthKind::ApiKey,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -420,7 +433,12 @@ impl fmt::Display for Trigger {
 }
 
 impl Trigger {
-    pub const ALL: [Trigger; 4] = [Trigger::Cron, Trigger::Manual, Trigger::Webhook, Trigger::Ci];
+    pub const ALL: [Trigger; 4] = [
+        Trigger::Cron,
+        Trigger::Manual,
+        Trigger::Webhook,
+        Trigger::Ci,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -442,8 +460,11 @@ impl fmt::Display for SemverOpt {
 }
 
 impl SemverOpt {
-    pub const ALL: [SemverOpt; 3] =
-        [SemverOpt::Estricto, SemverOpt::Compatible, SemverOpt::SinCompromiso];
+    pub const ALL: [SemverOpt; 3] = [
+        SemverOpt::Estricto,
+        SemverOpt::Compatible,
+        SemverOpt::SinCompromiso,
+    ];
 }
 
 /// Arquitectura target (Sistema): multi x86_64/aarch64/embebido.
@@ -597,7 +618,9 @@ pub fn generic_questions(cat: Categoria, sys: SysType) -> [Question; 6] {
         Categoria::Servicio => "Una por línea: endpoints o capacidades (ej. GET /users).",
         Categoria::Libreria => "Una por línea: funciones/tipos públicos de la API.",
         Categoria::Sistema => match sys {
-            SysType::LenguajeRuntime => "Una por línea: rasgos del lenguaje (sintaxis, tipos, std).",
+            SysType::LenguajeRuntime => {
+                "Una por línea: rasgos del lenguaje (sintaxis, tipos, std)."
+            }
             SysType::OsDistro | SysType::KernelModulo => {
                 "Una por línea: capacidades del sistema (boot, procesos, drivers)."
             }
@@ -607,7 +630,9 @@ pub fn generic_questions(cat: Categoria, sys: SysType) -> [Question; 6] {
         Categoria::DatosIa => "Una por línea: salidas del pipeline/modelo.",
     };
     let desc_hint: &'static str = match cat {
-        Categoria::Sistema if sys == SysType::LenguajeRuntime => "Qué compila/ejecuta, en una o dos frases.",
+        Categoria::Sistema if sys == SysType::LenguajeRuntime => {
+            "Qué compila/ejecuta, en una o dos frases."
+        }
         Categoria::Sistema => "Qué máquina/entorno corre, en una o dos frases.",
         Categoria::Servicio => "Qué sirve y a quién, en una o dos frases.",
         Categoria::Libreria => "Qué resuelve para quien la usa, en una o dos frases.",
@@ -1031,7 +1056,13 @@ pub fn total_steps(level: Level, cat: Categoria, sys: SysType, skip_nombre: bool
     1 + questions(level, cat, sys, skip_nombre).len() + 1
 }
 
-pub fn is_ai_step(level: Level, cat: Categoria, sys: SysType, skip_nombre: bool, step: usize) -> bool {
+pub fn is_ai_step(
+    level: Level,
+    cat: Categoria,
+    sys: SysType,
+    skip_nombre: bool,
+    step: usize,
+) -> bool {
     step + 1 == total_steps(level, cat, sys, skip_nombre)
 }
 
@@ -1046,7 +1077,9 @@ pub fn step_question(
     if step == 0 || is_ai_step(level, cat, sys, skip_nombre, step) {
         return None;
     }
-    questions(level, cat, sys, skip_nombre).get(step - 1).copied()
+    questions(level, cat, sys, skip_nombre)
+        .get(step - 1)
+        .copied()
 }
 
 #[cfg(test)]
@@ -1070,14 +1103,21 @@ mod tests {
     fn no_tipo_proyecto_left() {
         // La matriz nueva cubre todas las familias.
         assert_eq!(Categoria::ALL.len(), 6);
-        let total_types: usize = Categoria::ALL.iter().map(|c| SysType::for_cat(*c).len()).sum();
+        let total_types: usize = Categoria::ALL
+            .iter()
+            .map(|c| SysType::for_cat(*c).len())
+            .sum();
         assert!(total_types >= 24, "taxonomía amplia ({total_types})");
     }
 
     #[test]
     fn matrix_rules() {
         // Principiante+Script no pide estilo ni stack; Avanzado+Driver pide arch+licencia sin facturación.
-        let script = family_questions(Level::Principiante, Categoria::Automatizacion, SysType::Script);
+        let script = family_questions(
+            Level::Principiante,
+            Categoria::Automatizacion,
+            SysType::Script,
+        );
         let ids: Vec<_> = script.iter().map(|q| q.id).collect();
         assert!(!ids.contains(&"estilo"), "script sin estilo");
         assert!(!ids.contains(&"stack"), "principiante sin stack");
@@ -1087,10 +1127,17 @@ mod tests {
         let ids: Vec<_> = driver.iter().map(|q| q.id).collect();
         assert!(ids.contains(&"arch") && ids.contains(&"licencia"));
         assert!(!ids.contains(&"facturacion"));
-        assert!(!ids.contains(&"syscalls"), "driver sin syscalls (solo OS/Kernel/VM)");
+        assert!(
+            !ids.contains(&"syscalls"),
+            "driver sin syscalls (solo OS/Kernel/VM)"
+        );
 
         // Lenguaje ≠ OS: sintaxis+toolchain solo en lenguaje; syscalls solo en OS/Kernel/VM.
-        let lang = family_questions(Level::Avanzado, Categoria::Sistema, SysType::LenguajeRuntime);
+        let lang = family_questions(
+            Level::Avanzado,
+            Categoria::Sistema,
+            SysType::LenguajeRuntime,
+        );
         let lang_ids: Vec<_> = lang.iter().map(|q| q.id).collect();
         assert!(lang_ids.contains(&"sintaxis") && lang_ids.contains(&"toolchain"));
         assert!(!lang_ids.contains(&"syscalls") && !lang_ids.contains(&"arranque"));
@@ -1099,11 +1146,21 @@ mod tests {
         assert!(os_ids.contains(&"arranque") && os_ids.contains(&"syscalls"));
 
         // Plugin pide host; Motor pide UI+plataformas; Framework ni host ni UI.
-        let plugin = family_questions(Level::Intermedio, Categoria::Libreria, SysType::PluginExtension);
+        let plugin = family_questions(
+            Level::Intermedio,
+            Categoria::Libreria,
+            SysType::PluginExtension,
+        );
         assert!(plugin.iter().any(|q| q.id == "host_api"));
         let motor = family_questions(Level::Intermedio, Categoria::Libreria, SysType::MotorEngine);
-        assert!(motor.iter().any(|q| q.id == "ui_ux") && motor.iter().any(|q| q.id == "plataformas"));
-        let fw = family_questions(Level::Intermedio, Categoria::Libreria, SysType::FrameworkLibreria);
+        assert!(
+            motor.iter().any(|q| q.id == "ui_ux") && motor.iter().any(|q| q.id == "plataformas")
+        );
+        let fw = family_questions(
+            Level::Intermedio,
+            Categoria::Libreria,
+            SysType::FrameworkLibreria,
+        );
         assert!(!fw.iter().any(|q| q.id == "host_api") && !fw.iter().any(|q| q.id == "ui_ux"));
 
         // App pide facturación; Servicio pre-marca Servidor/Nube.
@@ -1114,21 +1171,49 @@ mod tests {
         assert!(!has_ui(SysType::Script));
         assert!(has_ui(SysType::Juego));
         // Stack no se pregunta a Principiante.
-        assert!(!family_questions(Level::Principiante, Categoria::Servicio, SysType::ApiBackend)
+        assert!(
+            !family_questions(
+                Level::Principiante,
+                Categoria::Servicio,
+                SysType::ApiBackend
+            )
             .iter()
-            .any(|q| q.id == "stack"));
+            .any(|q| q.id == "stack")
+        );
 
         // OSS: App+OpenSource y Librería+MIT lo son; Librería+Uso interno no.
-        assert!(is_oss(Categoria::Aplicacion, Facturacion::OpenSource, Licencia::UsoInterno));
-        assert!(is_oss(Categoria::Libreria, Facturacion::Suscripciones, Licencia::Mit));
-        assert!(!is_oss(Categoria::Libreria, Facturacion::Suscripciones, Licencia::UsoInterno));
+        assert!(is_oss(
+            Categoria::Aplicacion,
+            Facturacion::OpenSource,
+            Licencia::UsoInterno
+        ));
+        assert!(is_oss(
+            Categoria::Libreria,
+            Facturacion::Suscripciones,
+            Licencia::Mit
+        ));
+        assert!(!is_oss(
+            Categoria::Libreria,
+            Facturacion::Suscripciones,
+            Licencia::UsoInterno
+        ));
         assert_eq!(oss_questions().len(), 3);
     }
 
     #[test]
     fn wizard_is_dynamic_by_family() {
-        let princ_app = total_steps(Level::Principiante, Categoria::Aplicacion, SysType::AppWeb, false);
-        let princ_script = total_steps(Level::Principiante, Categoria::Automatizacion, SysType::Script, false);
+        let princ_app = total_steps(
+            Level::Principiante,
+            Categoria::Aplicacion,
+            SysType::AppWeb,
+            false,
+        );
+        let princ_script = total_steps(
+            Level::Principiante,
+            Categoria::Automatizacion,
+            SysType::Script,
+            false,
+        );
         assert_ne!(princ_app, princ_script, "el total depende de la familia");
         for (level, cat, sys) in [
             (Level::Principiante, Categoria::Aplicacion, SysType::AppWeb),
@@ -1140,11 +1225,17 @@ mod tests {
             // v0.8.2: Cat → Tipo → genéricas (nombre es el 3er paso).
             assert_eq!(step_question(level, cat, sys, false, 1).unwrap().id, "cat");
             assert_eq!(step_question(level, cat, sys, false, 2).unwrap().id, "sys");
-            assert_eq!(step_question(level, cat, sys, false, 3).unwrap().id, "nombre");
+            assert_eq!(
+                step_question(level, cat, sys, false, 3).unwrap().id,
+                "nombre"
+            );
             // Genéricas contextualizadas por familia (§1.1: 6 genéricas tras cat/sys).
             let genq = generic_questions(Categoria::Servicio, SysType::ApiBackend);
             assert_eq!(genq[5].id, "funcionalidades");
-            assert!(genq[5].hint.unwrap().contains("endpoints") || genq[5].hint.unwrap().contains("GET"));
+            assert!(
+                genq[5].hint.unwrap().contains("endpoints")
+                    || genq[5].hint.unwrap().contains("GET")
+            );
             assert_eq!(genq[3].id, "uso_previsto");
             assert_eq!(genq[4].id, "publico_objetivo");
             // El bloque OSS cierra la secuencia antes de la IA.
@@ -1162,11 +1253,17 @@ mod tests {
         let skipped = total_steps(level, cat, sys, true);
         assert_eq!(full - skipped, 1, "solo se omite el nombre");
         let qs = questions(level, cat, sys, true);
-        assert!(!qs.iter().any(|q| q.id == "nombre"), "sin pregunta de nombre");
+        assert!(
+            !qs.iter().any(|q| q.id == "nombre"),
+            "sin pregunta de nombre"
+        );
         // El orden se mantiene: cat, tipo, descripción...
         assert_eq!(step_question(level, cat, sys, true, 1).unwrap().id, "cat");
         assert_eq!(step_question(level, cat, sys, true, 2).unwrap().id, "sys");
-        assert_eq!(step_question(level, cat, sys, true, 3).unwrap().id, "descripcion");
+        assert_eq!(
+            step_question(level, cat, sys, true, 3).unwrap().id,
+            "descripcion"
+        );
         assert!(is_ai_step(level, cat, sys, true, skipped - 1));
     }
 
@@ -1186,19 +1283,39 @@ mod tests {
             Licencia::default()
         ));
         // Solo es OSS si se elige explícitamente.
-        assert!(is_oss(Categoria::Aplicacion, Facturacion::OpenSource, Licencia::UsoInterno));
-        assert!(is_oss(Categoria::Libreria, Facturacion::Suscripciones, Licencia::Mit));
+        assert!(is_oss(
+            Categoria::Aplicacion,
+            Facturacion::OpenSource,
+            Licencia::UsoInterno
+        ));
+        assert!(is_oss(
+            Categoria::Libreria,
+            Facturacion::Suscripciones,
+            Licencia::Mit
+        ));
     }
 
     #[test]
     fn facturacion_asked_for_app_and_service_only() {
         // Facturación vive en la familia App/Servicio; el resto usa Licencia.
         let app = family_questions(Level::Intermedio, Categoria::Aplicacion, SysType::AppWeb);
-        assert!(app.iter().any(|q| q.id == "facturacion"), "App debe preguntar facturación");
+        assert!(
+            app.iter().any(|q| q.id == "facturacion"),
+            "App debe preguntar facturación"
+        );
         let svc = family_questions(Level::Intermedio, Categoria::Servicio, SysType::ApiBackend);
-        assert!(svc.iter().any(|q| q.id == "facturacion"), "Servicio debe preguntar facturación");
-        let lib = family_questions(Level::Intermedio, Categoria::Libreria, SysType::FrameworkLibreria);
-        assert!(lib.iter().any(|q| q.id == "licencia") && !lib.iter().any(|q| q.id == "facturacion"));
+        assert!(
+            svc.iter().any(|q| q.id == "facturacion"),
+            "Servicio debe preguntar facturación"
+        );
+        let lib = family_questions(
+            Level::Intermedio,
+            Categoria::Libreria,
+            SysType::FrameworkLibreria,
+        );
+        assert!(
+            lib.iter().any(|q| q.id == "licencia") && !lib.iter().any(|q| q.id == "facturacion")
+        );
     }
 
     #[test]

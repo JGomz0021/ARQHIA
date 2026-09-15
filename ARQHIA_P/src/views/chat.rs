@@ -10,7 +10,6 @@ use crate::config::{AppConfig, Provider};
 use crate::llm::Role;
 use crate::ui::design::Tone;
 
-
 /// Etiquetas para el selector rápido (v0.7.4): si hay perfiles, se muestra
 /// el **nombre visible** ("Nombre (Provider · modelo)"); si no, el formato
 /// legacy "Provider · modelo". Nube: solo con key. Local siempre visible.
@@ -45,8 +44,8 @@ fn model_options(config: &AppConfig) -> Vec<String> {
 /// (Deshacer-hasta-aquí + Rama) y, al pedir deshacer, el aviso de que se
 /// borrará el resto con Sí/No. Vacía si nada está abierto para ese índice.
 fn msg_menu_row(state: &App, ts: f32, idx: usize) -> Element<'_, Message> {
-    use iced::widget::{row, text};
     use crate::ui::{components, design};
+    use iced::widget::{row, text};
     let app_theme = super::app_theme(state);
     if state.pending_truncate == Some(idx) {
         return row![
@@ -151,8 +150,8 @@ fn checklist<'a>(
     ts: f32,
     tasks: &'a [crate::app::orchestrator::OrchTask],
 ) -> Element<'a, Message> {
-    use iced::widget::{column, container, row, text};
     use crate::ui::{components, design};
+    use iced::widget::{column, container, row, text};
     let rows = column(
         tasks
             .iter()
@@ -193,9 +192,9 @@ fn checklist<'a>(
 }
 
 pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
-    use iced::widget::{column, container, pick_list, row, scrollable, text, text_input};
-    use crate::ui::{components, design};
     use crate::ui::design::{Tone, type_scale};
+    use crate::ui::{components, design};
+    use iced::widget::{column, container, pick_list, row, scrollable, text, text_input};
     let app_theme = super::app_theme(state);
     let dim = design::ink_2(&app_theme);
     let ts = state.config.appearance.text_size.scale();
@@ -232,7 +231,11 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         .map(|p| p.name.clone());
     let model_line = match active_profile_name {
         Some(n) => format!("{} · {}", n, state.config.active_config().model),
-        None => format!("{} · {}", state.config.active, state.config.active_config().model),
+        None => format!(
+            "{} · {}",
+            state.config.active,
+            state.config.active_config().model
+        ),
     };
     // Header minimalista: sin acciones de chat aquí (van en la toolbar
     // de abajo, siempre visible, para que no se pierdan por ancho).
@@ -244,9 +247,13 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         text(title.clone()).size(design::fs(ts, type_scale::EMPHASIS)),
         text(model_line).size(design::fs(ts, 11)).color(dim),
         iced::widget::horizontal_space(),
-        pick_list(project_options, Some(current_project), Message::NavigateProject)
-            .width(150)
-            .style(|t: &Theme, s| design::bare_pick(t, s)),
+        pick_list(
+            project_options,
+            Some(current_project),
+            Message::NavigateProject
+        )
+        .width(150)
+        .style(|t: &Theme, s| design::bare_pick(t, s)),
         components::head_btn("Ajustes".to_string()).on_press(Message::OpenConfig),
     ]
     .spacing(8)
@@ -348,13 +355,11 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
                 iced::widget::vertical_space().height(150),
                 column![
                     text("Chat vacío").size(design::fs(ts, 24)),
-                    text(
-                        if ws.is_some() {
-                            "Workspace asignado."
-                        } else {
-                            "Sin workspace."
-                        }
-                    )
+                    text(if ws.is_some() {
+                        "Workspace asignado."
+                    } else {
+                        "Sin workspace."
+                    })
                     .size(design::fs(ts, 14))
                     .color(dim)
                     .align_x(iced::Alignment::Center),
@@ -375,126 +380,131 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
                 .iter()
                 .enumerate()
                 .map(|(i, m)| {
-                if m.role == Role::Assistant {
-                    if m.content.is_empty() && state.streaming {
-                        return container(
-                            text("Escribiendo...").size(design::fs(ts, 14)).color(dim),
+                    if m.role == Role::Assistant {
+                        if m.content.is_empty() && state.streaming {
+                            return container(
+                                text("Escribiendo...").size(design::fs(ts, 14)).color(dim),
+                            )
+                            .padding([8, 12])
+                            .style(|t: &Theme| design::ai_msg(t))
+                            .into();
+                        }
+                        let items: &[markdown::Item] =
+                            state.md.get(i).map(Vec::as_slice).unwrap_or(&[]);
+                        // Burbuja del agente: fondo hundido + borde, alineada a la
+                        // izquierda. Sin etiqueta "ARQHIA" (el emisor ya es evidente).
+                        let usage_el: Element<'_, Message> = state
+                            .msg_usage
+                            .get(i)
+                            .and_then(|o| *o)
+                            .map(|u| {
+                                let model = state.config.active_config().model;
+                                let pid = crate::pricing::provider_id_for(
+                                    state.config.active,
+                                    &state.config.active_config().base_url,
+                                );
+                                let cost = u
+                                    .cost
+                                    .or_else(|| state.pricing.cost_in(pid.as_deref(), &model, u))
+                                    .or_else(|| {
+                                        crate::llm::estimate_cost_usd(
+                                            state.config.active,
+                                            &model,
+                                            u,
+                                        )
+                                    });
+                                text(format!(
+                                    "in {} · out {} · cache {} · {}",
+                                    thousands(u.input as u64),
+                                    thousands(u.output as u64),
+                                    thousands(u.cached as u64),
+                                    crate::llm::format_cost(cost)
+                                ))
+                                .size(design::fs(ts, 11))
+                                .color(dim)
+                                .into()
+                            })
+                            .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
+                        // v0.7.4: pie con fecha/hora + Copiar + ···; el ··· (o clic
+                        // derecho) abre Deshacer-hasta-aquí (con aviso) y Rama.
+                        let ts_el: Element<'_, Message> = state
+                            .msg_times
+                            .get(i)
+                            .and_then(|t| short_ts(t))
+                            .map(|s| text(s).size(design::fs(ts, 11)).color(dim).into())
+                            .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
+                        let mut bubble = column![
+                            markdown::view(
+                                items.iter(),
+                                markdown::Settings::with_text_size(design::fs(ts, 14)),
+                                design::markdown_style(&app_theme),
+                            )
+                            .map(Message::LinkClicked),
+                            usage_el,
+                            row![
+                                ts_el,
+                                iced::widget::horizontal_space(),
+                                components::quiet_btn("Copiar".to_string())
+                                    .on_press(Message::CopyMsg(i)),
+                                components::head_btn("···".to_string())
+                                    .on_press(Message::ChatMsgMenu(i)),
+                            ]
+                            .align_y(iced::Alignment::Center),
+                        ]
+                        .spacing(6);
+                        bubble = bubble.push(msg_menu_row(state, ts, i));
+                        iced::widget::mouse_area(
+                            container(bubble)
+                                .padding(design::pad(cx, 10))
+                                .width(iced::Fill)
+                                .style(|t: &Theme| design::ai_msg(t)),
                         )
-                        .padding([8, 12])
-                        .style(|t: &Theme| design::ai_msg(t))
-                        .into();
-                    }
-                    let items: &[markdown::Item] = state.md.get(i).map(Vec::as_slice).unwrap_or(&[]);
-                    // Burbuja del agente: fondo hundido + borde, alineada a la
-                    // izquierda. Sin etiqueta "ARQHIA" (el emisor ya es evidente).
-                    let usage_el: Element<'_, Message> = state
-                        .msg_usage
-                        .get(i)
-                        .and_then(|o| *o)
-                        .map(|u| {
-                            let model = state.config.active_config().model;
-                            let pid = crate::pricing::provider_id_for(
-                                state.config.active,
-                                &state.config.active_config().base_url,
-                            );
-                            let cost = u
-                                .cost
-                                .or_else(|| state.pricing.cost_in(pid.as_deref(), &model, u))
-                                .or_else(|| {
-                                    crate::llm::estimate_cost_usd(state.config.active, &model, u)
-                                });
+                        .on_right_press(Message::ChatMsgMenu(i))
+                        .into()
+                    } else if m.role == Role::User {
+                        // Burbuja del usuario: superficie elevada + borde de acento,
+                        // alineada a la izquierda (antes se salía por la derecha).
+                        // Mismo pie + menú contextual que el agente.
+                        let ts_el: Element<'_, Message> = state
+                            .msg_times
+                            .get(i)
+                            .and_then(|t| short_ts(t))
+                            .map(|s| text(s).size(design::fs(ts, 11)).color(dim).into())
+                            .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
+                        let mut bubble = column![
+                            text("Tú").size(design::fs(ts, 12)).color(dim),
+                            text(&m.content).size(design::fs(ts, 14)),
                             text(format!(
-                                "in {} · out {} · cache {} · {}",
-                                thousands(u.input as u64),
-                                thousands(u.output as u64),
-                                thousands(u.cached as u64),
-                                crate::llm::format_cost(cost)
+                                "in ~{} tokens",
+                                crate::llm::estimate_tokens_text(&m.content)
                             ))
                             .size(design::fs(ts, 11))
-                            .color(dim)
-                            .into()
-                        })
-                        .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
-                    // v0.7.4: pie con fecha/hora + Copiar + ···; el ··· (o clic
-                    // derecho) abre Deshacer-hasta-aquí (con aviso) y Rama.
-                    let ts_el: Element<'_, Message> = state
-                        .msg_times
-                        .get(i)
-                        .and_then(|t| short_ts(t))
-                        .map(|s| text(s).size(design::fs(ts, 11)).color(dim).into())
-                        .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
-                    let mut bubble = column![
-                        markdown::view(
-                            items.iter(),
-                            markdown::Settings::with_text_size(design::fs(ts, 14)),
-                            design::markdown_style(&app_theme),
+                            .color(dim),
+                            row![
+                                ts_el,
+                                iced::widget::horizontal_space(),
+                                components::quiet_btn("Copiar".to_string())
+                                    .on_press(Message::CopyMsg(i)),
+                                components::head_btn("···".to_string())
+                                    .on_press(Message::ChatMsgMenu(i)),
+                            ]
+                            .align_y(iced::Alignment::Center),
+                        ]
+                        .spacing(2);
+                        bubble = bubble.push(msg_menu_row(state, ts, i));
+                        iced::widget::mouse_area(
+                            container(bubble)
+                                .padding(design::pad(cx, 10))
+                                .width(iced::Fill)
+                                .style(|t: &Theme| design::user_msg(t)),
                         )
-                        .map(Message::LinkClicked),
-                        usage_el,
-                        row![
-                            ts_el,
-                            iced::widget::horizontal_space(),
-                            components::quiet_btn("Copiar".to_string())
-                                .on_press(Message::CopyMsg(i)),
-                            components::head_btn("···".to_string())
-                                .on_press(Message::ChatMsgMenu(i)),
-                        ]
-                        .align_y(iced::Alignment::Center),
-                    ]
-                    .spacing(6);
-                    bubble = bubble.push(msg_menu_row(state, ts, i));
-                    iced::widget::mouse_area(
-                        container(bubble)
-                            .padding(design::pad(cx, 10))
-                            .width(iced::Fill)
-                            .style(|t: &Theme| design::ai_msg(t)),
-                    )
-                    .on_right_press(Message::ChatMsgMenu(i))
-                    .into()
-                } else if m.role == Role::User {
-                    // Burbuja del usuario: superficie elevada + borde de acento,
-                    // alineada a la izquierda (antes se salía por la derecha).
-                    // Mismo pie + menú contextual que el agente.
-                    let ts_el: Element<'_, Message> = state
-                        .msg_times
-                        .get(i)
-                        .and_then(|t| short_ts(t))
-                        .map(|s| text(s).size(design::fs(ts, 11)).color(dim).into())
-                        .unwrap_or_else(|| iced::widget::horizontal_space().width(0).into());
-                    let mut bubble = column![
-                        text("Tú").size(design::fs(ts, 12)).color(dim),
-                        text(&m.content).size(design::fs(ts, 14)),
-                        text(format!(
-                            "in ~{} tokens",
-                            crate::llm::estimate_tokens_text(&m.content)
-                        ))
-                        .size(design::fs(ts, 11))
-                        .color(dim),
-                        row![
-                            ts_el,
-                            iced::widget::horizontal_space(),
-                            components::quiet_btn("Copiar".to_string())
-                                .on_press(Message::CopyMsg(i)),
-                            components::head_btn("···".to_string())
-                                .on_press(Message::ChatMsgMenu(i)),
-                        ]
-                        .align_y(iced::Alignment::Center),
-                    ]
-                    .spacing(2);
-                    bubble = bubble.push(msg_menu_row(state, ts, i));
-                    iced::widget::mouse_area(
-                        container(bubble)
-                            .padding(design::pad(cx, 10))
-                            .width(iced::Fill)
-                            .style(|t: &Theme| design::user_msg(t)),
-                    )
-                    .on_right_press(Message::ChatMsgMenu(i))
-                    .into()
-                } else {
-                    text(&m.content).size(design::fs(ts, 12)).color(dim).into()
-                }
-            })
-            .collect::<Vec<_>>(),
+                        .on_right_press(Message::ChatMsgMenu(i))
+                        .into()
+                    } else {
+                        text(&m.content).size(design::fs(ts, 12)).color(dim).into()
+                    }
+                })
+                .collect::<Vec<_>>(),
         )
         .spacing(design::gap(cx, 12))
         .into()
@@ -506,16 +516,14 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         let kind = design::status_tone(&state.status);
         let color = design::tone(&app_theme, kind);
         // v0.7.4: reintento como icono ↻ junto al error.
-        let retry: Element<'_, Message> = if kind == Tone::Err
-            && !state.streaming
-            && !state.agent_running
-        {
-            components::quiet_btn("↻".to_string())
-                .on_press(Message::RetryLast)
-                .into()
-        } else {
-            iced::widget::horizontal_space().width(0).into()
-        };
+        let retry: Element<'_, Message> =
+            if kind == Tone::Err && !state.streaming && !state.agent_running {
+                components::quiet_btn("↻".to_string())
+                    .on_press(Message::RetryLast)
+                    .into()
+            } else {
+                iced::widget::horizontal_space().width(0).into()
+            };
         row![
             text(components::log_icon(kind)).size(12).color(color),
             text(&state.status)
@@ -583,17 +591,19 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         // acento y su padding pulsa 2→6→2 (movimiento visible). El handler
         // avanza el paso por ticks y apaga al final.
         let (pad, flashing) = match state.mode_anim {
-            Some((t, step))
-                if t.elapsed() < std::time::Duration::from_millis(800) =>
-            {
+            Some((t, step)) if t.elapsed() < std::time::Duration::from_millis(800) => {
                 let wave = (step.min(8) as f32 / 8.0 * std::f32::consts::PI).sin();
                 ((2.0 + 4.0 * wave) as u16, true)
             }
             _ => (2, false),
         };
-        container(seg)
-            .padding(pad)
-            .style(move |t: &Theme| if flashing { design::segmented_flash(t) } else { design::segmented(t) })
+        container(seg).padding(pad).style(move |t: &Theme| {
+            if flashing {
+                design::segmented_flash(t)
+            } else {
+                design::segmented(t)
+            }
+        })
     };
     // Nivel de razonamiento del modelo activo (opciones según models.dev).
     let r_model = state.config.active_config().model;
@@ -607,69 +617,64 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     } else {
         state.config.active_config().reasoning_effort.clone()
     };
-    let reasoning_pick: Element<'_, Message> = pick_list(
-        r_opts,
-        Some(r_current),
-        Message::QuickReasoningPicked,
-    )
-    .width(110)
-    .style(|t: &Theme, s| design::accent_pick(t, s))
-    .into();
-    let input_box = text_input(
-        "Mensaje... (/ para skills)",
-        &state.input,
-    )
-    .size(design::fs(ts, 16))
-    .padding([12, 10])
-    .style(|t: &Theme, s| design::bare(t, s))
-    .on_input(Message::InputChanged)
-    .on_submit(Message::SendPressed)
-    .width(iced::Fill);
+    let reasoning_pick: Element<'_, Message> =
+        pick_list(r_opts, Some(r_current), Message::QuickReasoningPicked)
+            .width(110)
+            .style(|t: &Theme, s| design::accent_pick(t, s))
+            .into();
+    let input_box = text_input("Mensaje... (/ para skills)", &state.input)
+        .size(design::fs(ts, 16))
+        .padding([12, 10])
+        .style(|t: &Theme, s| design::bare(t, s))
+        .on_input(Message::InputChanged)
+        .on_submit(Message::SendPressed)
+        .width(iced::Fill);
     // Ventana flotante de `/skill`: tarjeta centrada en pantalla con la
     // lista (nombre + badge + descripción) y scroll vertical si hay muchas.
     // Se dibuja SOBRE los mensajes (overlay) para no expandir el composer.
     // Un clic completa el input (`/skill nombre `); Enter lo envía.
-    let skill_card: Element<'_, Message> = if state.input.trim_start().starts_with('/')
-        && !state.skill_suggest.is_empty()
-    {
-        let mut col = column![].spacing(4);
-        for s in state.skill_suggest.iter().take(12) {
-            let completion = format!("/skill {} ", s.name);
-            let badge = s.origin.badge();
-            col = col.push(
-                iced::widget::button(
-                    row![
-                        text(format!("/{} ", s.name)).size(design::fs(ts, 14)),
-                        text(format!("[{badge}]")).size(design::fs(ts, 12)).color(dim),
-                        text(s.description.clone())
-                            .size(design::fs(ts, 13))
-                            .color(dim)
-                            .width(iced::Fill),
-                    ]
-                    .align_y(iced::Alignment::Center)
-                    .spacing(8),
-                )
-                .width(iced::Fill)
-                .padding([6, 12])
-                .style(|t: &Theme, st| design::nav(t, st, false))
-                .on_press(Message::InputChanged(completion)),
-            );
-        }
-        container(
-            column![
-                components::section_label(app_theme.clone(), "Skills"),
-                scrollable(col).height(iced::Length::Shrink),
-            ]
-            .spacing(6),
-        )
-        .padding(12)
-        .width(560)
-        .max_height(280)
-        .style(|t: &Theme| design::card(t))
-        .into()
-    } else {
-        iced::widget::vertical_space().height(0).into()
-    };
+    let skill_card: Element<'_, Message> =
+        if state.input.trim_start().starts_with('/') && !state.skill_suggest.is_empty() {
+            let mut col = column![].spacing(4);
+            for s in state.skill_suggest.iter().take(12) {
+                let completion = format!("/skill {} ", s.name);
+                let badge = s.origin.badge();
+                col = col.push(
+                    iced::widget::button(
+                        row![
+                            text(format!("/{} ", s.name)).size(design::fs(ts, 14)),
+                            text(format!("[{badge}]"))
+                                .size(design::fs(ts, 12))
+                                .color(dim),
+                            text(s.description.clone())
+                                .size(design::fs(ts, 13))
+                                .color(dim)
+                                .width(iced::Fill),
+                        ]
+                        .align_y(iced::Alignment::Center)
+                        .spacing(8),
+                    )
+                    .width(iced::Fill)
+                    .padding([6, 12])
+                    .style(|t: &Theme, st| design::nav(t, st, false))
+                    .on_press(Message::InputChanged(completion)),
+                );
+            }
+            container(
+                column![
+                    components::section_label(app_theme.clone(), "Skills"),
+                    scrollable(col).height(iced::Length::Shrink),
+                ]
+                .spacing(6),
+            )
+            .padding(12)
+            .width(560)
+            .max_height(280)
+            .style(|t: &Theme| design::card(t))
+            .into()
+        } else {
+            iced::widget::vertical_space().height(0).into()
+        };
     let composer = container(
         column![
             row![input_box, action_btn]
@@ -702,7 +707,8 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         container(
             column![
                 row![
-                    components::section_label(app_theme.clone(),
+                    components::section_label(
+                        app_theme.clone(),
                         format!("PLAN · {done}/{}", state.orch_tasks.len())
                     ),
                     iced::widget::horizontal_space(),
@@ -766,7 +772,8 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
                 .align_y(iced::Alignment::Center),
                 scrollable(lines).height(84),
                 row![
-                    components::primary_btn("Permitir".to_string(), 13).on_press(Message::ApproveTools),
+                    components::primary_btn("Permitir".to_string(), 13)
+                        .on_press(Message::ApproveTools),
                     components::quiet_btn("Denegar".to_string()).on_press(Message::DenyTools),
                     components::icon_btn("No preguntar más".to_string())
                         .on_press(Message::DenyToolsRemember),
@@ -784,57 +791,62 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     let done_count = state.orch_tasks.iter().filter(|t| t.done).count();
     // Checklist de progreso del orquestador (Work). En modo Plan manda el
     // plan_panel de arriba, así que aquí se oculta para no duplicar.
-    let tasks_panel: Element<'_, Message> =
-        if state.orch_tasks.is_empty() || state.show_plan {
-            iced::widget::vertical_space().height(0).into()
-        } else {
-            column![
-                components::section_label(app_theme.clone(),
-                    format!("Tareas · {done_count}/{}", state.orch_tasks.len())
-                ),
-                checklist(app_theme.clone(), ts, &state.orch_tasks),
-            ]
-            .spacing(6)
-            .into()
-        };
+    let tasks_panel: Element<'_, Message> = if state.orch_tasks.is_empty() || state.show_plan {
+        iced::widget::vertical_space().height(0).into()
+    } else {
+        column![
+            components::section_label(
+                app_theme.clone(),
+                format!("Tareas · {done_count}/{}", state.orch_tasks.len())
+            ),
+            checklist(app_theme.clone(), ts, &state.orch_tasks),
+        ]
+        .spacing(6)
+        .into()
+    };
 
     // Activity well: solo tiene sentido con agente (Plan/Work). En modo Chat
     // no se muestra (el chat plano no ejecuta tools).
     let log_panel: Element<'_, Message> =
-        if mode == crate::db::Mode::Chat
-            || (state.tool_logs.is_empty() && ws.is_none())
-        {
+        if mode == crate::db::Mode::Chat || (state.tool_logs.is_empty() && ws.is_none()) {
             iced::widget::vertical_space().height(0).into()
         } else {
-        let visible = if state.log_expanded { 40 } else { 12 };
-        let start = state.tool_logs.len().saturating_sub(visible);
-        let lines = column(
-            state.tool_logs[start..]
-                .iter()
-                .map(|l| components::activity_row(app_theme.clone(), l))
-                .collect::<Vec<_>>(),
-        )
-        .spacing(4);
-        let mut well = column![
-            row![
-                components::section_label(app_theme.clone(), "Actividad"),
-                iced::widget::horizontal_space(),
-                components::head_btn(if state.log_expanded { "Reducir" } else { "Ampliar" }.to_string())
+            let visible = if state.log_expanded { 40 } else { 12 };
+            let start = state.tool_logs.len().saturating_sub(visible);
+            let lines = column(
+                state.tool_logs[start..]
+                    .iter()
+                    .map(|l| components::activity_row(app_theme.clone(), l))
+                    .collect::<Vec<_>>(),
+            )
+            .spacing(4);
+            let mut well = column![
+                row![
+                    components::section_label(app_theme.clone(), "Actividad"),
+                    iced::widget::horizontal_space(),
+                    components::head_btn(
+                        if state.log_expanded {
+                            "Reducir"
+                        } else {
+                            "Ampliar"
+                        }
+                        .to_string()
+                    )
                     .on_press(Message::ToggleLogExpand),
+                ]
+                .spacing(6)
+                .align_y(iced::Alignment::Center),
             ]
-            .spacing(6)
-            .align_y(iced::Alignment::Center),
-        ]
-        .spacing(6);
-        if !state.tool_logs.is_empty() {
-            let h = if state.log_expanded { 460.0 } else { 170.0 };
-            well = well.push(scrollable(lines).height(h));
-        }
-        container(well)
-        .padding(12)
-        .style(|t: &Theme| design::well_box(t))
-        .into()
-    };
+            .spacing(6);
+            if !state.tool_logs.is_empty() {
+                let h = if state.log_expanded { 460.0 } else { 170.0 };
+                well = well.push(scrollable(lines).height(h));
+            }
+            container(well)
+                .padding(12)
+                .style(|t: &Theme| design::well_box(t))
+                .into()
+        };
 
     // Caja de mensajes centrada y con ancho según densidad:
     // cómoda ~1020px, compacta ~860px (un 20% menos que a todo el ancho).
@@ -843,29 +855,27 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
     // flota abajo del todo (overlay) sin mover el layout.
     let chat_w: f32 = if cx { 860.0 } else { 1020.0 };
     let messages_area = container(
-        container(
-            iced::widget::stack![
-                scrollable(
-                    container(msgs)
-                        .width(iced::Fill)
-                        // Aire entre el texto y la barra de deslizamiento + cola
-                        // inferior para que el scroll final no muera bajo el dock.
-                        .padding(iced::Padding {
-                            top: 0.0,
-                            right: 28.0,
-                            bottom: 24.0,
-                            left: 0.0,
-                        }),
-                )
-                .id(iced::widget::scrollable::Id::new("chat-msgs"))
-                .height(iced::Fill),
-                container(skill_card)
+        container(iced::widget::stack![
+            scrollable(
+                container(msgs)
                     .width(iced::Fill)
-                    .height(iced::Fill)
-                    .center_x(iced::Fill)
-                    .center_y(iced::Fill),
-            ],
-        )
+                    // Aire entre el texto y la barra de deslizamiento + cola
+                    // inferior para que el scroll final no muera bajo el dock.
+                    .padding(iced::Padding {
+                        top: 0.0,
+                        right: 28.0,
+                        bottom: 24.0,
+                        left: 0.0,
+                    }),
+            )
+            .id(iced::widget::scrollable::Id::new("chat-msgs"))
+            .height(iced::Fill),
+            container(skill_card)
+                .width(iced::Fill)
+                .height(iced::Fill)
+                .center_x(iced::Fill)
+                .center_y(iced::Fill),
+        ])
         .max_width(chat_w)
         .height(iced::Fill),
     )
@@ -921,27 +931,25 @@ pub(crate) fn view_chat(state: &App) -> Element<'_, Message> {
         ]
         .spacing(10),
     )
-        .width(iced::Fill)
-        .padding(iced::Padding {
-            top: 0.0,
-            right: 16.0,
-            bottom: 0.0,
-            left: 16.0,
-        });
+    .width(iced::Fill)
+    .padding(iced::Padding {
+        top: 0.0,
+        right: 16.0,
+        bottom: 0.0,
+        left: 16.0,
+    });
 
     // Dock inferior (composer + log): fondo elevado y sombra superior para que
     // la frontera con el chat sea clara.
-    let dock = container(
-        column![composer, log_panel].spacing(10),
-    )
-    .width(iced::Fill)
-    .padding(iced::Padding {
-        top: design::pad(cx, 14) as f32,
-        right: 16.0,
-        bottom: design::pad(cx, 14) as f32,
-        left: 16.0,
-    })
-    .style(|t: &Theme| design::dock(t));
+    let dock = container(column![composer, log_panel].spacing(10))
+        .width(iced::Fill)
+        .padding(iced::Padding {
+            top: design::pad(cx, 14) as f32,
+            right: 16.0,
+            bottom: design::pad(cx, 14) as f32,
+            left: 16.0,
+        })
+        .style(|t: &Theme| design::dock(t));
 
     column![
         container(column![header, stats_bar].spacing(8))

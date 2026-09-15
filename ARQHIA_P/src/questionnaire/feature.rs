@@ -77,7 +77,9 @@ impl VersionPlacement {
     /// Si `fits_existing` es false, crea `v{major}.{minor+1}` o `v{major}.{minor}.1`.
     pub fn decide(fits_existing: bool, target: &str, existing: &[String]) -> Self {
         if fits_existing && existing.contains(&target.to_string()) {
-            VersionPlacement::Existing { version: target.to_string() }
+            VersionPlacement::Existing {
+                version: target.to_string(),
+            }
         } else {
             // incremental: si target existe, añade .1; si no, usa target
             let inc = if existing.contains(&target.to_string()) {
@@ -132,7 +134,12 @@ mod tests {
     fn placement_logic() {
         let existing = vec!["v0.1".to_string(), "v0.2".to_string()];
         let p = VersionPlacement::decide(true, "v0.2", &existing);
-        assert_eq!(p, VersionPlacement::Existing { version: "v0.2".to_string() });
+        assert_eq!(
+            p,
+            VersionPlacement::Existing {
+                version: "v0.2".to_string()
+            }
+        );
         let p2 = VersionPlacement::decide(false, "v0.2", &existing);
         assert_eq!(p2.version(), "v0.2.1");
         let p3 = VersionPlacement::decide(false, "v0.3", &existing);
@@ -141,7 +148,9 @@ mod tests {
 
     #[test]
     fn docs_list_covers_context() {
-        let p = VersionPlacement::Existing { version: "v0.3".to_string() };
+        let p = VersionPlacement::Existing {
+            version: "v0.3".to_string(),
+        };
         let docs = context_docs_to_update(&p);
         assert!(docs.contains(&"PROJECT.md"));
         assert!(docs.contains(&"SPECS.md"));

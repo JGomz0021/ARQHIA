@@ -51,13 +51,12 @@ pub async fn chat_stream(
     if !cfg.api_key.trim().is_empty() {
         req = req.header("Authorization", format!("Bearer {}", cfg.api_key.trim()));
     }
-    let resp = req
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| {
-            format!("No se pudo contactar LM Studio en {}: {e}. ¿Está el servidor iniciado?", cfg.base_url)
-        })?;
+    let resp = req.json(&body).send().await.map_err(|e| {
+        format!(
+            "No se pudo contactar LM Studio en {}: {e}. ¿Está el servidor iniciado?",
+            cfg.base_url
+        )
+    })?;
 
     if !resp.status().is_success() {
         let status = resp.status();
@@ -67,7 +66,7 @@ pub async fn chat_stream(
     }
 
     let mut stream = resp.bytes_stream();
-    let mut buf = String::new();
+    let mut buf: Vec<u8> = Vec::new();
     let mut out_chars = 0usize;
     let mut usage: Option<crate::llm::Usage> = None;
     while let Some(item) = stream.next().await {
@@ -82,9 +81,10 @@ pub async fn chat_stream(
                 break;
             }
         };
-        buf.push_str(&String::from_utf8_lossy(&bytes));
-        while let Some(pos) = buf.find('\n') {
-            let line: String = buf.drain(..=pos).collect();
+        buf.extend_from_slice(&bytes);
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            let line = String::from_utf8_lossy(&line_bytes);
             let line = line.trim();
             if !line.starts_with("data:") {
                 continue;
@@ -93,22 +93,27 @@ pub async fn chat_stream(
             if data == "[DONE]" {
                 return Ok(usage.unwrap_or(crate::llm::Usage {
                     input: input_estimate,
-                    output: crate::llm::estimate_tokens_chars(out_chars), cached: 0, cost: None,
+                    output: crate::llm::estimate_tokens_chars(out_chars),
+                    cached: 0,
+                    cost: None,
                 }));
             }
             if let Some(u) = crate::llm::parse_openai_usage(data) {
                 usage = Some(u);
             }
             if let Some(text) = parse_openai_chunk(data)
-                && !text.is_empty() {
-                    out_chars += text.chars().count();
-                    on_chunk(text);
-                }
+                && !text.is_empty()
+            {
+                out_chars += text.chars().count();
+                on_chunk(text);
+            }
         }
     }
     Ok(usage.unwrap_or(crate::llm::Usage {
         input: input_estimate,
-        output: crate::llm::estimate_tokens_chars(out_chars), cached: 0, cost: None,
+        output: crate::llm::estimate_tokens_chars(out_chars),
+        cached: 0,
+        cost: None,
     }))
 }
 

@@ -9,10 +9,10 @@ use iced::widget::markdown;
 use super::events::{ConfigTab, View};
 use super::orchestrator::{Driver, OrchTask};
 use crate::agent;
+use crate::config::ProviderConfig;
 use crate::config::{AppConfig, Provider};
 use crate::db::{self, ChatMeta, Project};
 use crate::llm::{ChatMsg, Role};
-use crate::config::ProviderConfig;
 use crate::questionnaire::Answers;
 
 pub struct App {
@@ -33,6 +33,9 @@ pub struct App {
     /// Generación del stream de chat plano: invalida chunks tardíos tras
     /// Detener o al iniciar otro turno.
     pub(crate) stream_gen: u64,
+    /// Handle de aborto del stream SSE en vuelo (v0.9.5): "Detener" corta la
+    /// petición de red además de ignorar los chunks tardíos.
+    pub(crate) stream_abort: std::sync::Arc<std::sync::Mutex<Option<tokio::task::AbortHandle>>>,
     /// Momento del último Esc (para el doble Esc = Detener).
     pub(crate) last_esc: Option<std::time::Instant>,
     pub(crate) testing: bool,
@@ -135,6 +138,13 @@ pub struct App {
     // v0.7
     pub(crate) config_tab: ConfigTab,
     pub(crate) config_pending_delete: Option<i64>,
+    // v0.9.5 — datos precomputados de Config (la vista no toca DB ni FS):
+    // skills instaladas, uso local y uploads por proyecto.
+    pub(crate) config_skills: Vec<crate::skills::SkillDesc>,
+    pub(crate) config_usage: Vec<crate::db::UsageStats>,
+    pub(crate) config_usage_here: crate::db::UsageStats,
+    pub(crate) config_usage_cats: Vec<(String, i64)>,
+    pub(crate) config_uploads: std::collections::HashMap<i64, Vec<crate::workspace::UploadInfo>>,
     // v0.7.1 — modo Plan: PLAN.md aprobado antes de ejecutar
     pub(crate) plan_md: String,
     pub(crate) show_plan: bool,
@@ -301,6 +311,7 @@ impl Default for App {
             status: String::new(),
             streaming: false,
             stream_gen: 0,
+            stream_abort: std::sync::Arc::new(std::sync::Mutex::new(None)),
             last_esc: None,
             testing: false,
             new_project_name: String::new(),
@@ -370,6 +381,11 @@ impl Default for App {
             config_from: View::Home,
             config_tab: ConfigTab::Api,
             config_pending_delete: None,
+            config_skills: Vec::new(),
+            config_usage: Vec::new(),
+            config_usage_here: crate::db::UsageStats::default(),
+            config_usage_cats: Vec::new(),
+            config_uploads: std::collections::HashMap::new(),
             plan_md: String::new(),
             show_plan: false,
             git_base_branch: String::new(),
@@ -452,12 +468,19 @@ impl App {
         self.git_author_email = g.author_email;
     }
 
-    /// Recalcula el estado git del workspace activo (v0.7.2).
-    pub(crate) fn refresh_git_status(&mut self) {
-        self.git_status = match self.active_workspace() {
-            Some(ws) => crate::git::workspace_status(&ws),
-            None => crate::git::WorkspaceStatus::default(),
-        };
+    /// Estado git en background (v0.9.5): devuelve `Task` que resuelve en
+    /// `Message::GitStatusFetched`; la UI sigue respondiendo.
+    pub(crate) fn refresh_git_status_async(&self) -> iced::Task<super::events::Message> {
+        let ws = self.active_workspace();
+        iced::Task::perform(
+            async move {
+                match ws {
+                    Some(w) => crate::git::workspace_status_async(&w).await,
+                    None => crate::git::WorkspaceStatus::default(),
+                }
+            },
+            super::events::Message::GitStatusFetched,
+        )
     }
 
     pub(crate) fn active_chat_meta(&self) -> Option<&ChatMeta> {
@@ -468,43 +491,40 @@ impl App {
     /// Modo del chat activo (v0.7.1). Default: Chat (con o sin workspace
     /// se empieza en Chat y se sube a Plan/Work explícitamente).
     pub(crate) fn active_mode(&self) -> db::Mode {
-        self.active_chat_meta().map(|c| c.mode).unwrap_or(db::Mode::Chat)
+        self.active_chat_meta()
+            .map(|c| c.mode)
+            .unwrap_or(db::Mode::Chat)
     }
 
     pub(crate) fn ensure_active_chat(&mut self) {
         if self.active_chat.is_none()
-            && let Ok(id) = db::create_chat("Nuevo chat") {
-                // Si venimos de un proyecto (Home/creado), el chat nace dentro
-                let pid = self.pending_project;
-                if let Some(p) = pid {
-                    let _ = db::move_chat(id, Some(p));
-                }
-                self.chats.push(ChatMeta {
-                    id,
-                    title: "Nuevo chat".to_string(),
-                    project_id: pid,
-                    archived: false,
-                    mode: db::Mode::Chat,
-                    session_id: None,
-                });
-                self.active_chat = Some(id);
-                self.messages.clear();
-                self.md.clear();
-                self.msg_times.clear();
-                self.msg_ids.clear();
-                self.msg_usage.clear();
-                self.chat_sources.clear();
-                self.undo = None;
-                self.pending_project = None;
+            && let Ok(id) = db::create_chat("Nuevo chat")
+        {
+            // Si venimos de un proyecto (Home/creado), el chat nace dentro
+            let pid = self.pending_project;
+            if let Some(p) = pid {
+                let _ = db::move_chat(id, Some(p));
             }
+            self.chats.push(ChatMeta {
+                id,
+                title: "Nuevo chat".to_string(),
+                project_id: pid,
+                archived: false,
+                mode: db::Mode::Chat,
+                session_id: None,
+            });
+            self.active_chat = Some(id);
+            self.history_clear();
+            self.chat_sources.clear();
+            self.undo = None;
+            self.pending_project = None;
+        }
     }
 
     /// Recarga el chat activo desde DB con ids + timestamps (v0.7.4).
     pub(crate) fn reload_active_chat(&mut self) {
         let Some(id) = self.active_chat else {
-            self.messages.clear();
-            self.msg_times.clear();
-            self.msg_ids.clear();
+            self.history_clear();
             self.reparse_md();
             return;
         };
@@ -531,7 +551,7 @@ impl App {
             return None;
         }
         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-            format!("{}/{rest}", std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()))
+            format!("{}/{rest}", crate::paths::home_dir().display())
         } else {
             raw.to_string()
         };
@@ -569,19 +589,64 @@ impl App {
     /// Re-parsea solo el último mensaje (tras cada chunk de stream).
     pub(crate) fn reparse_last_md(&mut self) {
         if let Some((m, slot)) = self.messages.last().zip(self.md.last_mut())
-            && m.role == Role::Assistant {
-                *slot = markdown::parse(&m.content).collect();
-            }
+            && m.role == Role::Assistant
+        {
+            *slot = markdown::parse(&m.content).collect();
+        }
+    }
+
+    /// Snapshot alineado del historial (v0.9.5): construye `ChatHistory`
+    /// para undo/diagnóstico sin tocar los vectores.
+    pub(crate) fn history_snapshot(&self) -> super::history::ChatHistory {
+        super::history::ChatHistory {
+            messages: self.messages.clone(),
+            md: self.md.clone(),
+            msg_usage: self.msg_usage.clone(),
+            msg_times: self.msg_times.clone(),
+            msg_ids: self.msg_ids.clone(),
+        }
+    }
+
+    /// Push atómico al historial (v0.9.5): messages + md + usage +
+    /// tiempos + ids se mueven juntos; adiós pushes desalineados.
+    pub(crate) fn history_push(
+        &mut self,
+        msg: ChatMsg,
+        md_items: Vec<markdown::Item>,
+        usage: Option<crate::llm::Usage>,
+        time: String,
+        id: i64,
+    ) {
+        self.messages.push(msg);
+        self.md.push(md_items);
+        self.msg_usage.push(usage);
+        self.msg_times.push(time);
+        self.msg_ids.push(id);
+        debug_assert!(self.history_snapshot().is_aligned());
+    }
+
+    /// Clear atómico del historial (v0.9.5).
+    pub(crate) fn history_clear(&mut self) {
+        self.messages.clear();
+        self.md.clear();
+        self.msg_usage.clear();
+        self.msg_times.clear();
+        self.msg_ids.clear();
+    }
+
+    /// Truncate atómico del historial (v0.9.5): undo/rama nunca desalinean.
+    pub(crate) fn history_truncate(&mut self, n: usize) {
+        self.messages.truncate(n);
+        self.md.truncate(n);
+        self.msg_usage.truncate(n);
+        self.msg_times.truncate(n);
+        self.msg_ids.truncate(n);
     }
 
     /// Quita el último mensaje y sus paralelos (md/uso/tiempos/ids) de una
     /// vez: evita desalineados entre `messages` y sus vectores paralelos.
     pub(crate) fn pop_last_message(&mut self) {
-        self.messages.pop();
-        self.md.pop();
-        self.msg_usage.pop();
-        self.msg_times.pop();
-        self.msg_ids.pop();
+        self.history_truncate(self.messages.len().saturating_sub(1));
     }
 
     /// Relee ids + created_at desde DB para alinear los paralelos tras un
@@ -594,6 +659,32 @@ impl App {
                 self.msg_ids = tail.iter().map(|m| m.id).collect();
                 self.msg_times = tail.iter().map(|m| m.created_at.clone()).collect();
             }
+        }
+    }
+
+    /// Precarga los datos de la pestaña de Config activa (v0.9.5) para que la
+    /// vista sea render puro: sin DB ni FS dentro del árbol de widgets.
+    pub(crate) fn reload_config_data(&mut self) {
+        match self.config_tab {
+            ConfigTab::Stack => {
+                self.config_usage = db::list_usage().unwrap_or_default();
+                let key = crate::app::handlers::chat::project_key(self);
+                self.config_usage_here = db::get_usage(&key).unwrap_or_default();
+                self.config_usage_cats = db::list_usage_tools(&key).unwrap_or_default();
+            }
+            ConfigTab::Skills => {
+                self.config_skills = crate::skills::list();
+            }
+            ConfigTab::Proyectos => {
+                self.config_uploads.clear();
+                for p in &self.projects {
+                    if let Some(ws) = p.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                        let files = crate::workspace::list_uploads(std::path::Path::new(ws));
+                        self.config_uploads.insert(p.id, files);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

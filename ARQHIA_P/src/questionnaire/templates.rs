@@ -3,9 +3,9 @@
 //! Puro: `generate_project_docs(level, answers, ai, origin) -> (PROJECT, SPECS, CONTEXT)`.
 //! SPECS con secciones por **familia** (no por nivel); CONTEXT anota el origen.
 
-use super::levels::{Categoria, EstiloPreset, Level, SysType};
 use super::Answers;
 use super::QSource;
+use super::levels::{Categoria, EstiloPreset, Level, SysType};
 
 const PROJECT_T: &str = r#"# {{ nombre }}
 
@@ -124,8 +124,20 @@ pub fn generate_project_docs(
     let subobjetivos = subobjetivos_for(a);
     let publico = or_dash(&a.publico_objetivo);
     let uso_previsto = or_dash(&a.uso_previsto);
-    let mision = format!("Cumplir el objetivo principal de {} para {}.", a.objetivo.trim().split('.').next().unwrap_or(&a.objetivo).trim(), publico);
-    let vision = format!("{} usable y mantenible, con CONTEXT como fuente de verdad (usuario → cuestionario → IA → CONTEXT → plan → implementación → auditoría).", a.cat);
+    let mision = format!(
+        "Cumplir el objetivo principal de {} para {}.",
+        a.objetivo
+            .trim()
+            .split('.')
+            .next()
+            .unwrap_or(&a.objetivo)
+            .trim(),
+        publico
+    );
+    let vision = format!(
+        "{} usable y mantenible, con CONTEXT como fuente de verdad (usuario → cuestionario → IA → CONTEXT → plan → implementación → auditoría).",
+        a.cat
+    );
     let origen_str = match source {
         QSource::New => "definido desde cero",
         QSource::Import => "importado de código existente",
@@ -189,7 +201,9 @@ pub fn generate_project_docs(
     }
     if !ai.is_empty() {
         specs.push_str("\n## Preguntas adicionales (IA)\n");
-        specs.push_str("> Generadas dinámicamente (5–10, sin repetir lo ya dado) para cubrir vacíos.\n");
+        specs.push_str(
+            "> Generadas dinámicamente (5–10, sin repetir lo ya dado) para cubrir vacíos.\n",
+        );
         for (q, r) in ai {
             if r.trim().is_empty() {
                 specs.push_str(&format!("\n- {q} (sin responder)\n"));
@@ -232,7 +246,11 @@ fn plataform_line(a: &Answers) -> String {
     if a.plataformas.is_empty() {
         "Pendiente de definir: plataformas (ver Plan/MVP)".to_string()
     } else {
-        a.plataformas.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+        a.plataformas
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -240,7 +258,11 @@ fn stack_line(a: &Answers) -> String {
     let mut base = if a.stacks.is_empty() {
         "Pendiente de definir: stack (se propone en el Plan/MVP)".to_string()
     } else {
-        a.stacks.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+        a.stacks
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     if !a.stack_free.trim().is_empty() {
         base.push_str(&format!(" ({})", a.stack_free.trim()));
@@ -260,7 +282,11 @@ fn arch_line(a: &Answers) -> String {
     if a.archs.is_empty() {
         "Pendiente de definir: arch target (ver Plan/MVP)".to_string()
     } else {
-        a.archs.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+        a.archs
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -269,7 +295,10 @@ fn gaps_md_for(a: &Answers) -> String {
     if g.is_empty() {
         "Sin gaps: el cuestionario cubrió lo necesario.".to_string()
     } else {
-        g.iter().map(|x| format!("- Pendiente de definir: {x}")).collect::<Vec<_>>().join("\n")
+        g.iter()
+            .map(|x| format!("- Pendiente de definir: {x}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -325,17 +354,35 @@ fn factura_line(a: &Answers) -> String {
 
 fn subobjetivos_for(a: &Answers) -> String {
     // Deriva 2–3 subobjetivos de funcionalidades u objetivo
-    let funcs: Vec<String> = a.funcionalidades.lines().map(|l| l.trim_start_matches(['-', '*', '•']).trim().to_string()).filter(|l| !l.is_empty()).collect();
+    let funcs: Vec<String> = a
+        .funcionalidades
+        .lines()
+        .map(|l| l.trim_start_matches(['-', '*', '•']).trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
     if funcs.is_empty() {
-        format!("- Completar definición de subobjetivos en Plan (derivado de: {}).", or_dash(&a.objetivo))
+        format!(
+            "- Completar definición de subobjetivos en Plan (derivado de: {}).",
+            or_dash(&a.objetivo)
+        )
     } else {
-        funcs.iter().take(3).map(|f| format!("- {f}: entregable verificable.")).collect::<Vec<_>>().join("\n")
+        funcs
+            .iter()
+            .take(3)
+            .map(|f| format!("- {f}: entregable verificable."))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
 fn arquitectura_for(a: &Answers) -> String {
     if !a.archs.is_empty() || !a.sintaxis.trim().is_empty() || !a.toolchain.trim().is_empty() {
-        format!("Targets: {}. Sintaxis: {}. Toolchain: {}.", arch_line(a), or_dash(&a.sintaxis), or_dash(&a.toolchain))
+        format!(
+            "Targets: {}. Sintaxis: {}. Toolchain: {}.",
+            arch_line(a),
+            or_dash(&a.sintaxis),
+            or_dash(&a.toolchain)
+        )
     } else if a.cat == Categoria::Aplicacion || a.cat == Categoria::Servicio {
         "Pendiente de definir: arquitectura relevante (monolito/capas/hexagonal/microservicios/eventos/serverless según familia Nivel Avanzado; ver Plan).".to_string()
     } else {
@@ -344,8 +391,16 @@ fn arquitectura_for(a: &Answers) -> String {
 }
 
 fn flujos_for(a: &Answers) -> String {
-    if !a.ui_ux.trim().is_empty() || !a.pipeline_desc.trim().is_empty() || !a.endpoints.trim().is_empty() {
-        format!("Usuario: {}. Datos/Pipeline: {}. Endpoints: {}.", or_dash(&a.ui_ux), or_dash(&a.pipeline_desc), or_dash(&a.endpoints))
+    if !a.ui_ux.trim().is_empty()
+        || !a.pipeline_desc.trim().is_empty()
+        || !a.endpoints.trim().is_empty()
+    {
+        format!(
+            "Usuario: {}. Datos/Pipeline: {}. Endpoints: {}.",
+            or_dash(&a.ui_ux),
+            or_dash(&a.pipeline_desc),
+            or_dash(&a.endpoints)
+        )
     } else {
         "Pendiente de definir: flujos de datos y de usuario (ver Plan).".to_string()
     }
@@ -353,9 +408,14 @@ fn flujos_for(a: &Answers) -> String {
 
 fn recurrencia_for(a: &Answers) -> String {
     if a.trigger != super::levels::Trigger::Cron && !a.idempotencia.trim().is_empty() {
-        format!("Trigger: {}. Idempotencia: {}.", a.trigger, or_dash(&a.idempotencia))
+        format!(
+            "Trigger: {}. Idempotencia: {}.",
+            a.trigger,
+            or_dash(&a.idempotencia)
+        )
     } else if a.cat == Categoria::Automatizacion || a.cat == Categoria::DatosIa {
-        "Pendiente de definir: recurrencia y procesos programados (cron/manual/webhook/CI).".to_string()
+        "Pendiente de definir: recurrencia y procesos programados (cron/manual/webhook/CI)."
+            .to_string()
     } else {
         "No aplica o pendiente de definir según Plan.".to_string()
     }
@@ -366,18 +426,40 @@ fn convenciones_for() -> String {
 }
 
 fn dependencias_for(a: &Answers) -> String {
-    let mut deps = vec![format!("Stack: {}", stack_line(a)), format!("Plataformas: {}", plataform_line(a))];
-    if !a.endpoints.trim().is_empty() { deps.push(format!("APIs: {}", a.endpoints)); }
-    if super::levels::is_oss(a.cat, a.facturacion, a.licencia) { deps.push("Open Source: repo/gobierno/contribución definidos".to_string()); }
+    let mut deps = vec![
+        format!("Stack: {}", stack_line(a)),
+        format!("Plataformas: {}", plataform_line(a)),
+    ];
+    if !a.endpoints.trim().is_empty() {
+        deps.push(format!("APIs: {}", a.endpoints));
+    }
+    if super::levels::is_oss(a.cat, a.facturacion, a.licencia) {
+        deps.push("Open Source: repo/gobierno/contribución definidos".to_string());
+    }
     deps.join(" | ")
 }
 
 fn tests_func_para(a: &Answers) -> String {
-    let items: Vec<String> = a.funcionalidades.lines().map(|l| l.trim_start_matches(['-', '*', '•']).trim()).filter(|l| !l.is_empty()).map(|s| s.to_string()).collect();
+    let items: Vec<String> = a
+        .funcionalidades
+        .lines()
+        .map(|l| l.trim_start_matches(['-', '*', '•']).trim())
+        .filter(|l| !l.is_empty())
+        .map(|s| s.to_string())
+        .collect();
     if items.is_empty() {
         "Pendiente de definir: tests funcionales por funcionalidad (ver criterios).".to_string()
     } else {
-        items.iter().map(|f| format!("- Test funcional: {} → caso feliz + caso de error principal.", f)).collect::<Vec<_>>().join("\n")
+        items
+            .iter()
+            .map(|f| {
+                format!(
+                    "- Test funcional: {} → caso feliz + caso de error principal.",
+                    f
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -386,7 +468,12 @@ fn qa_for() -> String {
 }
 
 fn otros_for(a: &Answers, gaps: String) -> String {
-    format!("Gaps: {}. Público: {}. Uso: {}.", gaps.replace('\n', " | "), or_dash(&a.publico_objetivo), or_dash(&a.uso_previsto))
+    format!(
+        "Gaps: {}. Público: {}. Uso: {}.",
+        gaps.replace('\n', " | "),
+        or_dash(&a.publico_objetivo),
+        or_dash(&a.uso_previsto)
+    )
 }
 
 /// Cuerpo de SPECS.md por familia (secciones de la matriz que apliquen).
@@ -435,7 +522,10 @@ fn specs_body(level: Level, a: &Answers) -> String {
                 sec(&mut out, "Toolchain", &a.toolchain);
                 out.push_str(&format!("## Arquitectura objetivo\n{}\n\n", arch_line(a)));
                 sec(&mut out, "Compatibilidad", &a.compat);
-                out.push_str(&format!("## Lenguaje de implementación\n{}\n\n", stack_line(a)));
+                out.push_str(&format!(
+                    "## Lenguaje de implementación\n{}\n\n",
+                    stack_line(a)
+                ));
             } else {
                 out.push_str(&format!("## Arquitectura objetivo\n{}\n\n", arch_line(a)));
                 sec(&mut out, "Arranque/Hardware", &a.arranque);
@@ -448,7 +538,10 @@ fn specs_body(level: Level, a: &Answers) -> String {
                     sec(&mut out, "Syscalls/ABI", &a.syscalls);
                 }
                 sec(&mut out, "Compatibilidad", &a.compat);
-                out.push_str(&format!("## Lenguaje de implementación\n{}\n\n", stack_line(a)));
+                out.push_str(&format!(
+                    "## Lenguaje de implementación\n{}\n\n",
+                    stack_line(a)
+                ));
             }
         }
         Categoria::Automatizacion => {
@@ -572,8 +665,14 @@ mod tests {
             generate_project_docs(Level::Intermedio, &sample_app(), &[], &QSource::New).unwrap();
         assert!(s.contains("### Criterios de aceptación"));
         assert!(s.contains("Catálogo") && s.contains("Carrito") && s.contains("Pago"));
-        assert!(s.contains("sin errores en el caso feliz"), "criterio verificable: {s}");
-        assert!(!s.contains("(se define al planificar)"), "cero placeholders mudos");
+        assert!(
+            s.contains("sin errores en el caso feliz"),
+            "criterio verificable: {s}"
+        );
+        assert!(
+            !s.contains("(se define al planificar)"),
+            "cero placeholders mudos"
+        );
         // Servicio: verbos de endpoints en los criterios.
         let mut svc = sample_app();
         svc.cat = Categoria::Servicio;
@@ -588,8 +687,7 @@ mod tests {
         a.cat = Categoria::Sistema;
         a.sys = SysType::DriverFirmware;
         a.licencia = crate::questionnaire::levels::Licencia::Gpl3;
-        let (_, s, c) =
-            generate_project_docs(Level::Avanzado, &a, &[], &QSource::Import).unwrap();
+        let (_, s, c) = generate_project_docs(Level::Avanzado, &a, &[], &QSource::Import).unwrap();
         assert!(s.contains("## Licencia") && s.contains("GPL-3.0"));
         assert!(s.contains("obliga a liberar"));
         assert!(!s.contains("## Facturación"));
@@ -600,9 +698,11 @@ mod tests {
     fn open_source_billing_renders_without_charge() {
         let mut a = sample_app();
         a.facturacion = crate::questionnaire::levels::Facturacion::OpenSource;
-        let (_, s, _) =
-            generate_project_docs(Level::Intermedio, &a, &[], &QSource::New).unwrap();
-        assert!(s.contains("## Facturación") && s.contains("código abierto"), "{s}");
+        let (_, s, _) = generate_project_docs(Level::Intermedio, &a, &[], &QSource::New).unwrap();
+        assert!(
+            s.contains("## Facturación") && s.contains("código abierto"),
+            "{s}"
+        );
     }
 
     #[test]

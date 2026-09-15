@@ -23,7 +23,11 @@ pub fn section_label(theme: Theme, label: impl Into<String>) -> Element<'static,
 }
 
 /// Field label (13, primary) + optional helper (11, muted) stacked.
-pub fn field(theme: Theme, label: impl Into<String>, helper: Option<String>) -> Element<'static, Message> {
+pub fn field(
+    theme: Theme,
+    label: impl Into<String>,
+    helper: Option<String>,
+) -> Element<'static, Message> {
     let mut col = column![text(label.into()).size(14).color(design::ink(&theme))].spacing(2);
     if let Some(h) = helper {
         let h: String = h;
@@ -141,11 +145,14 @@ pub fn activity_row<'a>(theme: Theme, line: &'a str) -> Element<'a, Message> {
         .color(design::tone(&theme, kind))
         .width(14)
         .align_x(iced::Alignment::Center);
-    let body = text(body).size(14).width(iced::Length::Fill).color(if kind == Tone::Err {
-        design::ink(&theme)
-    } else {
-        design::ink_2(&theme)
-    });
+    let body = text(body)
+        .size(14)
+        .width(iced::Length::Fill)
+        .color(if kind == Tone::Err {
+            design::ink(&theme)
+        } else {
+            design::ink_2(&theme)
+        });
     let row = row![icon, body]
         .spacing(6)
         .align_y(iced::Alignment::Center)
@@ -174,7 +181,11 @@ pub fn activity_row<'a>(theme: Theme, line: &'a str) -> Element<'a, Message> {
 // ---------------------------------------------------------------------------
 
 /// Intentional empty state: title + hint, left-aligned for panels.
-pub fn empty_state(theme: Theme, title: impl Into<String>, hint: impl Into<String>) -> Element<'static, Message> {
+pub fn empty_state(
+    theme: Theme,
+    title: impl Into<String>,
+    hint: impl Into<String>,
+) -> Element<'static, Message> {
     column![
         text(title.into()).size(14).color(design::ink(&theme)),
         text(hint.into()).size(13).color(design::ink_2(&theme)),

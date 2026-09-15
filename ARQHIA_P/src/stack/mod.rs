@@ -22,7 +22,11 @@ pub enum StackLicense {
 }
 
 impl StackLicense {
-    pub const ALL: [StackLicense; 3] = [StackLicense::Mit, StackLicense::Apache2, StackLicense::UsoInterno];
+    pub const ALL: [StackLicense; 3] = [
+        StackLicense::Mit,
+        StackLicense::Apache2,
+        StackLicense::UsoInterno,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -53,9 +57,9 @@ impl std::fmt::Display for StackLicense {
 /// La nube real es v1.0; esto ya deja el rechazo implementado y testeado.
 pub fn can_share_to_cloud(license: &str) -> Result<(), String> {
     match StackLicense::parse(license) {
-        StackLicense::UsoInterno => Err(
-            "Licencia «Uso interno»: este código nunca sale de tu equipo.".to_string(),
-        ),
+        StackLicense::UsoInterno => {
+            Err("Licencia «Uso interno»: este código nunca sale de tu equipo.".to_string())
+        }
         _ => Ok(()),
     }
 }
@@ -122,7 +126,8 @@ fn parse_tags(csv: &str) -> Vec<String> {
         .collect()
 }
 
-/// Guarda un snippet (+ FTS + metadatos). Devuelve el id.
+/// Guarda un snippet (+ FTS + metadatos) en UNA transacción IMMEDIATE
+/// (v0.9.4): insert + FTS nunca quedan a medias. Devuelve el id.
 pub fn save(item: &NewItem) -> Result<i64, String> {
     if item.title.trim().is_empty() {
         return Err("El snippet necesita un título.".to_string());
@@ -133,10 +138,13 @@ pub fn save(item: &NewItem) -> Result<i64, String> {
     if item.code.len() > 200_000 {
         return Err("Snippet demasiado grande (tope 200 KB).".to_string());
     }
-    let conn = db::connect()?;
+    let mut conn = db::connect()?;
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
     let tags = normalize_tags(&item.tags);
     let license = StackLicense::parse(&item.license).to_string();
-    conn.execute(
+    tx.execute(
         "INSERT INTO stack_items (title, code, tags, lang, author, license) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             item.title.trim(),
@@ -148,8 +156,8 @@ pub fn save(item: &NewItem) -> Result<i64, String> {
         ],
     )
     .map_err(|e| e.to_string())?;
-    let id = conn.last_insert_rowid();
-    conn.execute(
+    let id = tx.last_insert_rowid();
+    tx.execute(
         "INSERT INTO stack_fts (rowid, title, code, tags) VALUES (?1, ?2, ?3, ?4)",
         params![id, item.title.trim(), item.code, tags],
     )
@@ -158,25 +166,29 @@ pub fn save(item: &NewItem) -> Result<i64, String> {
         if k.trim().is_empty() {
             continue;
         }
-        conn.execute(
+        tx.execute(
             "INSERT INTO stack_meta (item_id, key, value) VALUES (?1, ?2, ?3)",
             params![id, k.trim(), v],
         )
         .map_err(|e| e.to_string())?;
     }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(id)
 }
 
 /// Borra un item (+ FTS + meta). Solo para limpieza/tests.
 #[allow(dead_code)]
 pub fn delete_item(id: i64) -> Result<(), String> {
-    let conn = db::connect()?;
-    conn.execute("DELETE FROM stack_fts WHERE rowid = ?1", params![id])
+    let mut conn = db::connect()?;
+    // v0.9.5: transacción: FTS, meta e item se borran juntos o no se borra nada.
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM stack_fts WHERE rowid = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM stack_meta WHERE item_id = ?1", params![id])
+    tx.execute("DELETE FROM stack_meta WHERE item_id = ?1", params![id])
         .map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM stack_items WHERE id = ?1", params![id])
+    tx.execute("DELETE FROM stack_items WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -199,7 +211,9 @@ pub fn get(id: i64) -> Result<FullItem, String> {
         .prepare("SELECT key, value FROM stack_meta WHERE item_id = ?1 ORDER BY rowid ASC")
         .map_err(|e| e.to_string())?;
     let meta = stmt
-        .query_map(params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .query_map(params![id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -234,7 +248,11 @@ fn fts_escape(query: &str) -> String {
 /// Búsqueda con ranking `tag_match*2.0 + fts + rating*0.5`, tope 20.
 /// `filter_tags` suma por coincidencia exacta; el texto va contra FTS5.
 /// Query vacía + sin tags = todo por rating.
-pub fn search(query: &str, filter_tags: &[String], limit: usize) -> Result<Vec<ScoredItem>, String> {
+pub fn search(
+    query: &str,
+    filter_tags: &[String],
+    limit: usize,
+) -> Result<Vec<ScoredItem>, String> {
     let conn = db::connect()?;
     let wanted: Vec<String> = filter_tags
         .iter()
@@ -261,10 +279,12 @@ pub fn search(query: &str, filter_tags: &[String], limit: usize) -> Result<Vec<S
             let mut stmt = conn
                 .prepare("SELECT rowid, bm25(stack_fts) FROM stack_fts WHERE stack_fts MATCH ?1")
                 .map_err(|e| e.to_string())?;
-            stmt.query_map(params![m], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?)))
-                .map_err(|e| e.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?
+            stmt.query_map(params![m], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?
         }
     };
     // Tokens del texto también puntúan contra tags (tag_match).
@@ -293,7 +313,10 @@ pub fn search(query: &str, filter_tags: &[String], limit: usize) -> Result<Vec<S
             }
         }
         for q in &qtokens {
-            if tags.iter().any(|t| t == q || t.contains(q.as_str()) || q.contains(t.as_str())) {
+            if tags
+                .iter()
+                .any(|t| t == q || t.contains(q.as_str()) || q.contains(t.as_str()))
+            {
                 tag_match += 0.5;
             }
         }
@@ -314,7 +337,11 @@ pub fn search(query: &str, filter_tags: &[String], limit: usize) -> Result<Vec<S
             snippet,
         });
     }
-    out.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out.truncate(limit.clamp(1, 20));
     Ok(out)
 }
@@ -343,7 +370,11 @@ pub fn rate(id: i64, stars: u8, opinion: &str, by: &str) -> Result<f64, String> 
     )
     .map_err(|e| e.to_string())?;
     if !opinion.trim().is_empty() {
-        let by = if by.trim().is_empty() { "usuario" } else { by.trim() };
+        let by = if by.trim().is_empty() {
+            "usuario"
+        } else {
+            by.trim()
+        };
         conn.execute(
             "INSERT INTO stack_meta (item_id, key, value) VALUES (?1, ?2, ?3)",
             params![id, format!("opinion_{by}"), opinion.trim()],
@@ -375,9 +406,11 @@ pub fn report_bug(id: i64, desc: &str) -> Result<(), String> {
     }
     let conn = db::connect()?;
     let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM stack_items WHERE id = ?1", params![id], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT COUNT(*) FROM stack_items WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     if n == 0 {
         return Err(format!("Snippet #{id} no encontrado."));
@@ -393,10 +426,10 @@ pub fn report_bug(id: i64, desc: &str) -> Result<(), String> {
 /// Palabras clave del pedido para consultar el STACK (puro, testeable).
 pub fn keywords_from_request(text: &str) -> String {
     const STOP: &[&str] = &[
-        "para", "como", "esta", "este", "esto", "hace", "hacer", "crea", "crear", "nuevo",
-        "nueva", "quiero", "necesito", "añade", "agrega", "cambia", "arregla", "sobre",
-        "entre", "desde", "donde", "cuando", "porque", "the", "with", "from", "that",
-        "this", "and", "for", "code", "file", "hola", "gracias",
+        "para", "como", "esta", "este", "esto", "hace", "hacer", "crea", "crear", "nuevo", "nueva",
+        "quiero", "necesito", "añade", "agrega", "cambia", "arregla", "sobre", "entre", "desde",
+        "donde", "cuando", "porque", "the", "with", "from", "that", "this", "and", "for", "code",
+        "file", "hola", "gracias",
     ];
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
@@ -430,9 +463,17 @@ pub fn consult(request: &str) -> Option<String> {
             "- #{} {} [{}] ★{:.1}\n  {}\n",
             h.id,
             h.title,
-            if h.tags.is_empty() { h.lang.clone() } else { h.tags.clone() },
+            if h.tags.is_empty() {
+                h.lang.clone()
+            } else {
+                h.tags.clone()
+            },
             h.rating,
-            h.snippet.replace('\n', " ").chars().take(160).collect::<String>()
+            h.snippet
+                .replace('\n', " ")
+                .chars()
+                .take(160)
+                .collect::<String>()
         ));
     }
     Some(s)
@@ -441,6 +482,7 @@ pub fn consult(request: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::test_guard::with_test_db;
 
     fn tmp_item(title: &str, code: &str, tags: &[&str]) -> NewItem {
         NewItem {
@@ -456,7 +498,7 @@ mod tests {
 
     #[test]
     fn save_search_get_rate_cycle() {
-        assert!(db::init().is_ok());
+        let (_g, _t) = with_test_db("stack-cycle");
         let id = save(&tmp_item(
             "v09-auth-test",
             "fn login(user: &str) -> bool { !user.is_empty() } // auth login",
@@ -489,9 +531,13 @@ mod tests {
 
     #[test]
     fn executions_and_bugs_are_visible() {
-        assert!(db::init().is_ok());
-        let id = save(&tmp_item("v09-exec-test", "fn health() -> &'static str { \"ok\" }", &["api", "health"]))
-            .expect("guardar");
+        let (_g, _t) = with_test_db("stack-exec");
+        let id = save(&tmp_item(
+            "v09-exec-test",
+            "fn health() -> &'static str { \"ok\" }",
+            &["api", "health"],
+        ))
+        .expect("guardar");
         record_execution(id, true).unwrap();
         record_execution(id, false).unwrap();
         let full = get(id).unwrap();
@@ -499,23 +545,33 @@ mod tests {
         assert!(report_bug(id, "").is_err(), "bug vacío inválido");
         report_bug(id, "falla con path raro").unwrap();
         let full2 = get(id).unwrap();
-        assert!(full2.meta.iter().any(|(k, v)| k == "bug" && v.contains("path raro")));
+        assert!(
+            full2
+                .meta
+                .iter()
+                .any(|(k, v)| k == "bug" && v.contains("path raro"))
+        );
         delete_item(id).unwrap();
     }
 
     #[test]
     fn tag_filter_and_ranking() {
-        assert!(db::init().is_ok());
-        let a = save(&tmp_item("v09-rank-a", "código v09authq con tokens v09jwtq", &["v09authq", "v09jwtq"])).unwrap();
-        let b = save(&tmp_item("v09-rank-b", "código v09dbq de base de datos", &["v09dbq"])).unwrap();
+        let (_g, _t) = with_test_db("stack-rank");
+        let a = save(&tmp_item(
+            "v09-rank-a",
+            "código v09authq con tokens v09jwtq",
+            &["v09authq", "v09jwtq"],
+        ))
+        .unwrap();
+        let b = save(&tmp_item(
+            "v09-rank-b",
+            "código v09dbq de base de datos",
+            &["v09dbq"],
+        ))
+        .unwrap();
         rate(a, 5, "", "usuario").unwrap();
         // Con filtro de tag, el de auth queda fuera aunque el texto matchee.
-        let hits = search(
-            "código",
-            &["v09dbq".to_string()],
-            20,
-        )
-        .unwrap();
+        let hits = search("código", &["v09dbq".to_string()], 20).unwrap();
         assert!(hits.iter().any(|h| h.id == b));
         assert!(!hits.iter().any(|h| h.id == a), "filtro de tags excluye");
         // Sin filtro, el mejor valorado con match de tag sube.
@@ -530,7 +586,10 @@ mod tests {
         assert!(can_share_to_cloud("MIT").is_ok());
         assert!(can_share_to_cloud("Apache-2.0").is_ok());
         assert!(can_share_to_cloud("Uso interno").is_err());
-        assert!(can_share_to_cloud("raro").is_err(), "desconocido = restrictivo");
+        assert!(
+            can_share_to_cloud("raro").is_err(),
+            "desconocido = restrictivo"
+        );
         assert_eq!(StackLicense::parse("apache").as_str(), "Apache-2.0");
         assert_eq!(StackLicense::parse("").as_str(), "Uso interno");
     }
@@ -545,9 +604,12 @@ mod tests {
 
     #[test]
     fn consult_returns_block_only_with_hits() {
-        assert!(db::init().is_ok());
+        let (_g, _t) = with_test_db("stack-consult");
         assert!(consult("").is_none(), "sin keywords no hay consulta");
-        assert!(consult("zzz-sin-match-qqq").is_none(), "sin hits no hay bloque");
+        assert!(
+            consult("zzz-sin-match-qqq").is_none(),
+            "sin hits no hay bloque"
+        );
         let id = save(&tmp_item(
             "v09-consult-test",
             "fn v09consultq() -> bool { true } // v09consultq",

@@ -38,7 +38,7 @@ impl Provider {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub api_key: String,
     pub base_url: String,
@@ -47,6 +47,25 @@ pub struct ProviderConfig {
     /// determina cada modelo vía models.dev (low/medium/high/max, on/off...).
     #[serde(default)]
     pub reasoning_effort: String,
+}
+
+/// `Debug` manual: nunca volcar la API key a logs/panic messages.
+impl fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field(
+                "api_key",
+                &if self.api_key.trim().is_empty() {
+                    "<vacío>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("base_url", &self.base_url)
+            .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .finish()
+    }
 }
 
 impl ProviderConfig {
@@ -228,7 +247,11 @@ impl fmt::Display for AccentChoice {
 }
 
 impl AccentChoice {
-    pub const ALL: [AccentChoice; 3] = [AccentChoice::Teal, AccentChoice::Amber, AccentChoice::Violet];
+    pub const ALL: [AccentChoice; 3] = [
+        AccentChoice::Teal,
+        AccentChoice::Amber,
+        AccentChoice::Violet,
+    ];
 }
 
 /// Tamaño de texto global (v0.7 Track B).
@@ -459,7 +482,10 @@ impl GitConfig {
         if self.author_name.trim().is_empty() || self.author_email.trim().is_empty() {
             None
         } else {
-            Some((self.author_name.trim().to_string(), self.author_email.trim().to_string()))
+            Some((
+                self.author_name.trim().to_string(),
+                self.author_email.trim().to_string(),
+            ))
         }
     }
 }
@@ -578,7 +604,10 @@ pub fn is_mcp_install_command(cmd: &str) -> bool {
     let base = c.split_whitespace().next().unwrap_or("");
     // base sin path: /usr/bin/npx -> npx
     let base = base.rsplit('/').next().unwrap_or(base);
-    matches!(base, "npx" | "uvx" | "npm" | "pip" | "pip3" | "curl" | "npx.cmd" | "npm.cmd")
+    matches!(
+        base,
+        "npx" | "uvx" | "npm" | "pip" | "pip3" | "curl" | "npx.cmd" | "npm.cmd"
+    )
 }
 
 /// Config MCP (v0.9.3): mapa de servidores por nombre.
@@ -613,7 +642,7 @@ impl ThemeMode {
 
 /// Perfil de modelo con nombre visible (v0.7.4): snapshot de provider +
 /// credenciales + modelo + nivel, elegible por nombre en Config y composer.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelProfile {
     pub id: String,
     pub name: String,
@@ -628,10 +657,36 @@ pub struct ModelProfile {
     pub reasoning_effort: String,
 }
 
+/// `Debug` manual: el perfil también guarda la API key.
+impl fmt::Debug for ModelProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ModelProfile")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("provider", &self.provider)
+            .field("base_url", &self.base_url)
+            .field(
+                "api_key",
+                &if self.api_key.trim().is_empty() {
+                    "<vacío>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("model", &self.model)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .finish()
+    }
+}
+
 impl ModelProfile {
     pub fn new(name: &str, provider: Provider, cfg: &ProviderConfig) -> Self {
         let base = name.trim();
-        let stem = if base.is_empty() { "Perfil".to_string() } else { base.to_string() };
+        let stem = if base.is_empty() {
+            "Perfil".to_string()
+        } else {
+            base.to_string()
+        };
         // id estable y único sin dependencias externas: slug + nanos.
         let slug: String = stem
             .to_lowercase()
@@ -647,7 +702,14 @@ impl ModelProfile {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         Self {
-            id: format!("{}-{nanos}", if slug.is_empty() { "perfil".to_string() } else { slug }),
+            id: format!(
+                "{}-{nanos}",
+                if slug.is_empty() {
+                    "perfil".to_string()
+                } else {
+                    slug
+                }
+            ),
             name: stem,
             provider,
             base_url: cfg.base_url.clone(),
@@ -776,9 +838,10 @@ impl AppConfig {
             self.active_profile = Some("default".to_string());
         }
         if self.active_profile.is_none()
-            && let Some(first) = self.model_profiles.first() {
-                self.active_profile = Some(first.id.clone());
-            }
+            && let Some(first) = self.model_profiles.first()
+        {
+            self.active_profile = Some(first.id.clone());
+        }
     }
 
     /// Aplica un perfil al activo (provider + credenciales en sus slots).
@@ -838,7 +901,30 @@ impl AppConfig {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let content = toml::to_string_pretty(self).map_err(|e| e.to_string())?;
-        fs::write(&path, content).map_err(|e| e.to_string())
+        // v0.9.5: crear el archivo ya con 600 (sin ventana TOCTOU). En no-Unix
+        // se escribe normal: la protección de secretos queda al SO.
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| e.to_string())?;
+            file.write_all(content.as_bytes())
+                .map_err(|e| e.to_string())?;
+            // Refuerza el modo aunque el archivo ya existiera con otro.
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|e| e.to_string())?;
+        }
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, content).map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 
     /// Patrones efectivos de ignorados (v0.7.1): los del usuario si los
@@ -882,13 +968,7 @@ pub fn config_path() -> PathBuf {
             return PathBuf::from(over);
         }
     }
-    let home = std::env::var("ARQHIA_HOME")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".config")
-        .join("arqhia")
-        .join("config.toml")
+    crate::paths::config_dir().join("config.toml")
 }
 
 #[cfg(test)]
@@ -994,21 +1074,56 @@ model = "y"
         cfg.permissions.auto_net = true;
         assert!(cfg.permissions.auto_net);
         // Límites recortados a rango.
-        let lim = Limits { max_iters: 99, max_tasks: 0, bash_timeout_s: 1, max_upload_mb: 999, max_read_kb: 1, max_tokens_turn: 0, history_limit: 0, max_fix_cycles: 0 };
+        let lim = Limits {
+            max_iters: 99,
+            max_tasks: 0,
+            bash_timeout_s: 1,
+            max_upload_mb: 999,
+            max_read_kb: 1,
+            max_tokens_turn: 0,
+            history_limit: 0,
+            max_fix_cycles: 0,
+        };
         let c = lim.clamped();
-        assert_eq!((c.max_iters, c.max_tasks, c.bash_timeout_s, c.max_upload_mb, c.max_read_kb), (30, 1, 5, 200, 64));
+        assert_eq!(
+            (
+                c.max_iters,
+                c.max_tasks,
+                c.bash_timeout_s,
+                c.max_upload_mb,
+                c.max_read_kb
+            ),
+            (30, 1, 5, 200, 64)
+        );
         assert_eq!(c.max_tokens_turn, 0, "0 = sin límite, se respeta");
         assert_eq!(c.history_limit, 5, "historial recorta al mínimo");
         assert_eq!(c.max_fix_cycles, 0, "0 = ciclos ilimitados, se respeta");
-        let budgeted = Limits { max_tokens_turn: 999_999, history_limit: 200, max_fix_cycles: 99, ..Limits::default() };
+        let budgeted = Limits {
+            max_tokens_turn: 999_999,
+            history_limit: 200,
+            max_fix_cycles: 99,
+            ..Limits::default()
+        };
         let cb = budgeted.clamped();
         assert_eq!(cb.max_tokens_turn, 500_000);
         assert_eq!(cb.history_limit, 100);
         assert_eq!(cb.max_fix_cycles, 20);
         assert!(!Limits::default().has_token_budget());
-        assert!(Limits { max_tokens_turn: 5000, ..Limits::default() }.has_token_budget());
+        assert!(
+            Limits {
+                max_tokens_turn: 5000,
+                ..Limits::default()
+            }
+            .has_token_budget()
+        );
         assert!(Limits::default().unlimited_fix_cycles());
-        assert!(!Limits { max_fix_cycles: 3, ..Limits::default() }.unlimited_fix_cycles());
+        assert!(
+            !Limits {
+                max_fix_cycles: 3,
+                ..Limits::default()
+            }
+            .unlimited_fix_cycles()
+        );
     }
 
     #[test]
@@ -1121,7 +1236,10 @@ model = "y"
         assert_eq!(g.base_branch, "main");
         assert_eq!(g.remote, "origin");
         assert_eq!(g.push_branch, "ab");
-        assert_eq!(g.work_branch, "ARQHIA", "work_branch no puede ser la base/protegida");
+        assert_eq!(
+            g.work_branch, "ARQHIA",
+            "work_branch no puede ser la base/protegida"
+        );
         assert_eq!(g.protected, vec!["main"]);
         // Autonomía: solo CommitAndPush + push_enabled habilita auto push.
         let partial = GitConfig {
@@ -1130,7 +1248,10 @@ model = "y"
             ..GitConfig::default()
         };
         assert!(!partial.auto_push());
-        let readonly = GitConfig { autonomy: GitAutonomy::ReadOnly, ..GitConfig::default() };
+        let readonly = GitConfig {
+            autonomy: GitAutonomy::ReadOnly,
+            ..GitConfig::default()
+        };
         assert!(!readonly.auto_push());
         // Autor solo con nombre+email.
         assert!(GitConfig::default().author().is_none());
@@ -1139,7 +1260,10 @@ model = "y"
             author_email: "ana@x.dev".to_string(),
             ..GitConfig::default()
         };
-        assert_eq!(with_author.author().unwrap(), ("Ana".to_string(), "ana@x.dev".to_string()));
+        assert_eq!(
+            with_author.author().unwrap(),
+            ("Ana".to_string(), "ana@x.dev".to_string())
+        );
     }
 
     #[test]
@@ -1167,7 +1291,12 @@ model = "y"
         assert_eq!(back.model_profiles[0].name, "Perfil por defecto");
         assert_eq!(back.active_profile.as_deref(), Some("default"));
         // Guardar 2 perfiles y alternar.
-        let cfg2 = ProviderConfig { api_key: "k2".to_string(), base_url: "https://x".to_string(), model: "m2".to_string(), reasoning_effort: String::new() };
+        let cfg2 = ProviderConfig {
+            api_key: "k2".to_string(),
+            base_url: "https://x".to_string(),
+            model: "m2".to_string(),
+            reasoning_effort: String::new(),
+        };
         let mut p2 = ModelProfile::new("Potente", Provider::Anthropic, &cfg2);
         p2.id = "p2".to_string();
         back.model_profiles.push(p2);
@@ -1181,7 +1310,11 @@ model = "y"
         assert_eq!(again.model_profiles.len(), 2);
         assert_eq!(again.active_profile.as_deref(), Some("p2"));
         // Label visible con nombre, no id crudo.
-        assert!(again.model_profiles[1].label().starts_with("Potente (Anthropic"));
+        assert!(
+            again.model_profiles[1]
+                .label()
+                .starts_with("Potente (Anthropic")
+        );
     }
 
     #[test]
@@ -1220,9 +1353,30 @@ model = "y"
         assert_eq!(again.identity.author_line(), "Ana <ana@x.dev>");
         // Identidad: nombre vacío o email sin @ no valen.
         assert!(Identity::default().validate().is_err());
-        assert!(Identity { name: "A".to_string(), email: "sin-arroba".to_string() }.validate().is_err());
-        assert!(Identity { name: "A".to_string(), email: "a@b".to_string() }.validate().is_err());
-        assert!(Identity { name: "A".to_string(), email: "a@b.dev".to_string() }.validate().is_ok());
+        assert!(
+            Identity {
+                name: "A".to_string(),
+                email: "sin-arroba".to_string()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Identity {
+                name: "A".to_string(),
+                email: "a@b".to_string()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            Identity {
+                name: "A".to_string(),
+                email: "a@b.dev".to_string()
+            }
+            .validate()
+            .is_ok()
+        );
     }
 
     #[test]
@@ -1316,12 +1470,47 @@ model = "y"
         assert!(is_mcp_install_command("/usr/bin/npx"));
         assert!(is_mcp_install_command("uvx foo"));
         assert!(!is_mcp_install_command("mi-docs-mcp"));
-        assert!(McpServerConfig { command: "npx".to_string(), ..McpServerConfig::default() }.is_install());
-        assert!(!McpServerConfig { command: "my-server".to_string(), ..McpServerConfig::default() }.is_install());
+        assert!(
+            McpServerConfig {
+                command: "npx".to_string(),
+                ..McpServerConfig::default()
+            }
+            .is_install()
+        );
+        assert!(
+            !McpServerConfig {
+                command: "my-server".to_string(),
+                ..McpServerConfig::default()
+            }
+            .is_install()
+        );
         // validated clamps
-        let clamped = McpServerConfig { timeout_s: 999, ..McpServerConfig::default() }.validated();
+        let clamped = McpServerConfig {
+            timeout_s: 999,
+            ..McpServerConfig::default()
+        }
+        .validated();
         assert_eq!(clamped.timeout_s, 120);
-        let low = McpServerConfig { timeout_s: 1, ..McpServerConfig::default() }.validated();
+        let low = McpServerConfig {
+            timeout_s: 1,
+            ..McpServerConfig::default()
+        }
+        .validated();
         assert_eq!(low.timeout_s, 5);
+    }
+
+    #[test]
+    fn config_save_uses_600_on_unix() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("cfg600");
+        let cfg = AppConfig::default();
+        cfg.save().unwrap();
+        let path = config_path();
+        assert!(path.is_file());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "config.toml debe ser 600, no {mode:o}");
+        }
     }
 }

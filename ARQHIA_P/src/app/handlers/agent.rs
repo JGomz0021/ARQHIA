@@ -6,15 +6,15 @@
 use iced::Task;
 use iced::widget::markdown;
 
-use crate::app::state::App;
+use crate::agent;
 use crate::app::Message;
 use crate::app::orchestrator::{
-    abort_agent_placeholder, account_tokens, continue_after_worker, finish_orchestrator,
-    call_needs_approval, finish_agent_answer, log_checklist, orch_phase, request_next_llm_step,
-    spawn_exec_calls, spawn_planner, resume_planner_with_net, start_worker,
-    start_worker_with_task, OrchTask, PendingPlanner,
+    OrchTask, PendingPlanner, abort_agent_placeholder, account_tokens, call_needs_approval,
+    continue_after_worker, finish_agent_answer, finish_orchestrator, log_checklist, orch_phase,
+    request_next_llm_step, resume_planner_with_net, spawn_exec_calls, spawn_planner, start_worker,
+    start_worker_with_task,
 };
-use crate::agent;
+use crate::app::state::App;
 use crate::db;
 use crate::llm::Role;
 
@@ -24,14 +24,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             if turn != state.agent_gen {
                 return Task::none(); // turno cancelado, resultado tardío
             }
-            let (provider, cfg, ws) = match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
-                (Some(p), Some(c), Some(w)) => (p, c, w),
-                _ => {
-                    abort_agent_placeholder(state);
-                    state.agent_running = false;
-                    return Task::none();
-                }
-            };
+            let (provider, cfg, ws) =
+                match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
+                    (Some(p), Some(c), Some(w)) => (p, c, w),
+                    _ => {
+                        abort_agent_placeholder(state);
+                        state.agent_running = false;
+                        return Task::none();
+                    }
+                };
             let pedido = state
                 .o_history
                 .iter()
@@ -60,8 +61,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             // Con `use_stack` siempre; si el pedido lo nombra a mano, esa
             // mención vale como consentimiento puntual del turno.
             let explicit = crate::app::orchestrator::mentions_stack(&pedido);
-            let allow =
-                state.config.stack_consent.use_stack || explicit;
+            let allow = state.config.stack_consent.use_stack || explicit;
             let mut context = context;
             if allow {
                 match crate::app::orchestrator::stack_consult_block(allow, &pedido) {
@@ -137,7 +137,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let mut pp = pp;
             pp.urls = agent::extract_urls(&pedido);
             if !pp.urls.is_empty() {
-                state.push_log(format!("planner: consultando {} doc(s) externo(s)…", pp.urls.len()));
+                state.push_log(format!(
+                    "planner: consultando {} doc(s) externo(s)…",
+                    pp.urls.len()
+                ));
             }
             spawn_planner(state, pp, false)
         }
@@ -150,16 +153,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     abort_agent_placeholder(state);
                     state.agent_running = false;
                     state.driver = None;
-                    state.status = format!("Error del planificador: {}", crate::llm::friendly_error(&e));
+                    state.status =
+                        format!("Error del planificador: {}", crate::llm::friendly_error(&e));
                     state.push_log(format!("❌ plan: {e}"));
                 }
                 Ok(tasks) => {
                     let max_tasks = state.config.limits.clamped().max_tasks;
                     let mut tasks = tasks;
                     if tasks.len() > max_tasks {
-                        state.push_log(format!(
-                            "🧭 plan recortado a {max_tasks} tareas (límite)"
-                        ));
+                        state.push_log(format!("🧭 plan recortado a {max_tasks} tareas (límite)"));
                         tasks.truncate(max_tasks);
                     }
                     state.orch_tasks = tasks
@@ -192,7 +194,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     abort_agent_placeholder(state);
                     state.agent_running = false;
                     state.driver = None;
-                    state.status = format!("Error del planificador: {}", crate::llm::friendly_error(&e));
+                    state.status =
+                        format!("Error del planificador: {}", crate::llm::friendly_error(&e));
                     state.push_log(format!("❌ plan: {e}"));
                 }
                 Ok(tasks) => {
@@ -200,8 +203,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     // Escribe ROADMAP + VERSIONS + v0.1 + ToDo (pre-autorizado
                     // en este turno) y resume en el chat. Sin panel de plan.
                     if let Some(ctx) = state.plan_auto.take() {
-                        let mut descs: Vec<String> =
-                            tasks.iter().map(|t| t.desc.clone()).collect();
+                        let mut descs: Vec<String> = tasks.iter().map(|t| t.desc.clone()).collect();
                         let max = state.config.limits.clamped().max_tasks;
                         if descs.len() > max {
                             descs.truncate(max);
@@ -321,14 +323,16 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     c.mode = crate::db::Mode::Work;
                 }
             }
-            state.messages.push(crate::llm::ChatMsg {
-                role: Role::Assistant,
-                content: "orquestando...".to_string(),
-            });
-            state.md.push(markdown::parse("orquestando...").collect());
-            state.msg_usage.push(None);
-            state.msg_times.push(String::new());
-            state.msg_ids.push(0);
+            state.history_push(
+                crate::llm::ChatMsg {
+                    role: Role::Assistant,
+                    content: "orquestando...".to_string(),
+                },
+                markdown::parse("orquestando...").collect(),
+                None,
+                String::new(),
+                0,
+            );
             state.agent_running = true;
             state.show_plan = false;
             state.o_provider = Some(provider);
@@ -345,7 +349,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
             // v0.7.2: rama de trabajo + árbol limpio antes de tocar nada.
             crate::app::orchestrator::prepare_git_turn(state);
-            state.push_log(format!("▶ ejecutando plan ({} tareas)", state.orch_tasks.len()));
+            state.push_log(format!(
+                "▶ ejecutando plan ({} tareas)",
+                state.orch_tasks.len()
+            ));
             log_checklist(state);
             orch_phase(state, 3, 5, "workers");
             start_worker(state, 0)
@@ -378,14 +385,18 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 Ok(agent::StepOutcome::Final(answer)) => {
                     state.worker_answers.push(answer);
                     if drv.task_idx != usize::MAX
-                        && let Some(t) = state.orch_tasks.get_mut(drv.task_idx) {
-                            t.done = true;
-                            t.active = false;
-                        }
+                        && let Some(t) = state.orch_tasks.get_mut(drv.task_idx)
+                    {
+                        t.done = true;
+                        t.active = false;
+                    }
                     state.driver = None;
                     return continue_after_worker(state);
                 }
-                Ok(agent::StepOutcome::Calls { calls, assistant_msg }) => {
+                Ok(agent::StepOutcome::Calls {
+                    calls,
+                    assistant_msg,
+                }) => {
                     drv.raw.push(assistant_msg);
                     drv.step += 1;
                     let max_steps = drv.max_steps;
@@ -394,10 +405,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             "Llegué al límite de {max_steps} pasos en esta subtarea (Límites en Config)."
                         ));
                         if drv.task_idx != usize::MAX
-                            && let Some(t) = state.orch_tasks.get_mut(drv.task_idx) {
-                                t.done = true;
-                                t.active = false;
-                            }
+                            && let Some(t) = state.orch_tasks.get_mut(drv.task_idx)
+                        {
+                            t.done = true;
+                            t.active = false;
+                        }
                         state.driver = None;
                         return continue_after_worker(state);
                     }
@@ -415,10 +427,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             "Me estanqué repitiendo las mismas llamadas: paro para no quemar tokens. Reformula el pedido o dime el siguiente paso.".to_string(),
                         );
                         if drv.task_idx != usize::MAX
-                            && let Some(t) = state.orch_tasks.get_mut(drv.task_idx) {
-                                t.done = true;
-                                t.active = false;
-                            }
+                            && let Some(t) = state.orch_tasks.get_mut(drv.task_idx)
+                        {
+                            t.done = true;
+                            t.active = false;
+                        }
                         state.driver = None;
                         state.push_log("⏹ parada temprana: calls idénticas".to_string());
                         return continue_after_worker(state);
@@ -443,11 +456,9 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                         }
                     }
                     if !auto_denied.is_empty() {
-                        state.push_log(format!(
-                            "⛔ {} denegada(s) (recordado)",
-                            auto_denied.len()
-                        ));
-                        drv.raw.extend(agent::denial_msgs(drv.provider, &auto_denied));
+                        state.push_log(format!("⛔ {} denegada(s) (recordado)", auto_denied.len()));
+                        drv.raw
+                            .extend(agent::denial_msgs(drv.provider, &auto_denied));
                     }
                     if rest.is_empty() {
                         state.driver = Some(drv);
@@ -458,15 +469,14 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     let mut fresh = Vec::new();
                     let mut served = 0;
                     for c in rest {
-                        let hit = agent::read_cache_key(&c).and_then(|k| {
-                            drv.read_cache.get(&k).cloned()
-                        });
+                        let hit =
+                            agent::read_cache_key(&c).and_then(|k| drv.read_cache.get(&k).cloned());
                         match hit {
                             Some(out) => {
-                                let preview: String =
-                                    c.args.to_string().chars().take(60).collect();
+                                let preview: String = c.args.to_string().chars().take(60).collect();
                                 state.push_log(format!("📦 caché: {} {preview}", c.name));
-                                drv.raw.push(agent::cached_result_msg(drv.provider, &c, &out));
+                                drv.raw
+                                    .push(agent::cached_result_msg(drv.provider, &c, &out));
                                 served += 1;
                             }
                             None => fresh.push(c),
@@ -502,18 +512,20 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             for (c, m) in calls.iter().zip(append.iter()) {
                 if let Some(key) = agent::read_cache_key(c)
                     && let Some(text) = tool_output_text(m)
-                    && !text.starts_with('❌') {
-                        drv.read_cache.insert(key, text);
-                    }
+                    && !text.starts_with('❌')
+                {
+                    drv.read_cache.insert(key, text);
+                }
             }
             // v0.7.4 Fuentes: captura URLs de fetch_url para el bloque clicable.
             for c in calls.iter() {
                 if c.name == "fetch_url"
                     && let Some(u) = c.args.get("url").and_then(|v| v.as_str())
                     && !u.trim().is_empty()
-                    && !state.chat_sources.iter().any(|x| x == u.trim()) {
-                        state.chat_sources.push(u.trim().to_string());
-                    }
+                    && !state.chat_sources.iter().any(|x| x == u.trim())
+                {
+                    state.chat_sources.push(u.trim().to_string());
+                }
             }
             for line in logs {
                 state.push_log(line);
@@ -626,21 +638,31 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.pending_calls.clear();
             state.stream_gen += 1;
             state.streaming = false;
+            // v0.9.5: corta de verdad la petición de red en vuelo.
+            if let Ok(mut slot) = state.stream_abort.lock()
+                && let Some(h) = slot.take()
+            {
+                h.abort();
+            }
             // Conserva lo parcial si ya había texto; si no, marca detenido.
             if let Some(last) = state.messages.last_mut()
-                && last.role == Role::Assistant {
-                    if last.content.trim().is_empty() {
-                        last.content = "_Turno detenido por el usuario._".to_string();
-                    } else {
-                        last.content.push_str("\n\n_(detenido por el usuario)_");
-                    }
+                && last.role == Role::Assistant
+            {
+                if last.content.trim().is_empty() {
+                    last.content = "_Turno detenido por el usuario._".to_string();
+                } else {
+                    last.content.push_str("\n\n_(detenido por el usuario)_");
                 }
+            }
             state.reparse_last_md();
-            if let Some(chat_id) = state.active_chat
-                && let Some(last) = state.messages.last() {
-                    let _ = db::save_msg(chat_id, "assistant", &last.content);
-                    state.resync_msg_meta(chat_id);
-                }
+            if let Some(chat_id) = state.o_chat.or(state.active_chat)
+                && let Some(last) = state.messages.last()
+                && last.role == Role::Assistant
+                && !last.content.trim().is_empty()
+            {
+                let _ = db::save_msg(chat_id, "assistant", &last.content);
+                state.resync_msg_meta(chat_id);
+            }
             state.push_log("⏹ turno detenido por el usuario".to_string());
             state.status.clear();
             Task::none()
@@ -669,24 +691,24 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     let _ = std::fs::create_dir_all(&dir);
                     let file = dir.join("TEMP.md");
                     let _ = std::fs::write(&file, &temp);
+                    use crate::app::orchestrator::{
+                        count_temp_issues, reanalyze_prompt, run_fix_cycle,
+                    };
                     if agent::temp_has_issues(&temp) {
-                        let issues_n = temp
-                            .lines()
-                            .filter(|l| l.trim_start().starts_with('-'))
-                            .count();
+                        let issues_n = count_temp_issues(&temp);
                         // v0.7.3: bucle sin tope salvo max_fix_cycles (0 = ilimitado).
                         let max = state.config.limits.clamped().max_fix_cycles;
-                        if matches!(fix_decision(true, state.fix_cycle, max), FixDecision::CapReached) {
+                        if matches!(
+                            run_fix_cycle(&temp, state.fix_cycle, max),
+                            FixDecision::CapReached
+                        ) {
                             state.push_log(format!(
                                 "⏹ tope de ciclos ({max}) con issues: sin commit"
                             ));
                             return finish_orchestrator(state, String::new());
                         }
                         state.fix_cycle += 1;
-                        state.push_log(format!(
-                            "↻ ciclo {}: {} issues",
-                            state.fix_cycle, issues_n
-                        ));
+                        state.push_log(format!("↻ ciclo {}: {} issues", state.fix_cycle, issues_n));
                         let preview: String = temp
                             .lines()
                             .filter(|l| l.starts_with('-') || l.starts_with('#'))
@@ -702,14 +724,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                         ));
                         // v0.9.1: re-análisis — el analista revisa el TEMP del
                         // auditor antes de lanzar el worker de fixes.
-                        let (provider, cfg, ws2) = match (
-                            state.o_provider,
-                            state.o_cfg.clone(),
-                            state.o_ws.clone(),
-                        ) {
-                            (Some(p), Some(c), Some(w)) => (p, c, w),
-                            _ => return finish_orchestrator(state, String::new()),
-                        };
+                        let (provider, cfg, ws2) =
+                            match (state.o_provider, state.o_cfg.clone(), state.o_ws.clone()) {
+                                (Some(p), Some(c), Some(w)) => (p, c, w),
+                                _ => return finish_orchestrator(state, String::new()),
+                            };
                         state.pending_fix = Some(temp.clone());
                         orch_phase(
                             state,
@@ -726,10 +745,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                             .map(|m| m.content.clone())
                             .unwrap_or_default();
                         let cycle = state.fix_cycle;
-                        let re_pedido = format!(
-                            "Re-analiza antes de arreglar (ciclo {cycle}). Pedido original: {pedido_orig}\n\n## TEMP del auditor:\n{}",
-                            temp.chars().take(1500).collect::<String>()
-                        );
+                        let re_pedido = reanalyze_prompt(&pedido_orig, &temp, cycle);
                         let turn = state.agent_gen;
                         return Task::perform(
                             async move {
@@ -776,11 +792,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 state.fix_cycle
             ));
             orch_phase(state, 3, 5, "workers");
-            let fix_desc = format!(
-                "Corrige estos issues del auditor (ciclo {}, sin cambiar nada más):\n{}",
-                state.fix_cycle,
-                temp.chars().take(1200).collect::<String>()
-            );
+            let fix_desc = crate::app::orchestrator::fix_task_desc(&temp, state.fix_cycle);
             state.orch_tasks.push(OrchTask {
                 desc: format!("Fixes del auditor (ciclo {})", state.fix_cycle),
                 files: Vec::new(),
@@ -817,10 +829,11 @@ fn stop_worker_for_budget(state: &mut App) -> Task<Message> {
     ));
     if let Some(d) = state.driver.take()
         && d.task_idx != usize::MAX
-        && let Some(t) = state.orch_tasks.get_mut(d.task_idx) {
-            t.done = true;
-            t.active = false;
-        }
+        && let Some(t) = state.orch_tasks.get_mut(d.task_idx)
+    {
+        t.done = true;
+        t.active = false;
+    }
     state.push_log("⏹ presupuesto de tokens agotado".to_string());
     // v0.7.3: si el presupuesto corta el turno, no se commitea.
     state.git_turn_interrupted = true;
@@ -873,11 +886,12 @@ fn write_plan_md(state: &App, md: &str) -> Result<String, String> {
 }
 /// Decisión del bucle de estabilidad (v0.7.3, vive en `agent::roles`
 /// desde v0.9.1). Re-export para compatibilidad con tests existentes.
-pub(crate) use crate::agent::roles::{FixDecision, fix_decision};
+pub(crate) use crate::agent::roles::FixDecision;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::roles::fix_decision;
 
     #[test]
     fn stability_loop_walks_until_green_or_cap() {
@@ -892,5 +906,42 @@ mod tests {
         assert_eq!(fix_decision(true, 1, 2), FixDecision::Fix);
         assert_eq!(fix_decision(true, 2, 2), FixDecision::CapReached);
         assert_eq!(fix_decision(true, 9, 2), FixDecision::CapReached);
+    }
+
+    /// v0.9.5: TEMP.md rotativo — el auditor sobrescribe, no anexa: tras
+    /// dos auditorías solo queda la última (historia al journal, no al TEMP).
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn audit_temp_is_rotative_not_appended() {
+        let (_g, _t) = crate::db::test_guard::with_test_db("h-temp_rotative");
+        let mut app = App::default();
+        app.config.git.enabled = false; // cierre sin commit en el test
+        let ws = std::env::temp_dir().join("arqhIA-temp-rotative-ws");
+        let _ = std::fs::remove_dir_all(&ws);
+        std::fs::create_dir_all(ws.join("CONTEXT")).unwrap();
+        app.o_ws = Some(ws.clone());
+        app.o_history = vec![crate::llm::ChatMsg {
+            role: crate::llm::Role::User,
+            content: "haz algo".to_string(),
+        }];
+        app.worker_answers = vec!["listo".to_string()];
+        let turn = app.agent_gen;
+        let temp1 = "## Auditoría ARQHIA\n\nrevisión vieja\n\nVERDICT: CLEAN".to_string();
+        let temp2 = "## Auditoría ARQHIA\n\nrevisión nueva\n\nVERDICT: CLEAN".to_string();
+        let _ = handle(
+            &mut app,
+            Message::AgentAudit(turn, Ok((temp1, vec![], true))),
+        );
+        let _ = handle(
+            &mut app,
+            Message::AgentAudit(turn, Ok((temp2.clone(), vec![], true))),
+        );
+        let on_disk = std::fs::read_to_string(ws.join("CONTEXT").join("TEMP.md")).unwrap();
+        assert_eq!(on_disk, temp2, "TEMP.md solo guarda la última auditoría");
+        assert!(
+            !on_disk.contains("revisión vieja"),
+            "nada de historia anexada"
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 }

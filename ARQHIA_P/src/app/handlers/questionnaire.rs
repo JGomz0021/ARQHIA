@@ -5,13 +5,15 @@
 
 use iced::Task;
 
-use crate::app::state::App;
 use crate::app::Message;
 use crate::app::View;
+use crate::app::state::App;
 use crate::questionnaire::{self, levels};
 
 fn questionnaire_ws(state: &App) -> Result<std::path::PathBuf, String> {
-    let pid = state.q_project.ok_or_else(|| "Sin proyecto asociado.".to_string())?;
+    let pid = state
+        .q_project
+        .ok_or_else(|| "Sin proyecto asociado.".to_string())?;
     let raw = state
         .projects
         .iter()
@@ -19,7 +21,7 @@ fn questionnaire_ws(state: &App) -> Result<std::path::PathBuf, String> {
         .and_then(|p| p.path.clone())
         .ok_or_else(|| "El proyecto perdió su workspace.".to_string())?;
     let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-        format!("{}/{rest}", std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()))
+        format!("{}/{rest}", crate::paths::home_dir().display())
     } else {
         raw
     };
@@ -41,13 +43,15 @@ fn rollback_unfinished(state: &mut App) {
         .and_then(|p| p.path.clone())
     {
         let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-            format!("{}/{rest}", std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()))
+            format!("{}/{rest}", crate::paths::home_dir().display())
         } else {
             raw
         };
         let dir = std::path::PathBuf::from(expanded);
         let empty = dir.is_dir()
-            && std::fs::read_dir(&dir).map(|mut it| it.next().is_none()).unwrap_or(false);
+            && std::fs::read_dir(&dir)
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(false);
         if empty {
             let _ = std::fs::remove_dir(&dir);
         }
@@ -58,7 +62,10 @@ fn rollback_unfinished(state: &mut App) {
         state.pending_project = None;
     }
     if let Some(active) = state.active_chat
-        && state.chats.iter().any(|c| c.id == active && c.project_id == Some(pid))
+        && state
+            .chats
+            .iter()
+            .any(|c| c.id == active && c.project_id == Some(pid))
     {
         state.active_chat = None;
         state.messages.clear();
@@ -80,9 +87,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::QNext => {
             let a = &state.q_answers;
-            if let Some(err) =
-                questionnaire::validate_step(state.q_level, a.cat, a.sys, state.q_step, &state.q_answers)
-            {
+            if let Some(err) = questionnaire::validate_step(
+                state.q_level,
+                a.cat,
+                a.sys,
+                state.q_step,
+                &state.q_answers,
+            ) {
                 state.q_error = err;
             } else {
                 state.q_error.clear();
@@ -339,7 +350,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     return Task::none();
                 }
                 state.q_ai_error =
-                    "Configura una API en Configuración para usar la IA (o pulsa Saltar).".to_string();
+                    "Configura una API en Configuración para usar la IA (o pulsa Saltar)."
+                        .to_string();
                 return Task::none();
             }
             let level = state.q_level;
@@ -353,7 +365,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     .as_deref()
                     .map(questionnaire::import::scan)
                     .unwrap_or_default();
-                questionnaire::import::gap_fields(&scan).iter().map(|s| s.to_string()).collect()
+                questionnaire::import::gap_fields(&scan)
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -413,7 +428,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     state.q_ai_questions = qs;
                 }
                 Ok(_) => {
-                    state.q_ai_error = "La IA no devolvió preguntas. Reintenta o pulsa Saltar.".to_string();
+                    state.q_ai_error =
+                        "La IA no devolvió preguntas. Reintenta o pulsa Saltar.".to_string();
                 }
                 Err(e) => {
                     state.q_ai_error = format!("IA: {}", crate::llm::friendly_error(&e));
@@ -434,9 +450,13 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 if levels::is_ai_step(state.q_level, a.cat, a.sys, a.nombre_locked, step) {
                     continue;
                 }
-                if let Some(err) =
-                    questionnaire::validate_step(state.q_level, a.cat, a.sys, step, &state.q_answers)
-                {
+                if let Some(err) = questionnaire::validate_step(
+                    state.q_level,
+                    a.cat,
+                    a.sys,
+                    step,
+                    &state.q_answers,
+                ) {
                     state.q_step = step;
                     state.q_error = err;
                     return Task::none();
@@ -457,14 +477,18 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .map(|(q, r)| (q.clone(), r.clone()))
                 .collect();
             let source = state.q_source.clone();
-            let (project, specs, context) =
-                match questionnaire::templates::generate_project_docs(level, &state.q_answers, &ai, &source) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        state.q_error = e;
-                        return Task::none();
-                    }
-                };
+            let (project, specs, context) = match questionnaire::templates::generate_project_docs(
+                level,
+                &state.q_answers,
+                &ai,
+                &source,
+            ) {
+                Ok(d) => d,
+                Err(e) => {
+                    state.q_error = e;
+                    return Task::none();
+                }
+            };
             // Merge sin borrar: layout idempotente, nunca toca `Project/`.
             if let Err(e) = crate::workspace::ensure_project_layout(&ws) {
                 state.q_error = e;
@@ -504,7 +528,9 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                                     report.files.join(", ")
                                 );
                                 enter_chat_after_generation(state, &summary);
-                                state.status = "Cuestionario listo (offline): configura una API para la IA.".to_string();
+                                state.status =
+                                    "Cuestionario listo (offline): configura una API para la IA."
+                                        .to_string();
                             }
                             Err(e) => state.q_error = e,
                         }
@@ -518,7 +544,9 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                     state.gen_error.clear();
                     state.plan_auto = Some(auto.clone());
                     state.view = View::Generating;
-                    state.push_log("Generando serie MVP: ROADMAP → VERSIONS → v0.1…v1.0 → ToDo".to_string());
+                    state.push_log(
+                        "Generando serie MVP: ROADMAP → VERSIONS → v0.1…v1.0 → ToDo".to_string(),
+                    );
                     return Task::perform(
                         async move {
                             let prompt = questionnaire::planning::mvp_prompt(
@@ -558,11 +586,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             let files: Vec<(String, String)> = match res {
                 Ok(f) if !f.is_empty() => f,
                 Ok(_) => {
-                    state.push_log("La IA no devolvió archivos: fallback determinista.".to_string());
+                    state
+                        .push_log("La IA no devolvió archivos: fallback determinista.".to_string());
                     Vec::new()
                 }
                 Err(e) => {
-                    state.push_log(format!("IA: {} (fallback determinista).", crate::llm::friendly_error(&e)));
+                    state.push_log(format!(
+                        "IA: {} (fallback determinista).",
+                        crate::llm::friendly_error(&e)
+                    ));
                     Vec::new()
                 }
             };
@@ -606,10 +638,16 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.gen_phase.clear();
             state.gen_progress = 0.0;
             // Vuelve al último paso (IA) para reintentar el Finish.
-            let total = levels::total_steps(state.q_level, state.q_answers.cat, state.q_answers.sys, state.q_answers.nombre_locked);
+            let total = levels::total_steps(
+                state.q_level,
+                state.q_answers.cat,
+                state.q_answers.sys,
+                state.q_answers.nombre_locked,
+            );
             state.q_step = total.saturating_sub(1);
             state.view = View::Questionnaire;
-            state.status = "Generación cancelada: puedes reintentar con Generar documentos.".to_string();
+            state.status =
+                "Generación cancelada: puedes reintentar con Generar documentos.".to_string();
             state.push_log("Generación MVP cancelada.".to_string());
             Task::none()
         }
@@ -659,7 +697,9 @@ fn enter_chat_after_generation(state: &mut App, summary: &str) {
             state.pending_project = None;
             state.view = View::Chat;
             state.push_log(summary.to_string());
-            state.push_log("Modo Plan: revisa ROADMAP + VERSIONS/v1.0.md y sigue en Work.".to_string());
+            state.push_log(
+                "Modo Plan: revisa ROADMAP + VERSIONS/v1.0.md y sigue en Work.".to_string(),
+            );
         }
         Err(e) => {
             state.status = format!("Proyecto documentado, pero no se pudo abrir el Plan: {e}");

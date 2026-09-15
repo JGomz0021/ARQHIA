@@ -8,6 +8,7 @@
 
 pub mod events;
 pub mod handlers;
+pub mod history;
 pub mod orchestrator;
 pub mod projects;
 pub mod state;

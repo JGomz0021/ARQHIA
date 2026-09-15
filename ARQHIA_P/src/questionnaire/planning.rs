@@ -298,7 +298,11 @@ fn stack_line(a: &Answers) -> String {
     let mut base = if a.stacks.is_empty() {
         "A decidir (default propuesto: el más simple que cumpla)".to_string()
     } else {
-        a.stacks.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+        a.stacks
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     if !a.stack_free.trim().is_empty() {
         base.push_str(&format!(" ({})", a.stack_free.trim()));
@@ -310,7 +314,11 @@ fn plataform_line(a: &Answers) -> String {
     if a.plataformas.is_empty() {
         "Pendiente de definir: plataformas".to_string()
     } else {
-        a.plataformas.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+        a.plataformas
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -327,7 +335,12 @@ fn stack_prompt_line(a: &Answers) -> String {
 /// (Servicio corre en Servidor/Nube) o gap explícito.
 fn plataform_prompt_line(a: &Answers) -> String {
     if !a.plataformas.is_empty() {
-        return a.plataformas.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ");
+        return a
+            .plataformas
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
     }
     if a.cat == Categoria::Servicio {
         return "Servidor/Nube (default pre-marcado, editable)".to_string();
@@ -352,10 +365,7 @@ pub fn write_auto_docs(ctx: &AutoPlanCtx, tasks: &[String]) -> Result<AutoDocsRe
     let gaps = gaps(a);
     let funcs = func_list(a);
     let steps: Vec<String> = if tasks.is_empty() {
-        funcs
-            .iter()
-            .map(|f| format!("Implementar: {f}"))
-            .collect()
+        funcs.iter().map(|f| format!("Implementar: {f}")).collect()
     } else {
         tasks.to_vec()
     };
@@ -437,7 +447,10 @@ fn render_roadmap(ctx: &AutoPlanCtx, gaps: &[String]) -> String {
     if gaps.is_empty() {
         s.push_str("\nSin gaps: el cuestionario cubrió lo necesario.\n");
     } else {
-        s.push_str(&format!("\nGaps a resolver en v0.1: {}.\n", gaps.join(", ")));
+        s.push_str(&format!(
+            "\nGaps a resolver en v0.1: {}.\n",
+            gaps.join(", ")
+        ));
     }
     s.push_str("\n## Siguientes versiones\n\nSe definen al cerrar v0.1 (un .md por versión en `VERSIONS/`).\n");
     s
@@ -453,7 +466,11 @@ fn render_v01(ctx: &AutoPlanCtx, steps: &[String], gaps: &[String]) -> String {
     let funcs_md = if funcs.is_empty() {
         "- Pendiente de definir: funcionalidades".to_string()
     } else {
-        funcs.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n")
+        funcs
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let numbered = steps
         .iter()
@@ -503,7 +520,10 @@ fn render_v01(ctx: &AutoPlanCtx, steps: &[String], gaps: &[String]) -> String {
 }
 
 fn render_todo(ctx: &AutoPlanCtx, steps: &[String]) -> String {
-    let mut s = format!("# ToDo — {}\n\nLista inicial derivada de v0.1 (la mantiene el agente).\n\n", ctx.answers.nombre.trim());
+    let mut s = format!(
+        "# ToDo — {}\n\nLista inicial derivada de v0.1 (la mantiene el agente).\n\n",
+        ctx.answers.nombre.trim()
+    );
     for t in steps {
         s.push_str(&format!("- [ ] {t}\n"));
     }
@@ -584,7 +604,10 @@ pub fn parse_mvp_files(text: &str) -> Vec<(String, String)> {
     for line in text.lines() {
         let t = line.trim();
         if t.starts_with("---FILE:") && t.ends_with("---") {
-            let inner = t.trim_start_matches("---FILE:").trim_end_matches("---").trim();
+            let inner = t
+                .trim_start_matches("---FILE:")
+                .trim_end_matches("---")
+                .trim();
             flush(&mut cur, &mut buf, &mut out);
             if known.contains(&inner) && !out.iter().any(|(p, _)| p == inner) {
                 cur = Some(inner.to_string());
@@ -629,7 +652,10 @@ pub fn write_mvp_docs(ctx: &AutoPlanCtx, files: &[(String, String)]) -> Result<M
             Some(content) if !content.trim().is_empty() => {
                 if path.starts_with("CONTEXT/VERSIONS/v") {
                     if let Err(missing) = validate_version_md(content) {
-                        warnings.push(format!("{path} sin plantilla (fallback): {}", missing.join("; ")));
+                        warnings.push(format!(
+                            "{path} sin plantilla (fallback): {}",
+                            missing.join("; ")
+                        ));
                         final_files.push((path.clone(), fb.clone()));
                     } else {
                         final_files.push((path.clone(), (*content).to_string()));
@@ -672,23 +698,16 @@ pub fn deterministic_mvp(ctx: &AutoPlanCtx) -> Vec<(String, String)> {
     let gaps = gaps(&ctx.answers);
     let roadmap = render_roadmap_mvp(ctx, &gaps);
     let versions = render_versions_index_mvp();
-    let v01_md = render_version_mvp(ctx, "v0.1", "Base funcional", &v01, &gaps, "ninguna (primera)");
-    let v02_md = render_version_mvp(
+    let v01_md = render_version_mvp(
         ctx,
-        "v0.2",
-        "Núcleo usable",
-        &v02,
-        &gaps,
         "v0.1",
-    );
-    let v03_md = render_version_mvp(
-        ctx,
-        "v0.3",
-        "Integración y calidad",
-        &[],
+        "Base funcional",
+        &v01,
         &gaps,
-        "v0.2",
+        "ninguna (primera)",
     );
+    let v02_md = render_version_mvp(ctx, "v0.2", "Núcleo usable", &v02, &gaps, "v0.1");
+    let v03_md = render_version_mvp(ctx, "v0.3", "Integración y calidad", &[], &gaps, "v0.2");
     let v10_md = render_version_mvp(ctx, "v1.0", "MVP", &funcs, &gaps, "v0.3");
     let todo = render_todo_mvp(ctx, &funcs);
     vec![
@@ -717,7 +736,11 @@ fn render_roadmap_mvp(ctx: &AutoPlanCtx, gaps: &[String]) -> String {
         a.sys,
         origen,
     );
-    s.push_str(&format!("Stack: {}. Plataformas: {}.\n\n", stack_line(a), plataform_line(a)));
+    s.push_str(&format!(
+        "Stack: {}. Plataformas: {}.\n\n",
+        stack_line(a),
+        plataform_line(a)
+    ));
     s.push_str("## Serie hasta el MVP\n\n");
     for (ver, title) in mvp_versions() {
         s.push_str(&format!("- `{ver}` — {title}\n"));
@@ -727,14 +750,21 @@ fn render_roadmap_mvp(ctx: &AutoPlanCtx, gaps: &[String]) -> String {
         for (q, r) in &ctx.ai {
             s.push_str(&format!(
                 "- {q}: {}\n",
-                if r.trim().is_empty() { "(sin responder)".to_string() } else { r.trim().to_string() }
+                if r.trim().is_empty() {
+                    "(sin responder)".to_string()
+                } else {
+                    r.trim().to_string()
+                }
             ));
         }
     }
     if gaps.is_empty() {
         s.push_str("\nSin gaps: el cuestionario cubrió lo necesario.\n");
     } else {
-        s.push_str(&format!("\nGaps a resolver desde v0.1: {}.\n", gaps.join(", ")));
+        s.push_str(&format!(
+            "\nGaps a resolver desde v0.1: {}.\n",
+            gaps.join(", ")
+        ));
     }
     s
 }
@@ -763,7 +793,11 @@ fn render_version_mvp(
             _ => "- Pendiente de definir: funcionalidades (ver gaps).".to_string(),
         }
     } else {
-        funcs.iter().map(|f| format!("- {f}")).collect::<Vec<_>>().join("\n")
+        funcs
+            .iter()
+            .map(|f| format!("- {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
     let steps = if funcs.is_empty() && ver != "v1.0" {
         match ver {
@@ -779,7 +813,10 @@ fn render_version_mvp(
             ],
         }
     } else {
-        funcs.iter().map(|f| format!("Implementar: {f}")).collect::<Vec<_>>()
+        funcs
+            .iter()
+            .map(|f| format!("Implementar: {f}"))
+            .collect::<Vec<_>>()
     };
     let numbered = steps
         .iter()
@@ -787,7 +824,11 @@ fn render_version_mvp(
         .map(|(i, t)| format!("{}. {}", i + 1, t))
         .collect::<Vec<_>>()
         .join("\n");
-    let gaps_line = if gaps.is_empty() { "ninguno".to_string() } else { gaps.join(", ") };
+    let gaps_line = if gaps.is_empty() {
+        "ninguno".to_string()
+    } else {
+        gaps.join(", ")
+    };
     format!(
         "# {ver} — {title} de {}\n\n\
         ## Objetivo\n\n\
@@ -831,7 +872,10 @@ fn render_version_mvp(
 }
 
 fn render_todo_mvp(ctx: &AutoPlanCtx, funcs: &[String]) -> String {
-    let mut s = format!("# ToDo — {}\n\nSerie MVP v0.1 → v1.0 (la mantiene el agente).\n\n", ctx.answers.nombre.trim());
+    let mut s = format!(
+        "# ToDo — {}\n\nSerie MVP v0.1 → v1.0 (la mantiene el agente).\n\n",
+        ctx.answers.nombre.trim()
+    );
     for (ver, title) in mvp_versions() {
         s.push_str(&format!("## {ver} — {title}\n\n"));
         match ver {
@@ -850,7 +894,9 @@ fn render_todo_mvp(ctx: &AutoPlanCtx, funcs: &[String]) -> String {
                 }
             }
             "v0.3" => s.push_str("- [ ] Integración end-to-end + caso de error por flujo\n"),
-            "v1.0" => s.push_str("- [ ] Cierre MVP: Done verificable de todas las funcionalidades\n"),
+            "v1.0" => {
+                s.push_str("- [ ] Cierre MVP: Done verificable de todas las funcionalidades\n")
+            }
             _ => {}
         }
         s.push('\n');
@@ -907,13 +953,20 @@ mod tests {
             ai: Vec::new(),
             source: QSource::New,
         };
-        let v01 = render_v01(&ctx, &["Uno".to_string(), "Dos".to_string(), "Tres".to_string()], &[]);
+        let v01 = render_v01(
+            &ctx,
+            &["Uno".to_string(), "Dos".to_string(), "Tres".to_string()],
+            &[],
+        );
         assert!(validate_version_md(&v01).is_ok(), "el v0.1 generado pasa");
         let missing = validate_version_md("# vacío\n").unwrap_err();
         assert!(missing.len() >= 8, "detecta secciones: {missing:?}");
         let thin = "# v0.1\n\n## Objetivo\n\no\n\n## Alcance\n\na\n\n## Paso a paso\n\n1. uno\n\n## Tareas técnicas\n\nt\n\n## Criterio Done\n\nx\n\n## Test de Funcionalidad\n\nt\n\n## Riesgos\n\nr\n\n## Dependencias\n\nd\n";
         let err = validate_version_md(thin).unwrap_err();
-        assert!(err.iter().any(|e| e.contains("numerados") || e.contains("Done")));
+        assert!(
+            err.iter()
+                .any(|e| e.contains("numerados") || e.contains("Done"))
+        );
     }
 
     #[test]
@@ -929,27 +982,50 @@ mod tests {
             ai: Vec::new(),
             source: QSource::New,
         };
-        let report = write_auto_docs(&ctx, &["Montar router".to_string(), "Añadir tests".to_string(), "Documentar".to_string()]).unwrap();
+        let report = write_auto_docs(
+            &ctx,
+            &[
+                "Montar router".to_string(),
+                "Añadir tests".to_string(),
+                "Documentar".to_string(),
+            ],
+        )
+        .unwrap();
         assert_eq!(report.files.len(), 4);
         assert!(report.v01_valid && report.v01_warnings.is_empty());
         assert!(report.gaps.iter().any(|g| g.contains("escala")));
         for f in ["ROADMAP.md", "VERSIONS.md"] {
             assert!(ws.join("CONTEXT").join(f).is_file(), "{f} existe");
         }
-        let v01 = std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join("v0.1.md")).unwrap();
+        let v01 =
+            std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join("v0.1.md")).unwrap();
         assert!(validate_version_md(&v01).is_ok());
         assert!(v01.contains("Rust") && v01.contains("Montar router"));
         let todo = std::fs::read_to_string(ws.join("ToDo.md")).unwrap();
-        assert!(todo.contains("Montar router") && todo.contains("Pendiente de definir: escala/SLA"));
+        assert!(
+            todo.contains("Montar router") && todo.contains("Pendiente de definir: escala/SLA")
+        );
         // Idempotente: re-ejecutar sobrescribe sin duplicar.
-        let report2 = write_auto_docs(&ctx, &["Montar router".to_string(), "Añadir tests".to_string(), "Documentar".to_string()]).unwrap();
+        let report2 = write_auto_docs(
+            &ctx,
+            &[
+                "Montar router".to_string(),
+                "Añadir tests".to_string(),
+                "Documentar".to_string(),
+            ],
+        )
+        .unwrap();
         assert_eq!(report2.files, report.files);
         let todo2 = std::fs::read_to_string(ws.join("ToDo.md")).unwrap();
-        assert_eq!(todo.matches("Montar router").count(), todo2.matches("Montar router").count());
+        assert_eq!(
+            todo.matches("Montar router").count(),
+            todo2.matches("Montar router").count()
+        );
         // Sin tareas del planner: deriva de funcionalidades.
         let report3 = write_auto_docs(&ctx, &[]).unwrap();
         assert!(report3.v01_valid);
-        let v013 = std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join("v0.1.md")).unwrap();
+        let v013 =
+            std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join("v0.1.md")).unwrap();
         assert!(v013.contains("Listar usuarios"));
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -963,7 +1039,10 @@ mod tests {
         let g = gaps(&a);
         assert!(g.contains(&"stack".to_string()) && g.contains(&"plataformas".to_string()));
         let p = plan_prompt(Level::Principiante, &a, &[], &QSource::New);
-        assert!(p.contains("Pendiente de definir: stack") || p.contains("Pendiente de definir: plataformas"));
+        assert!(
+            p.contains("Pendiente de definir: stack")
+                || p.contains("Pendiente de definir: plataformas")
+        );
         assert!(!p.contains("(se define al planificar)"));
         // Plataformas es Vec<Plataforma>: existe el tipo (evita regresión de API).
         let _ = Plataforma::Web;
@@ -1005,9 +1084,18 @@ mod tests {
         // Fallback puro: sin archivos de la IA, todo determinista.
         let report = write_mvp_docs(&ctx, &[]).unwrap();
         assert_eq!(report.files.len(), 7);
-        assert!(report.warnings.len() == 7, "todo ausente avisa: {:?}", report.warnings);
+        assert!(
+            report.warnings.len() == 7,
+            "todo ausente avisa: {:?}",
+            report.warnings
+        );
         for ver in ["v0.1", "v0.2", "v0.3", "v1.0"] {
-            let md = std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join(format!("{ver}.md"))).unwrap();
+            let md = std::fs::read_to_string(
+                ws.join("CONTEXT")
+                    .join("VERSIONS")
+                    .join(format!("{ver}.md")),
+            )
+            .unwrap();
             assert!(validate_version_md(&md).is_ok(), "{ver} válido");
         }
         let idx = std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS.md")).unwrap();
@@ -1015,13 +1103,24 @@ mod tests {
         let todo = std::fs::read_to_string(ws.join("ToDo.md")).unwrap();
         assert!(todo.contains("v0.1") && todo.contains("v1.0"));
         // Con archivos parciales de la IA: se conserva el bueno, el malo cae a fallback.
-        let good_v01 = render_version_mvp(&ctx, "v0.1", "Base funcional", &["X".to_string()], &[], "ninguna (primera)");
+        let good_v01 = render_version_mvp(
+            &ctx,
+            "v0.1",
+            "Base funcional",
+            &["X".to_string()],
+            &[],
+            "ninguna (primera)",
+        );
         let files = vec![
             ("CONTEXT/VERSIONS/v0.1.md".to_string(), good_v01),
-            ("CONTEXT/VERSIONS/v0.2.md".to_string(), "basura sin plantilla".to_string()),
+            (
+                "CONTEXT/VERSIONS/v0.2.md".to_string(),
+                "basura sin plantilla".to_string(),
+            ),
         ];
         let report2 = write_mvp_docs(&ctx, &files).unwrap();
-        let v01 = std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join("v0.1.md")).unwrap();
+        let v01 =
+            std::fs::read_to_string(ws.join("CONTEXT").join("VERSIONS").join("v0.1.md")).unwrap();
         assert!(v01.contains('X'), "el bueno de la IA se conserva");
         assert!(report2.warnings.iter().any(|w| w.contains("v0.2")));
         let _ = std::fs::remove_dir_all(&base);

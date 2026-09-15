@@ -5,10 +5,10 @@
 
 use iced::Task;
 
-use crate::app::state::App;
+use crate::app::ConfigTab;
 use crate::app::Message;
 use crate::app::View;
-use crate::app::ConfigTab;
+use crate::app::state::App;
 use crate::config;
 
 pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
@@ -34,6 +34,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             // v0.9 Track B: staging de identidad para la pestaña STACK.
             state.identity_name = state.config.identity.name.clone();
             state.identity_email = state.config.identity.email.clone();
+            state.reload_config_data();
             Task::none()
         }
         Message::ConfigBack => {
@@ -82,7 +83,11 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 Some(pid) if state.config.apply_profile(&pid) => {
                     state.edit_provider = state.config.active;
                     state.sync_edit_fields();
-                    state.profile_name = state.config.profile_by_id(&pid).map(|p| p.name.clone()).unwrap_or_default();
+                    state.profile_name = state
+                        .config
+                        .profile_by_id(&pid)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default();
                     let _ = state.config.save();
                     state.status = "Perfil activado.".to_string();
                 }
@@ -413,12 +418,15 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .collect();
             let mut extra = Vec::new();
             let mut bad = Vec::new();
-            for raw in state.perm_extra.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            for raw in state
+                .perm_extra
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
                 let expanded = if let Some(rest) = raw.strip_prefix("~/") {
-                    std::path::PathBuf::from(
-                        std::env::var("ARQHIA_HOME").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string()),
-                    )
-                    .join(rest)
+                    std::path::PathBuf::from(crate::paths::home_dir().to_string_lossy().to_string())
+                        .join(rest)
                 } else {
                     std::path::PathBuf::from(raw)
                 };
@@ -495,6 +503,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.config_tab = tab;
             state.config_pending_delete = None;
             state.profile_menu = None;
+            // v0.9.5: precarga los datos de la pestaña (vista render puro).
+            state.reload_config_data();
             // Staging de listas al abrir Permisos (no se pierde lo guardado).
             state.perm_domains = state.config.permissions.net_domains.join(", ");
             state.perm_extra = state
@@ -505,10 +515,10 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 .map(|p| p.to_string_lossy().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            // Git: staging + estado del workspace activo (v0.7.2).
+            // Git: staging + estado del workspace activo (v0.7.2, async v0.9.5).
             if tab == ConfigTab::Git {
                 state.sync_git_staging();
-                state.refresh_git_status();
+                return state.refresh_git_status_async();
             }
             Task::none()
         }
@@ -572,17 +582,14 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             git.author_email = state.git_author_email.trim().to_string();
             state.config.git = git.validated();
             state.sync_git_staging();
-            state.refresh_git_status();
+            let status_task = state.refresh_git_status_async();
             match state.config.save() {
                 Ok(()) => state.status = "Configuración git guardada.".to_string(),
                 Err(e) => state.status = format!("No se pudo guardar git: {e}"),
             }
-            Task::none()
+            status_task
         }
-        Message::GitRefreshStatus => {
-            state.refresh_git_status();
-            Task::none()
-        }
+        Message::GitRefreshStatus => state.refresh_git_status_async(),
         Message::GitInitWorkspace => {
             let git = state.config.git.clone();
             match state.active_workspace() {
@@ -611,13 +618,40 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::GitInitDone(res) => {
-            state.refresh_git_status();
+            let status_task = state.refresh_git_status_async();
             match res {
                 Ok(branch) => {
                     state.status = format!("Git listo en rama {branch}.");
                     state.push_log(format!("🌿 git: rama {branch}"));
                 }
                 Err(e) => state.status = format!("No se pudo inicializar git: {e}"),
+            }
+            status_task
+        }
+        Message::GitStatusFetched(status) => {
+            state.git_status = status;
+            Task::none()
+        }
+        Message::GitCommitDone(res) => {
+            match res {
+                Ok(Some(sha)) => {
+                    state.push_log(format!("🌿 commit {sha} (cierre async)"));
+                    // Push encadenado (v0.7.2): solo `CommitAndPush + push_enabled`.
+                    let git = state.config.git.clone();
+                    if git.auto_push()
+                        && let Some(ws) = state.o_ws.clone()
+                    {
+                        let remote = git.remote.clone();
+                        let branch = git.push_target().to_string();
+                        state.push_log(format!("⬆ push {remote}/{branch}…"));
+                        return Task::perform(
+                            async move { crate::git::push(&ws, &remote, &branch).await },
+                            Message::GitPushDone,
+                        );
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => state.push_log(format!("⚠️ commit falló: {e}")),
             }
             Task::none()
         }
@@ -653,7 +687,8 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
             state.models_loading = false;
             if state.edit_provider == crate::config::Provider::Local {
                 if state.local_models.is_empty() {
-                    state.model_status = format!("Consultando modelos en {}...", state.edit_base_url);
+                    state.model_status =
+                        format!("Consultando modelos en {}...", state.edit_base_url);
                     if !state.edit_base_url.trim().is_empty() {
                         state.models_loading = true;
                         let cfg = edit_cfg(state);
@@ -797,6 +832,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 Ok(n) => state.status = format!("{n} skill(s) restaurada(s)."),
                 Err(e) => state.status = format!("No se pudo recargar: {e}"),
             }
+            state.reload_config_data();
             Task::none()
         }
         Message::SkillsDelete(name) => {
@@ -804,6 +840,7 @@ pub(crate) fn handle(state: &mut App, message: Message) -> Task<Message> {
                 Ok(msg) => state.status = msg,
                 Err(e) => state.status = e,
             }
+            state.reload_config_data();
             Task::none()
         }
         // Inalcanzable si el dispatch exterior está al día (es total).

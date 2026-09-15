@@ -11,8 +11,8 @@ pub mod planning;
 pub mod templates;
 
 pub use levels::{
-    ApiStyle, ArchOpt, AuthKind, Categoria, EstiloPreset, Facturacion, Level, Licencia,
-    Plataforma, QKind, Question, SemverOpt, StackOpt, SysType, Trigger,
+    ApiStyle, ArchOpt, AuthKind, Categoria, EstiloPreset, Facturacion, Level, Licencia, Plataforma,
+    QKind, Question, SemverOpt, StackOpt, SysType, Trigger,
 };
 
 /// Origen del cuestionario: desde cero o importado de código existente.
@@ -129,7 +129,10 @@ impl Answers {
             ("Descripción".to_string(), self.descripcion.clone()),
             ("Objetivo principal".to_string(), self.objetivo.clone()),
             ("Uso previsto".to_string(), self.uso_previsto.clone()),
-            ("Público objetivo".to_string(), self.publico_objetivo.clone()),
+            (
+                "Público objetivo".to_string(),
+                self.publico_objetivo.clone(),
+            ),
         ];
         for q in levels::family_questions(level, self.cat, self.sys) {
             let v = match q.id {
@@ -229,7 +232,11 @@ fn join_display<T: ToString>(items: &[T]) -> String {
     if items.is_empty() {
         "(sin especificar)".to_string()
     } else {
-        items.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(", ")
+        items
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 }
 
@@ -245,7 +252,11 @@ fn stack_line(stacks: &[StackOpt], free: &str) -> String {
     let mut base = if stacks.is_empty() {
         "A decidir".to_string()
     } else {
-        stacks.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(", ")
+        stacks
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     };
     if !free.trim().is_empty() {
         base.push_str(&format!(" ({})", free.trim()));
@@ -292,7 +303,13 @@ pub fn validate_question(q: &Question, a: &Answers) -> Option<String> {
 }
 
 /// Valida un paso del wizard (None en Nivel e IA = siempre OK).
-pub fn validate_step(level: Level, cat: Categoria, sys: SysType, step: usize, a: &Answers) -> Option<String> {
+pub fn validate_step(
+    level: Level,
+    cat: Categoria,
+    sys: SysType,
+    step: usize,
+    a: &Answers,
+) -> Option<String> {
     match levels::step_question(level, cat, sys, a.nombre_locked, step) {
         Some(q) => validate_question(&q, a),
         None => None,
@@ -300,7 +317,13 @@ pub fn validate_step(level: Level, cat: Categoria, sys: SysType, step: usize, a:
 }
 
 /// Título corto del paso para la barra de progreso.
-pub fn step_title(level: Level, cat: Categoria, sys: SysType, skip_nombre: bool, step: usize) -> String {
+pub fn step_title(
+    level: Level,
+    cat: Categoria,
+    sys: SysType,
+    skip_nombre: bool,
+    step: usize,
+) -> String {
     if step == 0 {
         return "Nivel de experiencia".to_string();
     }
@@ -331,7 +354,10 @@ mod tests {
         let (cat, sys) = (Categoria::Aplicacion, SysType::AppWeb);
         // Tras reestructura §1.1: pasos 1-2 = cat/sys, 3-8 = genéricas (6 genéricas: nombre, descripcion, objetivo, uso_previsto, publico, funcionalidades).
         for step in 1..=8 {
-            assert!(validate_step(Level::Intermedio, cat, sys, step, &sample()).is_none(), "paso {step}");
+            assert!(
+                validate_step(Level::Intermedio, cat, sys, step, &sample()).is_none(),
+                "paso {step}"
+            );
         }
         let mut bad = sample();
         bad.nombre.clear();
@@ -346,7 +372,10 @@ mod tests {
         assert!(validate_step(Level::Intermedio, cat, sys, 0, &bad).is_none());
         assert!(validate_step(Level::Intermedio, cat, sys, total - 1, &bad).is_none());
         for step in 9..total - 1 {
-            assert!(validate_step(Level::Intermedio, cat, sys, step, &sample()).is_none(), "paso {step}");
+            assert!(
+                validate_step(Level::Intermedio, cat, sys, step, &sample()).is_none(),
+                "paso {step}"
+            );
         }
     }
 
@@ -357,11 +386,19 @@ mod tests {
         a.nombre_locked = true;
         let (cat, sys) = (Categoria::Aplicacion, SysType::AppWeb);
         let total = levels::total_steps(Level::Intermedio, cat, sys, true);
-        assert_eq!(levels::step_question(Level::Intermedio, cat, sys, true, 3).unwrap().id, "descripcion");
+        assert_eq!(
+            levels::step_question(Level::Intermedio, cat, sys, true, 3)
+                .unwrap()
+                .id,
+            "descripcion"
+        );
         assert!(validate_step(Level::Intermedio, cat, sys, 3, &a).is_none());
         assert!(validate_step(Level::Intermedio, cat, sys, total - 1, &a).is_none());
         for step in 0..total {
-            assert!(validate_step(Level::Intermedio, cat, sys, step, &a).is_none(), "paso {step}");
+            assert!(
+                validate_step(Level::Intermedio, cat, sys, step, &a).is_none(),
+                "paso {step}"
+            );
         }
     }
 
@@ -396,7 +433,10 @@ mod tests {
         let genq = levels::generic_questions(Categoria::Aplicacion, SysType::AppWeb);
         let ids: Vec<_> = genq.iter().map(|q| q.id).collect();
         assert!(ids.contains(&"uso_previsto"), "falta uso_previsto: {ids:?}");
-        assert!(ids.contains(&"publico_objetivo"), "falta publico_objetivo: {ids:?}");
+        assert!(
+            ids.contains(&"publico_objetivo"),
+            "falta publico_objetivo: {ids:?}"
+        );
         assert!(ids.contains(&"descripcion"));
         // clear_level conserva los básicos (§1.1).
         a.uso_previsto = "u".to_string();

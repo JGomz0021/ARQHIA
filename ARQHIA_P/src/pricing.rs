@@ -64,21 +64,20 @@ pub struct Pricing {
 }
 
 pub fn cache_path() -> PathBuf {
-    let home = std::env::var("ARQHIA_HOME")
-        .or_else(|_| std::env::var("HOME"))
-        .unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home)
-        .join(".local")
-        .join("share")
-        .join("arqhia")
-        .join("models.dev.json")
+    crate::paths::data_dir().join("models.dev.json")
 }
 
 const REMOTE_URL: &str = "https://models.dev/api.json";
 
 /// Normaliza un id de modelo (quita `:free` y espacios, minúsculas).
 fn normalize_model(model: &str) -> String {
-    model.trim().split(':').next().unwrap_or("").trim().to_lowercase()
+    model
+        .trim()
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase()
 }
 
 /// Coste en USD aplicando precio de cache read a los tokens cacheados.
@@ -181,7 +180,11 @@ impl Pricing {
             serde_json::from_str(json).map_err(|e| format!("JSON de modelos inválido: {e}"))?;
         let mut providers = Vec::with_capacity(raw.len());
         let mut flat: HashMap<String, ModelLookup> = HashMap::new();
-        for (pid, p) in raw {
+        // Orden determinista: el índice plano `or_insert` debe ganar siempre
+        // el mismo provider cuando dos comparten el último segmento (v0.9.5).
+        let mut raw_vec: Vec<(String, RawProvider)> = raw.into_iter().collect();
+        raw_vec.sort_by(|a, b| a.0.cmp(&b.0));
+        for (pid, p) in raw_vec {
             let mut models: Vec<ModelInfo> = p
                 .models
                 .iter()
@@ -198,11 +201,8 @@ impl Pricing {
                     for o in &m.reasoning_options {
                         match o.kind.as_str() {
                             "effort" if o.values.iter().any(|v| v.is_some()) => {
-                                reasoning_efforts = o
-                                    .values
-                                    .iter()
-                                    .filter_map(|v| v.clone())
-                                    .collect();
+                                reasoning_efforts =
+                                    o.values.iter().filter_map(|v| v.clone()).collect();
                             }
                             "toggle" => reasoning_toggle = true,
                             _ => {}
@@ -210,7 +210,11 @@ impl Pricing {
                     }
                     ModelInfo {
                         id: mid.clone(),
-                        name: if m.name.is_empty() { mid.clone() } else { m.name.clone() },
+                        name: if m.name.is_empty() {
+                            mid.clone()
+                        } else {
+                            m.name.clone()
+                        },
                         family: m.family.clone(),
                         cost,
                         context,
@@ -233,7 +237,8 @@ impl Pricing {
                 let key = m.id.to_lowercase();
                 flat.entry(key.clone()).or_insert_with(|| entry.clone());
                 if let Some(last) = key.rsplit('/').next() {
-                    flat.entry(last.to_string()).or_insert_with(|| entry.clone());
+                    flat.entry(last.to_string())
+                        .or_insert_with(|| entry.clone());
                 }
             }
             providers.push(ProviderEntry {
@@ -269,7 +274,13 @@ impl Pricing {
         if let Some(v) = self.flat.get(&last) {
             return Some(v);
         }
-        self.flat.iter().find(|(k, _)| k.contains(&last)).map(|(_, v)| v)
+        // Fallback determinista (no depender del orden del HashMap): primer
+        // id (alfabético) cuyo último segmento contenga el query.
+        let mut keys: Vec<&String> = self.flat.keys().collect();
+        keys.sort();
+        keys.into_iter()
+            .find(|k| k.contains(&last))
+            .and_then(|k| self.flat.get(k))
     }
 
     #[allow(dead_code)]
@@ -474,7 +485,12 @@ mod tests {
     #[test]
     fn cost_accounts_for_cache_read() {
         let p = Pricing::parse(SAMPLE).unwrap();
-        let usage = Usage { input: 2000, output: 500, cached: 1000, cost: None };
+        let usage = Usage {
+            input: 2000,
+            output: 500,
+            cached: 1000,
+            cost: None,
+        };
         let expected = 1000.0 / 1e6 * 2.5 + 1000.0 / 1e6 * 1.25 + 500.0 / 1e6 * 10.0;
         assert!((p.cost("gpt-4o", usage).unwrap() - expected).abs() < 1e-12);
         assert!(p.cost("modelo-raro", usage).is_none());
@@ -491,7 +507,10 @@ mod tests {
             provider_id_for(Provider::OpenAI, "https://api.openai.com").as_deref(),
             Some("openai")
         );
-        assert_eq!(provider_id_for(Provider::Local, "http://localhost:1234"), None);
+        assert_eq!(
+            provider_id_for(Provider::Local, "http://localhost:1234"),
+            None
+        );
     }
 
     /// Parsea el api.json real de models.dev si está en /tmp (se descarga con
@@ -504,7 +523,11 @@ mod tests {
         };
         let p = Pricing::parse(&json).unwrap();
         assert!(p.len() > 3_000, "modelos indexados: {}", p.len());
-        assert!(p.providers().len() > 100, "providers: {}", p.providers().len());
+        assert!(
+            p.providers().len() > 100,
+            "providers: {}",
+            p.providers().len()
+        );
         assert!(p.lookup("gpt-4o").is_some());
         assert!(p.lookup("claude-sonnet-4-6").is_some());
     }
