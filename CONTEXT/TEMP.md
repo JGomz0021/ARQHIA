@@ -1,40 +1,55 @@
-## Auditoría ARQHIA
+## Auditoría ARQHIA — v0.9.6 (puerta de v1.0)
 
 SIN ISSUES
 
-## UI polish + tokens + models.dev (ronda actual)
+## Gate backup / higiene
 
-- Layout: mensajes centrados (880px); cabecera/stats/dock a todo el ancho. Dock inferior (composer + log) con fondo elevado y sombra (`design::dock`). Entrada 16px/padding `[10,8]`; log 14px ampliable 12↔40 líneas y 170↔460px.
-- Contexto de la barra superior ahora incluye tools/lecturas (`App.context_tokens`, actualizado en `account_tokens` con `system + raw`), no solo mensajes.
-- Tokens: `Usage { input, output, cached }`; parseo real OpenAI (`stream_options.include_usage`, `prompt_tokens_details.cached_tokens`) y Anthropic (`message_start`/`message_delta`, cache read/creation). `in/out/cache` bajo cada mensaje y en el Log.
-- Precios: `pricing.rs` descarga/cachea `models.dev/api.json` (200 providers, miles de modelos) con input/output/cache write, contexto y capacidades. Coste por mensaje con fallback `llm::estimate_cost_usd`.
-- Navegador de modelos (Config → API): botón `Buscar modelo`, búsqueda por id/nombre/familia, precios y badges; exige API key del proveedor (o LM Studio `/v1/models` para Local). Mapeo por `base_url` (Groq/Google/etc.).
-- Chat más ancho (`1080px`); navegador con filtro de precio (`Todos/Gratis/≤$1/≤$5/≤$15`), `solo tools`, `ordenar por precio`, contador y panel de 900px.
-- Densidad operativa: `design::gap/pad` reduce espaciados y paddings reales en chat, sidebar y cards de Config.
-- Chat a 1400px en ventana 1560×880; composer reorganizado (input solo arriba; modos/modelo debajo).
-- Limpieza de iconos: fuera botón `Cuestionario` del header, botón `TEMP` del log, badge de modo del header (y se eliminó el visor TEMP/message asociado). `Salir` ahora es rojo outline.
-- Nivel de razonamiento por modelo desde `models.dev` (`reasoning_options`): selector en Config y en el composer; se persiste y se envía al provider (`reasoning_effort` / `reasoning.effort` / `thinking.budget_tokens`). Width de burbujas a 1180/1000 y sidebar 248 para que el ensanchado se note.
-- Correcciones ronda: chat a todo el ancho (quitado el centrado con spacers, que repartía en tercios); burbujas `width(Fill)`. Log oculto en modo Chat. Selector de razonamiento siempre visible + autoload del catálogo al arrancar. Coste usa el reportado por el proveedor (`usage.cost`) cuando existe. Barra de contexto en formato `264.000 tokens / 26% used`.
-- Ajuste fino: chat centrado con ancho por densidad (cómoda 1020 / compacta 860); texto de mensajes a 14px; pickers de modelo/razonamiento con borde de acento y razonamiento más estrecho (110); sin mensaje de estado al cambiar el nivel; quitado el botón `"<"` del header.
-- Ronda Config/contexto: lookup **por provider** en el catálogo (evita colisiones que daban `on/auto` y contexto de 1M); etiqueta "Nivel" en el composer; aviso al ≥90% de contexto (sigue, olvidando lo más antiguo); sin guiones `—` al final de las filas del navegador; Config con tabs de 220px, cards lado a lado (Proveedor/Credenciales, Permisos/Red) y tooltips en Límites. Backlog Config/UI (v0.8–v1.0) añadido a ROADMAP y PROJECT.
-- Backlog ampliado: guardar varios modelos/perfiles (API key + base_url + provider propios) y mejora/revisión del lector de Markdown (cobertura de sintaxis + aspecto visual).
-- Backlog ampliado 2: repos guía (opencode, OpenHands, SWE-agent) y división de chats en sesiones con id por provider (OpenRouter/OpenAI/Anthropic/Groq…).
+- Rama `ARQHIA` al día con `origin/ARQHIA` (`git rev-list --left-right --count`
+  = 0/0) y árbol limpio antes de empezar. Documentado aquí.
+- `unwrap()/expect(` productivo: **0** (los 2 hits de `rg` son strings de seed
+  del STACK en `stack/seed.rs`, no código ejecutable). `todo!/unimplemented!/
+  panic!` productivo: **0**. No se tocó ningún `unwrap` real → no aplicó backup.
+- `cargo fmt --check` OK · `cargo clippy --all-targets -- -D warnings` 0 ·
+  `cargo test` 203/203 OK (3 ignorados).
 
-## cargo check / test / clippy
+## Optimización (medida)
 
-- `cargo check`: OK (sin warnings).
-- `cargo test`: 142/142 OK (3 ignorados).
-- `cargo clippy --all-targets`: 0 warnings.
+- `[profile.release]`: `opt-level=3`, `lto="thin"`, `codegen-units=1`,
+  `strip=true`, `panic="unwind"` (necesario para `catch_unwind` de `main.rs`).
+- Binario release: **24.3 MB** (<30 MB). Proceso hasta crear el event loop de
+  Iced: instantáneo (<2 s). Apertura GUI con display: pendiente de máquina con
+  X11/Wayland (este entorno es headless).
 
-## Sugerencias `/skill` + STACK con llamada (verde)
+## Icono + instalador + CI
 
-- `/` en el composer sugiere skills (nombre + descripción + preview, filtra por prefijo); Enter completa prefijos únicos, ambiguo/vacío avisa sin turno.
-- 14 seeds (siembra por título, idempotente); `Pedir al agente` pre-rellena el pedido nombrando el STACK; la mención explícita autoriza la consulta puntual (`mentions_stack` + log).
+- `assets/icon.svg` + `icon-{16,32,64,128,256}.png` + `icon.rgba` (embebido).
+  Fuente regenerable con `python3 packaging/make_icons.py`.
+- Ventana: `main.rs::app_icon()` (`iced::window::icon::from_rgba`); Home:
+  `ui/logo.rs` (canvas con la misma geometría que el SVG).
+- `packaging/build_deb.sh` → `arqhia_0.9.6_amd64.deb` (8.1 MB): `/usr/bin/
+  arqhia`, iconos hicolor, `.desktop`, metainfo. `packaging/install.sh`
+  (genérico). `postinst` best-effort, nunca borra ni pisa datos; verificado
+  con config.toml/DB sentinela que se conservan.
+- `.github/workflows/ci.yml`: `fmt` + `clippy -D warnings` + `test` +
+  `build --release` (falla si ≥30 MB) + job `.deb`.
 
-## v0.9 — STACK + legal + skills + contexto auto (verde)
+## Refactor / dedup
 
-- Track A: `stack_items` (+author/license/source) + `stack_meta` + `stack_fts` (FTS5 OK en `bundled`); `save/search/get/rate/record_execution/report_bug`; scoring `tag_match*2.0 + fts + rating*0.5`; 10 seeds; panel STACK (buscar/tags/preview/guardar/valorar/bugs/copiar); planner consulta con `use_stack` + log `STACK: N hits`.
-- Track B: consentimiento triple OFF + identidad + `Uso interno` rechazado; contadores turnos/tools por categoría/429s con panel en Config → STACK.
-- Track C: `skills.rs` + 2 embebidas + `/skill` (inyecta 1 vez, inexistente lista sin turno) + pestaña Skills (badge/origen/recargar/restaurar).
-- Track D: `planning.rs` (prompt casa + `validate_version_md` + `write_auto_docs` 4 archivos) + SPECS con criterios + Finish auto-dispara Plan (fallback precargado sin API) + `Detener` cancela.
-- Docs: `VERSIONS.md` v0.9 🟢, `PROJECT.md` §3/§13, `HECHO.md`.
+- Ignores a fuente única: `config::IGNORE_DIRS` + `config::is_ignored_name`,
+  usada por `default_ignores()` y por `workspace::scan_import` (test
+  `ignored_name_single_source`).
+- `estimate_tokens` (→ `llm::estimate_tokens_text`) y `resync_msg_meta`
+  (→ `app/state.rs`) ya eran de fuente única desde v0.9.5.
+- `trunc*`: `ui::design::trunc_end/trunc_start`, `agent::tools::truncate` y
+  `skills::truncate_body` tienen semánticas distintas (UI/epílogo/bytes); las
+  tres son UTF-8-safe y tienen test. Sin cambio.
+
+## Docs
+
+`PROJECT.md` (§4 árbol + §10/§13), `POLICIES.md` §7, `AGENTS.md` (5 roles),
+`README.md` (instalación Linux), `VERSIONS.md`/`HECHO.md`.
+
+## Sugerencia para v1.0
+
+- Medir apertura GUI <2 s y TTFB <300 ms en una máquina con display (aquí solo
+  se midió arranque headless hasta el event loop).

@@ -85,6 +85,12 @@ metadatos del item, no del autor.
 *   El instalador y el **updater** nunca borran `arqhia.db`, `config.toml` ni
     workspaces. El updater (v1.0) solo **notifica** y enlaza a la descarga; no
     reemplaza binarios en caliente en esta fase.
+*   **Linux (v0.9.6):** el `.deb` (`packaging/build_deb.sh`) instala el binario
+    en `/usr/bin/arqhia`, el icono en `hicolor` y el `.desktop`; su `postinst`
+    solo **crea si faltan** `~/.config/arqhia/`, `~/.local/share/arqhia/{skills,backups}/`
+    y `~/ARQHIA/projects/`, y **jamás pisa** `config.toml` ni la DB. El
+    instalador genérico (`packaging/install.sh`) replica lo mismo en `~/.local`
+    o `/usr/local` sin root.
 *   Cambios de esquema SQLite son migrados con `ALTER TABLE` idempotente;
     entre versiones con instalador se documenta la migración en el CHANGELOG.
 *   Exportar proyecto = copiar su carpeta (el workspace es autocontenido:

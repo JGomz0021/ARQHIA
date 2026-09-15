@@ -1,9 +1,12 @@
 # AGENTS.md — reglas del orquestador ARQHIA
 
 ## Roles
-- planner: divide el pedido en subtareas disjuntas (archivos distintos).
+Los 5 roles del orquestador (v0.9.1; prompts y gates en `src/agent/roles.rs`):
+- orquestador: dueño del turno; decide el plan global y cierra (veredicto).
+- analista: lee `CONTEXT/` + specs y redacta el brief (`CONTEXT/ANALYSIS.md`); solo Read.
+- planner: divide el brief en subtareas disjuntas (archivos distintos); solo Net+Read.
 - worker (generador): ejecuta UNA subtarea con read/write/edit/delete/list/bash/search/fetch_url.
-- auditor: solo lee y reporta a CONTEXT/TEMP.md. Nunca escribe código.
+- auditor: solo lee y reporta a CONTEXT/TEMP.md. Nunca escribe código; veredicto CLEAN/ISSUES.
 
 ## Tools permitidas
 read_file (paginado: offset/limit), get_file_outline, write_file, edit_file, delete_file, list_dir, search_files (bloques con contexto), bash (allowlist + `git` con política por subcomando), fetch_url (dominios).

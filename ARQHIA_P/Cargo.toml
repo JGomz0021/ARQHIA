@@ -1,10 +1,13 @@
 [package]
 name = "arqhia_p"
-version = "0.9.5"
+version = "0.9.6"
 edition = "2024"
+description = "ARQHIA — entorno de desarrollo con agente IA (Iced nativo)"
+license = "MIT"
+repository = "https://github.com/JGomz0021/ARQHIA"
 
 [dependencies]
-iced = { version = "0.13", features = ["tokio", "markdown"] }
+iced = { version = "0.13", features = ["tokio", "markdown", "canvas"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "process", "time", "sync", "io-util", "io-std"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
@@ -21,3 +24,13 @@ directories = "6"
 
 [dev-dependencies]
 tempfile = "3"
+
+# v0.9.6: release medido <30MB. `strip` + LTO + 1 codegen-unit reducen
+# tamaño; se mantiene `panic = "unwind"` (main.rs usa `catch_unwind` como
+# red de seguridad de UI, ver `docs/ARCHITECTURE.md`).
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "unwind"

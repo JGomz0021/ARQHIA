@@ -358,8 +358,19 @@ fn main() -> iced::Result {
     iced::application("ARQHIA", update, view)
         .theme(views::app_theme)
         .subscription(subscription)
-        .window_size((1560.0, 880.0))
+        .window(iced::window::Settings {
+            size: iced::Size::new(1560.0, 880.0),
+            icon: app_icon(),
+            ..Default::default()
+        })
         .run()
+}
+
+/// Icono de ventana/barra de tareas (v0.9.6): RGBA 256² embebido, generado
+/// desde `assets/icon.svg` por `packaging/make_icons.py`.
+fn app_icon() -> Option<iced::window::Icon> {
+    const RGBA: &[u8] = include_bytes!("../assets/icon.rgba");
+    iced::window::icon::from_rgba(RGBA.to_vec(), 256, 256).ok()
 }
 
 /// Atajos de teclado v0.7.1 (solo con Ctrl, salvo Esc: no roban teclas

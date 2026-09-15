@@ -25,7 +25,7 @@ Dependencias no versionadas (web) en `CONTEXT/WEB.md`.
 | v0.9.3 | MCP mínimo (stdio + HTTP, tools como `mcp__srv__tool`) | 🟢 Done | [v0.9.3.md](VERSIONS/v0.9.3.md) |
 | v0.9.4 | Hardening crítico (anti-symlink + FKs/índices + tests en temp + `directories` + 600) | 🟢 Done | [v0.9.4.md](VERSIONS/v0.9.4.md) |
 | v0.9.5 | Calidad estructural (desacople `App` + git async + docs + `tracing`) | 🟢 Done | [v0.9.5.md](VERSIONS/v0.9.5.md) |
-| v0.9.6 | Revisión + optimización + refactor + tests + icono + instalador Linux | ☐ Pendiente (puerta de v1.0) | [v0.9.6.md](VERSIONS/v0.9.6.md) |
+| v0.9.6 | Revisión + optimización + refactor + tests + icono + instalador Linux | 🟢 Done (puerta de v1.0) | [v0.9.6.md](VERSIONS/v0.9.6.md) |
 | v1.0 | STACK nube + auth + updater + workers async + release estable (Linux+Windows) | ☐ Pendiente | [v1.0.md](VERSIONS/v1.0.md) |
 | v1.0.1 | MCP avanzado (pestaña, resources/prompts, item `MCP`, auth HTTP) | ☐ Pendiente | [v1.0.1.md](VERSIONS/v1.0.1.md) |
 | v1.1 | Pro (Linux+Windows): sandboxes + merge + agentes/flujos + licencias | ☐ Pendiente | [v1.1.md](VERSIONS/v1.1.md) |

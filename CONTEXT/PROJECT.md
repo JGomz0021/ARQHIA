@@ -85,7 +85,7 @@ ARQHIA_P/
     │   └── handlers/      # brazos de update por dominio
     │       └── {navigation,chat,chat_stream,chat_history,projects,agent,config,questionnaire,stack}.rs  # splits v0.9.5
     ├── views/             # render puro (home, sidebar, chat, questionnaire, config_view, config_api, config_git, stack)
-    ├── ui/                # design tokens + componentes (design.rs, components.rs)
+    ├── ui/                # design tokens + componentes (design.rs, components.rs, logo.rs v0.9.6)
     ├── config.rs          # providers + tema + permisos + git + cuenta/licencia (toml)
     ├── db.rs              # SQLite (chats, projects, messages, stack, uso por project_id v0.9.5)
     ├── titles.rs          # helpers de títulos (puro)
@@ -99,6 +99,16 @@ ARQHIA_P/
     ├── llm/{mod.rs, openai.rs, anthropic.rs, openrouter.rs, local.rs}
     ├── pricing.rs         # catálogo de modelos/precios (models.dev) + cache
     └── agent/{mod.rs, tools.rs, roles.rs}   # 5 roles explícitos (v0.9.1)
+```
+
+Fuera de `src/` (v0.9.6, puerta de v1.0):
+
+```
+ARQHIA_P/
+├── assets/              # icon.svg (fuente) + icon-{16..256}.png + icon.rgba (embebido)
+├── packaging/           # make_icons.py, arqhia.desktop, build_deb.sh, install.sh
+├── .github/workflows/ci.yml  # check + clippy -D + test + build + .deb
+└── Cargo.toml           # [profile.release] strip + lto (release <30MB)
 ```
 
 > Solo archivos reales (v0.9.5): lo futuro (`updates.rs`, `license.rs`,
@@ -387,7 +397,7 @@ legacy).
 | **v0.9.3** | MCP mínimo (stdio + HTTP) | `mcp.rs` + `[mcp]` + enrutado `mcp__srv__tool` + aprobación Net/auto |
 | **v0.9.4** | Hardening crítico (auditoría) | Anti-symlink + FKs/índices + tests en temp + `directories` + config 600 + anti-SSRF |
 | **v0.9.5** | Calidad estructural (auditoría) | `ChatHistory` + git async + split handlers/views + README/docs/ADRs + `tracing` |
-| **v0.9.6** | Revisión + icono + instalador (puerta de v1.0) | Higiene con backup + refactor + optimización (<30MB, <2s) + tests por rol + `assets/icon.svg/png` + `.deb/.tar.gz` + CI mínimo |
+| **v0.9.6** | Revisión + icono + instalador (puerta de v1.0) | Higiene (`$HOME/.local/share/arqhia/backups/` + 0 `unwrap` productivo) + ignores de fuente única + perfil release `strip`+`lto` (24 MB, <30 MB) + `assets/icon.svg`/PNG + `ui/logo.rs` + `.deb`/`install.sh` + `.github/workflows/ci.yml` |
 | **WEB** | Sitio del producto (dependencia, no versionado) | Astro + Cloudflare: descarga, precios, soporte, docs, legal, `updates/latest.json` |
 | **v1.0** | STACK nube + auth + updater + workers async + release + skills nube | Push/pull/sync + auth + updater (notificar+descargar) + **workers async 2–3 (§F)** + Microsoft Store (Windows) + backup/export + skills etiqueta `SKILL` + icono v0.9.6 + MCP mínimo v0.9.3 + release estable Linux+Windows |
 | **v1.0.1** | MCP avanzado | Pestaña MCP + resources/prompts + item STACK `MCP` + auth HTTP |
@@ -426,4 +436,4 @@ Detalle paso a paso por versión en `ROADMAP.md` y `VERSIONS/v0.x.md`. La web en
 
 ## 13. Próximo Paso
 
-**v0.9.1 – v0.9.5 🟢 Done** (ver `CONTEXT/VERSIONS/`). Siguiente, en orden: **v0.9.6** (revisión + icono + instalador, puerta de v1.0) → WEB → **v1.0** (incluye **workers async §F**) → **v1.0.1** (MCP avanzado) → v1.1 (sandboxes + merge sobre el paralelo v1.0) → v1.2. Ver `HECHO.md` para estado actual.
+**v0.9.1 – v0.9.6 🟢 Done** (ver `CONTEXT/VERSIONS/`). Siguiente, en orden: **WEB** (`CONTEXT/WEB.md`) → **v1.0** (incluye **workers async §F**) → **v1.0.1** (MCP avanzado) → v1.1 (sandboxes + merge sobre el paralelo v1.0) → v1.2. Ver `HECHO.md` para estado actual.

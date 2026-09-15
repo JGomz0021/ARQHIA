@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- ARQHIA — icono (fuente vectorial v0.9.6). Rasterizado a PNG/RGBA por
+     packaging/make_icons.py. Diseño propio (sin licencias de terceros). -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"
+     viewBox="0 0 256 256" role="img" aria-label="ARQHIA">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1B2140"/>
+      <stop offset="1" stop-color="#0B0E1C"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#67E8F9"/>
+      <stop offset="1" stop-color="#A78BFA"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="256" height="256" rx="56" fill="url(#bg)"/>
+
+  <g stroke="url(#accent)" stroke-linecap="round" fill="none">
+    <line x1="128" y1="50" x2="66"  y2="206" stroke-width="34"/>
+    <line x1="128" y1="50" x2="190" y2="206" stroke-width="34"/>
+    <line x1="86"  y1="156" x2="170" y2="156" stroke-width="26"/>
+  </g>
+</svg>

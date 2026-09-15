@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.arqhia.ARQHIA</id>
+  <name>ARQHIA</name>
+  <summary>Entorno de desarrollo con agente IA</summary>
+  <description>
+    <p>
+      ARQHIA es un agente de IA nativo que acompaña al usuario desde la
+      definición de la idea hasta la resolución estable del proyecto: diseña el
+      proyecto, sus especificaciones, funcionalidades y stack, y ejecuta tareas
+      con agentes bajo permisos explícitos.
+    </p>
+    <p>Sin telemetría: la configuración, la base de datos y los proyectos viven en tu equipo.</p>
+  </description>
+  <launchable type="desktop-id">arqhia.desktop</launchable>
+  <url type="homepage">https://github.com/JGomz0021/ARQHIA</url>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Development</category>
+    <category>IDE</category>
+  </categories>
+</component>

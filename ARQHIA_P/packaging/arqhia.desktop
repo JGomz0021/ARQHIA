@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=ARQHIA
+GenericName=Entorno de desarrollo con agente IA
+Comment=Del diseño del proyecto al código estable con agentes
+Exec=arqhia
+TryExec=arqhia
+Icon=arqhia
+Terminal=false
+Categories=Development;IDE;Utility;
+Keywords=ai;agent;code;rust;desarrollo;agente;
+StartupNotify=true
+StartupWMClass=ARQHIA

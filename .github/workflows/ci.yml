@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  quality:
+    name: check + clippy + test + build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ARQHIA_P
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependencias de sistema (Iced)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libudev-dev
+
+      - name: Toolchain fijado
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache de Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ARQHIA_P
+
+      - name: fmt
+        run: cargo fmt --check
+
+      - name: clippy (-D warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test
+
+      - name: build release
+        run: cargo build --release --locked
+
+      - name: Release < 30 MB (v0.9.6)
+        run: |
+          size=$(stat -c%s target/release/arqhia_p)
+          echo "binario: $((size / 1024 / 1024)) MB ($size bytes)"
+          test "$size" -lt 31457280
+
+  package:
+    name: .deb (Linux)
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ARQHIA_P
+      - name: Dependencias de sistema (Iced)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libudev-dev
+      - name: Empaquetar .deb
+        run: ARQHIA_P/packaging/build_deb.sh
+      - name: Subir artefacto
+        uses: actions/upload-artifact@v4
+        with:
+          name: arqhia-deb
+          path: ARQHIA_P/packaging/dist/*.deb
+          if-no-files-found: error

@@ -114,10 +114,7 @@ pub fn scan_import(dir: &Path) -> bool {
     let mut names: Vec<String> = Vec::new();
     for e in entries.flatten().take(60) {
         let n = e.file_name().to_string_lossy().to_string();
-        if matches!(n.as_str(), "target" | ".git" | "node_modules") {
-            continue;
-        }
-        if n.ends_with(".lock") {
+        if crate::config::is_ignored_name(&n) {
             continue;
         }
         names.push(n);

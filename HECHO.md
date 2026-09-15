@@ -413,3 +413,51 @@ Flujo pre-STACK acordado: `petición → orquestador → analista (contexto/spec
 
 - **v0.9.5 🟢 Done.** Siguiente: **v0.9.6** (revisión + icono + instalador,
   puerta de v1.0) → WEB → v1.0 → v1.0.1 → v1.1 → v1.2.
+
+# Rondas UI/Config pre-v0.9.6 (histórico movido desde TEMP)
+
+- Layout: mensajes centrados (880px); cabecera/stats/dock a todo el ancho. Dock inferior (composer + log) con fondo elevado y sombra (`design::dock`). Entrada 16px/padding `[10,8]`; log 14px ampliable 12↔40 líneas y 170↔460px.
+- Contexto de la barra superior incluye tools/lecturas (`App.context_tokens`), no solo mensajes.
+- Tokens: `Usage { input, output, cached }`; parseo real OpenAI (`stream_options.include_usage`, `prompt_tokens_details.cached_tokens`) y Anthropic (`message_start`/`message_delta`). `in/out/cache` bajo cada mensaje y en el Log.
+- Precios: `pricing.rs` descarga/cachea `models.dev/api.json` (input/output/cache write, contexto y capacidades). Navegador de modelos con filtro de precio, `solo tools`, orden por precio; mapeo por `base_url`.
+- Densidad operativa (`design::gap/pad`); chat a 1400px en ventana 1560×880; composer reorganizado; limpieza de iconos (fuera `Cuestionario`/`TEMP`/badge de modo); `Salir` rojo outline.
+- Nivel de razonamiento por modelo desde `models.dev` (`reasoning_options`): selector Config + composer; se envía al provider (`reasoning_effort` / `reasoning.effort` / `thinking.budget_tokens`).
+- Lookup por provider en el catálogo (evita colisiones de contexto 1M); aviso ≥90% de contexto; Config con tabs 220px y cards lado a lado; tooltips en Límites.
+- Backlog ampliado: varios modelos/perfiles; lector Markdown; repos guía (opencode/OpenHands/SWE-agent); sesiones con id por provider.
+- Sugerencias `/skill` en composer (filtra por prefijo, `Enter` completa); 14 seeds de STACK con `mentions_stack` para la consulta puntual.
+
+# v0.9.6 — Revisión + icono + instalador (🟢 Done, puerta de v1.0)
+
+- **Gate backup/higiene:** rama `ARQHIA` al día con `origin/ARQHIA` (0/0);
+  `rg 'unwrap\(\)|expect\('` productivo = 0 (los únicos hits son strings de
+  seed del STACK), así que no se tocó ningún `unwrap` real: no hizo falta
+  backup. `todo!`/`unimplemented!`/`panic!` productivos = 0.
+- **Refactor/dedup:** ignores a fuente única (`config::IGNORE_DIRS` +
+  `config::is_ignored_name`, que ahora también usa `workspace::scan_import`);
+  `estimate_tokens`/`resync_msg_meta` ya eran de fuente única; `trunc*` se
+  revisaron (semánticas distintas, todas UTF-8-safe). Test nuevo
+  `config::tests::ignored_name_single_source`.
+- **Optimización:** `[profile.release]` con `strip` + `lto="thin"` +
+  `codegen-units=1` + `opt-level=3` (se mantiene `panic="unwind"` por el
+  `catch_unwind` de `main.rs`). Release medido: **24.3 MB** (<30 MB). Arranque
+  hasta el event loop: instantáneo (<2 s; GUI pendiente en máquina con display).
+- **Icono:** `assets/icon.svg` (fuente propia) + `icon-{16,32,64,128,256}.png`
+  + `icon.rgba` (embebido) generados por `packaging/make_icons.py`; ventana vía
+  `iced::window::icon::from_rgba` (`main.rs::app_icon`) y Home con
+  `ui/logo.rs` (canvas, misma geometría).
+- **Instalador + CI:** `packaging/build_deb.sh` (dpkg-deb, sin cargo-deb) →
+  `/usr/bin/arqhia` + iconos `hicolor` + `.desktop` + `metainfo`;
+  `packaging/install.sh` (genérico, `~/.local` o `PREFIX`); `postinst` solo
+  crea carpetas si faltan y **jamás** pisa `config.toml`/DB (verificado:
+  config y DB sentinela intactas tras instalar). `.github/workflows/ci.yml`:
+  `fmt --check` + `clippy -D warnings` + `test` + `build --release` (falla si
+  el binario ≥30 MB) + job `.deb`.
+- **Tests:** `cargo test` 203/203 OK (3 ignorados), `clippy --all-targets -D
+  warnings` 0, `fmt --check` OK.
+- Docs: `PROJECT.md` (§4 árbol + §10/§13), `POLICIES.md` §7 (instalador),
+  `AGENTS.md` (5 roles), `README.md` (instalación Linux), `VERSIONS.md`.
+
+# Siguiente paso (actualizado)
+
+- **v0.9.6 🟢 Done (puerta de v1.0 cumplida).** Siguiente: **WEB**
+  (`CONTEXT/WEB.md`) → v1.0 → v1.0.1 → v1.1 → v1.2.

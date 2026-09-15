@@ -8,3 +8,7 @@ target/
 
 # Runtime / local data
 uploads/
+
+# Empaquetado (v0.9.6)
+ARQHIA_P/packaging/dist/
+*.deb

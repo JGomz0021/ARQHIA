@@ -162,15 +162,21 @@ pub struct Limits {
     pub max_fix_cycles: usize,
 }
 
+/// Directorios ignorados siempre (fuente única v0.9.6): búsqueda/listado del
+/// agente y escaneo de import usan el mismo criterio.
+pub const IGNORE_DIRS: [&str; 3] = ["target", ".git", "node_modules"];
+
+/// ¿El nombre (archivo o carpeta) se ignora por defecto? Incluye *.{lock}.
+pub fn is_ignored_name(name: &str) -> bool {
+    IGNORE_DIRS.contains(&name) || name.ends_with(".lock")
+}
+
 /// Ignorados por defecto en búsqueda/listado recursivo (v0.7.1).
 /// Sin confirmaciones: la optimización sustituye al aviso.
 pub fn default_ignores() -> Vec<String> {
-    vec![
-        "target/".to_string(),
-        ".git/".to_string(),
-        "node_modules/".to_string(),
-        "*.lock".to_string(),
-    ]
+    let mut out: Vec<String> = IGNORE_DIRS.iter().map(|d| format!("{d}/")).collect();
+    out.push("*.lock".to_string());
+    out
 }
 
 fn default_history_limit() -> usize {
@@ -994,6 +1000,23 @@ mod tests {
         half.openai.api_key = "sk-x".to_string();
         half.openai.model.clear();
         assert!(!half.has_any_api());
+    }
+
+    #[test]
+    fn ignored_name_single_source() {
+        // v0.9.6: escaneo de import y ignores del agente comparten criterio.
+        for d in IGNORE_DIRS {
+            assert!(is_ignored_name(d), "{d} debería ignorarse");
+        }
+        assert!(is_ignored_name("Cargo.lock"));
+        assert!(!is_ignored_name("src"));
+        assert!(!is_ignored_name("main.rs"));
+        // `default_ignores` deriva de la misma fuente (patrones con /).
+        let defs = default_ignores();
+        for d in IGNORE_DIRS {
+            assert!(defs.contains(&format!("{d}/")), "falta {d}/ en {defs:?}");
+        }
+        assert!(defs.contains(&"*.lock".to_string()));
     }
 
     #[test]

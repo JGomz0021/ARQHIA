@@ -48,9 +48,14 @@ pub fn view_home<'a>(p: HomeProps<'a>) -> Element<'a, Message> {
     let active_model = config.active_config().model.clone();
     // Rail izquierdo: identidad + acciones globales (siempre visible).
     let rail = column![
-        text("ARQHIA")
-            .size(design::fs(ts, 26))
-            .color(design::ink(&app_theme)),
+        row![
+            crate::ui::logo::view(30.0),
+            text("ARQHIA")
+                .size(design::fs(ts, 26))
+                .color(design::ink(&app_theme)),
+        ]
+        .spacing(10)
+        .align_y(iced::Alignment::Center),
         text("Entorno de desarrollo con agente IA.")
             .size(design::fs(ts, 13))
             .color(dim),

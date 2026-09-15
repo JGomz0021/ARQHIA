@@ -30,6 +30,22 @@ La app abre en Home. Si es tu primer arranque verás el aviso de bienvenida:
 4. Crea un proyecto en Home y chatea. Los modos **Chat / Plan / Work** están
    en el composer (`Ctrl+1/2/3`).
 
+## Instalación (Linux, v0.9.6)
+
+```sh
+# .deb (Debian/Ubuntu) — instala /usr/bin/arqhia + icono + .desktop
+ARQHIA_P/packaging/build_deb.sh
+sudo dpkg -i ARQHIA_P/packaging/dist/arqhia_*.deb
+
+# Genérico sin root (a ~/.local) o con PREFIX=/usr/local
+ARQHIA_P/packaging/install.sh
+```
+
+El instalador **nunca borra** tu `config.toml`, tu `arqhia.db` ni tus
+workspaces; solo crea carpetas si faltan (`CONTEXT/POLICIES.md` §7). El
+empaquetado y el chequeo de calidad (`fmt` + `clippy -D warnings` + `test` +
+`build`) corren en `.github/workflows/ci.yml`.
+
 ## Rutas de datos
 
 | Qué | Dónde |
@@ -47,7 +63,7 @@ todo vive en tu equipo (ver `CONTEXT/POLICIES.md`).
 
 ```sh
 cd ARQHIA_P
-cargo test        # 190+ tests (3 ignorados: E2E manuales con API real)
+cargo test        # 200+ tests (3 ignorados: E2E manuales con API real)
 cargo clippy --all-targets   # debe quedar a 0 warnings
 cargo fmt --check # formato verificado
 ```
